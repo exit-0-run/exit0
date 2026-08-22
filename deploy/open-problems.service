@@ -1,0 +1,28 @@
+# /etc/systemd/system/open-problems.service
+#   systemctl enable --now open-problems
+
+[Unit]
+Description=open-problems registry
+After=network.target
+
+[Service]
+Type=simple
+User=openproblems
+WorkingDirectory=/srv/open-problems
+Environment=PORT=8080
+ExecStart=/usr/bin/node scripts/server.mjs
+Restart=always
+RestartSec=2
+
+# Serwer wykonuje `git` i pisze wylacznie do swojego katalogu.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/open-problems
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

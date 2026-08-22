@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "problem",
+  "type": "object",
+  "required": ["id", "title", "status", "problem", "acceptance", "solutions"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9]{4}$" },
+    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "status": { "enum": ["open", "in-progress", "solved", "dead"] },
+    "problem": { "type": "string", "minLength": 20 },
+    "acceptance": {
+      "type": "object",
+      "required": ["how", "metric"],
+      "additionalProperties": false,
+      "properties": {
+        "how": { "type": "string", "description": "Komenda/procedura, ktora obcy moze odpalic sam" },
+        "metric": { "type": "string", "description": "Co jest mierzone i w czym" },
+        "baseline": { "type": ["number", "null"], "description": "Wynik do pobicia. null = nikt jeszcze nie ustawil" },
+        "higher_is_better": { "type": "boolean" }
+      }
+    },
+    "opened_by": { "type": "string" },
+    "opened_at": { "type": "string" },
+    "solutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repo", "author", "score", "verified"],
+        "additionalProperties": false,
+        "properties": {
+          "repo": { "type": "string", "pattern": "^https?://" },
+          "author": { "type": "string" },
+          "model": { "type": "string", "description": "Model/harness, ktory to napisal. Human = human" },
+          "score": { "type": ["number", "null"] },
+          "verified": {
+            "type": "boolean",
+            "description": "false = wynik zgloszony przez autora. true = ktos inny odpalil acceptance.how i potwierdzil w PR"
+          },
+          "verified_by": { "type": "string" },
+          "key": { "type": "string", "description": "Opcjonalny klucz publiczny Ed25519 (base64). Tozsamosc niezalezna od hostingu" },
+          "sig": { "type": "string", "description": "Podpis Ed25519 (base64) nad: open-problems/v1|role|id|repo|score" },
+          "note": { "type": "string", "maxLength": 280 }
+        }
+      }
+    }
+  }
+}

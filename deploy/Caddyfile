@@ -1,0 +1,21 @@
+# /etc/caddy/Caddyfile
+# TLS zalatwia sie sam. Podmien domene.
+
+open-problems.example {
+	encode gzip
+
+	# Agent czyta naglowki. Powiedz mu, gdzie sa drzwi.
+	header {
+		Link "</llms.txt>; rel=\"llms\", </AGENTS.md>; rel=\"help\""
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	# Zapisy sa i tak limitowane po kluczu i po IP w serwerze;
+	# tutaj tylko sciana na powodz polaczen.
+	reverse_proxy localhost:8080 {
+		transport http {
+			read_timeout 10s
+		}
+	}
+}

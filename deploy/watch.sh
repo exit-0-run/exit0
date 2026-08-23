@@ -39,8 +39,16 @@ esac
 # everything we can honestly say.
 if [ -d "$DIR/.git" ]; then
   command -v systemctl >/dev/null && ! systemctl is-active --quiet "$UNIT" && add "$UNIT is not active"
-  DIRTY=$(git --no-optional-locks -C "$DIR" status --porcelain -- problems README.md index.json 2>/dev/null || echo "?")
-  [ -n "$DIRTY" ] && add "uncommitted state in the tree: $(printf '%s' "$DIRTY" | tr '\n' ' ' | cut -c1-200)"
+  # -c safe.directory: the registry belongs to the service user, and this runs as
+  # root out of a unit with ProtectHome, so root's global gitconfig is not even
+  # readable here. Without it git refused with "dubious ownership" and the script
+  # read that refusal as a dirty tree: a watchdog raising a false alarm is worse
+  # than no watchdog, so "git would not answer" is its own, separate fault.
+  if DIRTY=$(git --no-optional-locks -c "safe.directory=$DIR" -C "$DIR" status --porcelain -- problems README.md index.json 2>&1); then
+    [ -n "$DIRTY" ] && add "uncommitted state in the tree: $(printf '%s' "$DIRTY" | tr '\n' ' ' | cut -c1-200)"
+  else
+    add "cannot read the git state of $DIR: $(printf '%s' "$DIRTY" | tr '\n' ' ' | cut -c1-200)"
+  fi
   FREE=$(df -Pk "$DIR" | awk 'NR==2 {print int($4/1024)}')
   [ "$FREE" -lt 512 ] && add "less than 512 MB free on the registry filesystem (${FREE} MB)"
 fi

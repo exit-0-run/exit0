@@ -197,6 +197,11 @@ export const payload = (action, f) => {
       F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
       replacesT(f.replaces),
     ].join("|");
+  // tolerance is signed by the VERIFIER, not only by the problem author. A verdict
+  // is meaningless without the band it was judged under, and a problem opened by
+  // pull request carries no signature at all, so the band under it was free to move
+  // after the fact. Now moving it breaks every verdict already filed, in any clone,
+  // with no git history needed.
   if (action === "verification")
     return [
       PREFIX,
@@ -206,6 +211,8 @@ export const payload = (action, f) => {
       numToken(f.score),
       verdictT(f.verdict),
       hex64(f.output_sha256, "output_sha256"),
+      tolT(f.tolerance),
+      replacesT(f.replaces),
     ].join("|");
   if (action === "problem")
     return [
@@ -242,13 +249,101 @@ export const solutionId = (problemId, repo, score, key, replaces) =>
     )
   ).slice(0, 16);
 
-export const verificationId = (sid, key, outSha, verdict, score) =>
+// vid is a chain link too, for the same reason sid is: a verifier who goes
+// ok -> mismatch -> ok would otherwise land back on the first vid, and with it the
+// first signed body would describe the current state again and go in a second time.
+export const verificationId = (sid, key, outSha, verdict, score, replaces) =>
   sha(
     Buffer.from(
-      [PREFIX, "vid", hex16(sid, "sid"), keyId(key), hex64(outSha, "output_sha256"), verdictT(verdict), numToken(score)].join("|"),
+      [PREFIX, "vid", hex16(sid, "sid"), keyId(key), hex64(outSha, "output_sha256"), verdictT(verdict), numToken(score), replacesT(replaces)].join("|"),
       "utf8"
     )
   ).slice(0, 16);
+
+// --- the verdict chain ---
+// Which verdict of a given verifier counts is decided by the CHAIN, never by the
+// order of records in the file. Order was authoritative before this: two records
+// that were both correctly signed, swapped in a pull request, flipped a problem
+// from in-progress to solved and build.mjs --check stayed green, because each
+// record on its own was still valid. Now every record commits to the one it
+// replaces, so the counting record is the one nothing points at, and a swap in the
+// file changes nothing at all.
+//
+// Returns { heads, errors }: heads = one counting record per verifier key,
+// ordered by (at, vid) so it does not depend on file order either. NEVER throws:
+// it runs inside build.mjs, where an exception is a crash instead of an error list.
+export const verdictHeads = (list) => {
+  const errors = [];
+  const groups = new Map();
+  (Array.isArray(list) ? list : []).forEach((v, i) => {
+    let k;
+    try {
+      k = keyId(v && v.key);
+    } catch {
+      errors.push({ at: i, error: "key outside the base64 grammar, this record has no verifier" });
+      return;
+    }
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push({ v, i });
+  });
+
+  const heads = [];
+  for (const recs of groups.values()) {
+    const byVid = new Map();
+    for (const r of recs) if (!byVid.has(r.v.vid)) byVid.set(r.v.vid, r);
+    const rep = (r) => r.v.replaces ?? "-";
+    const roots = recs.filter((r) => rep(r) === "-");
+    if (roots.length !== 1) {
+      for (const r of (roots.length ? roots.slice(1) : recs))
+        errors.push({ at: r.i, error: roots.length ? 'this verifier has more than one record with "replaces":"-" on this solution' : 'this verifier has no record with "replaces":"-", so their chain has no beginning' });
+      continue;
+    }
+    const next = new Map();
+    let broken = false;
+    for (const r of recs) {
+      if (rep(r) === "-") continue;
+      if (!byVid.has(rep(r))) {
+        errors.push({ at: r.i, error: `replaces points at ${rep(r)}, and this verifier has no such record on this solution` });
+        broken = true;
+      } else if (next.has(rep(r))) {
+        errors.push({ at: r.i, error: `two records replace the same ${rep(r)}: a chain, not a fork` });
+        broken = true;
+      } else next.set(rep(r), r);
+    }
+    if (broken) continue;
+    let cur = roots[0];
+    const walked = new Set([cur]);
+    while (next.has(cur.v.vid)) {
+      cur = next.get(cur.v.vid);
+      if (walked.has(cur)) break;
+      walked.add(cur);
+    }
+    const lost = recs.filter((r) => !walked.has(r));
+    if (lost.length) {
+      for (const r of lost) errors.push({ at: r.i, error: "the chain of this verifier does not reach this record: it hangs off a loop instead of the root" });
+      continue;
+    }
+    heads.push(cur.v);
+  }
+  heads.sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")) || String(a.vid ?? "").localeCompare(String(b.vid ?? "")));
+  return { heads, errors };
+};
+
+// The head for ONE key: what the next record of this verifier has to replace.
+// "-" means this verifier has not spoken on this solution yet.
+export const verdictHead = (list, key) => {
+  const k = keyId(key);
+  const mine = (Array.isArray(list) ? list : []).filter((v) => {
+    try {
+      return keyId(v.key) === k;
+    } catch {
+      return false;
+    }
+  });
+  if (!mine.length) return { head: "-", errors: [] };
+  const { heads, errors } = verdictHeads(mine);
+  return { head: errors.length || heads.length !== 1 ? null : heads[0].vid, errors };
+};
 
 export const evidencePath = (problemId, outSha) =>
   `problems/evidence/${pid(problemId)}-${hex64(outSha, "output_sha256")}.txt`;
@@ -257,17 +352,19 @@ export const evidencePath = (problemId, outSha) =>
 // Called from server.mjs AND from build.mjs. Returns null or {code, error}: the code
 // goes to the client unmapped, the validator treats every non-null as an error.
 
-// Measured, not assumed. Do not reduce this to plain keyId(a) === keyId(b),
-// or the predicate starts throwing instead of returning {code, error}. The fallback
-// string comparison does NOT weaken invariant 3: (1) for each of the four base64
-// spellings of a real key keyId SUCCEEDS, so the spelling-variant bypass never gets
-// here and ends at a 403; (2) a key that makes keyId throw has check()
-// always false, so no verification can be produced under it.
-const sameKey = (a, b) => {
+// Fails CLOSED. keyId throws on a key outside the grammar, and this predicate must
+// not throw: it runs inside build.mjs, where an exception is a crash instead of an
+// error list. It used to fall back to comparing the strings, which was safe only as
+// long as the server rejected a non-canonical key before getting here: the whole
+// point of comparing keyId is that the same 32 bytes have four base64 spellings, so
+// a string comparison lets a spelling variant verify its own solution. A key we
+// cannot read is now a named 400, not a silent downgrade of invariant 3.
+const keyOr400 = (k, label) => {
   try {
-    return keyId(a) === keyId(b);
-  } catch {
-    return a === b;
+    keyId(k);
+    return null;
+  } catch (e) {
+    return { code: 400, error: `${label}: ${e.message}` };
   }
 };
 
@@ -280,7 +377,9 @@ const bandText = (b) => {
 };
 
 export const checkVerification = (p, sol, v) => {
-  if (sameKey(v.key, sol.key)) return { code: 403, error: "you cannot verify your own solution" };
+  const kv = keyOr400(v.key, "verification key") ?? keyOr400(sol.key, "solution key");
+  if (kv) return kv;
+  if (keyId(v.key) === keyId(sol.key)) return { code: 403, error: "you cannot verify your own solution" };
   if (v.verdict !== "ok" && v.verdict !== "mismatch") return { code: 400, error: 'verdict must be "ok" or "mismatch"' };
   if (typeof v.score !== "number" || !Number.isFinite(v.score)) return { code: 400, error: "the verification score must be a number" };
   if (typeof sol.score !== "number" || !Number.isFinite(sol.score)) return { code: 400, error: "the solution score must be a number" };
@@ -386,6 +485,11 @@ const canonBody = (action, b, changed) => {
       verdict: verdictT(b.verdict),
       output,
       output_sha256: fix("output_sha256", b.output_sha256, sha(evidenceBytes(output))),
+      // Copy both from the registry: tolerance is acceptance.tolerance of the problem
+      // (the band you are judging under), replaces is "-" until you have already
+      // spoken on this solution, then the vid of your own current verdict.
+      tolerance: b.tolerance ?? 0.02,
+      replaces: replacesT(b.replaces),
     };
   }
   if (action === "problem")

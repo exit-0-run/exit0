@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
   canonUrl, canonText, canonLine, solutionId, verificationId,
-  evidencePath, checkVerification, cell, mdUrl, solCmp,
+  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads,
 } from "./sign.mjs";
 
 const DIR = "problems";
@@ -70,9 +70,12 @@ for (const file of files) {
 
 const derive = (p) => {
   for (const s of p.solutions) {
-    const latest = new Map();
-    for (const v of s.verifications) latest.set(keyId(v.key), v);
-    const counting = [...latest.values()];
+    // The counting verdict of a verifier is the head of THEIR chain, not their last
+    // record in the array. Nothing derived here may depend on the order of records
+    // in the file: that order is what a pull request can change without touching a
+    // single signature. Structural faults in a chain are reported in step 4; here we
+    // only skip the group, so one broken chain does not take the whole file down.
+    const counting = verdictHeads(s.verifications).heads;
     const oks = counting.filter((v) => v.verdict === "ok");
     const mismatches = counting.filter((v) => v.verdict === "mismatch");
     s.verified = oks.length > 0;
@@ -231,8 +234,13 @@ for (const { path, file, p } of loaded) {
   else seenIds.add(p.id);
   if (!file.startsWith(`${p.id}-`)) err(`the file name must start with ${p.id}-`);
 
-  // tolerance is frozen from the first verification on: otherwise the author
-  // would move the band under signatures that are already filed
+  // tolerance is frozen from the first verification on: otherwise the author would
+  // move the band under signatures that are already filed. This check is the
+  // DIAGNOSIS, not the enforcement: it compares against HEAD, so it says nothing in
+  // a pull request, where HEAD already is the change. The enforcement is that every
+  // verifier signs the band, so moving it breaks their signatures below, in any
+  // clone, with no history. Kept because "open a new problem" reads better than
+  // twelve broken signatures.
   if (p.solutions.some((s) => s.verifications.length)) {
     const prev = fromHead(path);
     let old = null;
@@ -262,6 +270,12 @@ for (const { path, file, p } of loaded) {
       if (seenVid.has(v.vid)) err(`solutions[${i}].verifications[${j}]: vid ${v.vid} occurs twice`);
       else seenVid.add(v.vid);
     });
+    // Every verifier's records must form ONE chain, rooted at the record whose
+    // replaces is "-" and ending in a single head. Without this a swap of two
+    // correctly signed records changed the status of the problem and --check
+    // stayed green.
+    for (const e of verdictHeads(s.verifications).errors)
+      err(`solutions[${i}].verifications[${e.at}]: ${e.error}`);
   });
 }
 
@@ -362,14 +376,19 @@ for (const { path, p } of loaded) {
       else {
         if (fingerprint(v.key) !== v.verifier) err(`${vat}: verifier does not match the key fingerprint`);
         try {
-          if (verificationId(s.sid, v.key, v.output_sha256, v.verdict, v.score) !== v.vid) err(`${vat}: vid does not match the content of the entry`);
+          if (verificationId(s.sid, v.key, v.output_sha256, v.verdict, v.score, v.replaces) !== v.vid) err(`${vat}: vid does not match the content of the entry`);
         } catch (e) {
           err(`${vat}: cannot compute the vid (${e.message})`);
         }
       }
       let vmsg = null;
       try {
-        vmsg = payload("verification", { problem: p.id, solution: s.sid, score: v.score, verdict: v.verdict, output_sha256: v.output_sha256 });
+        // tolerance comes from the problem, never from the record: that is what makes
+        // a later change of the band break this signature instead of going unnoticed.
+        vmsg = payload("verification", {
+          problem: p.id, solution: s.sid, score: v.score, verdict: v.verdict,
+          output_sha256: v.output_sha256, tolerance: p.acceptance.tolerance, replaces: v.replaces,
+        });
       } catch (e) {
         err(`${vat}: ${e.message}`);
       }
@@ -419,7 +438,7 @@ const shape = (p) => {
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
     const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
-    sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "evidence", "at"]));
+    sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"]));
     return sol;
   });
   return out;

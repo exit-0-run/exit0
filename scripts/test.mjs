@@ -248,10 +248,56 @@ const solBody = (k, o) =>
     model: o.model ?? "?", note: o.note ?? "", replaces: o.replaces ?? "-",
   });
 
+// tolerance jest PODPISYWANA, ale nie jest wysylana: serwer bierze ja z problemu.
+// Body, ktore by ja nioslo, ukryloby przypadek "klient podpisal inne pasmo".
+// replaces domyslnie "-": pierwszy werdykt tego klucza pod tym rozwiazaniem.
 const verBody = (k, o) => {
   const output_sha256 = sha256(o.output);
-  const signedPart = { problem: o.problem, solution: o.solution, score: o.score, verdict: o.verdict, output_sha256 };
-  return { ...signBody(k, "verification", signedPart), output: o.output };
+  const replaces = o.replaces ?? "-";
+  const podpisane = {
+    problem: o.problem, solution: o.solution, score: o.score, verdict: o.verdict,
+    output_sha256, tolerance: o.tolerance ?? 0.02, replaces,
+  };
+  return {
+    problem: o.problem, solution: o.solution, score: o.score, verdict: o.verdict,
+    output_sha256, replaces, output: o.output,
+    key: k.pub, sig: sigOf(k, sg.payload("verification", podpisane)),
+  };
+};
+
+// Kopia BIEZACEGO stanu drzewa roboczego. Rekordy w niej sa prawdziwe, wyprodukowane
+// przez serwer w tym przebiegu — mutujemy kopie i patrzymy, co lapie build.mjs.
+const snapshotDir = (label) => {
+  const dir = mkdtempSync(join(tmpdir(), `exit0-${label}-`));
+  for (const f of [...COPY, "index.json"]) cpSync(join(TREE, f), join(dir, f), { recursive: true });
+  trees.push(dir);
+  return dir;
+};
+
+// Rekord weryfikacji zbudowany od zera i PRAWDZIWIE podpisany, razem z plikiem
+// dowodu. Potrzebny tam, gdzie badana jest struktura lancucha: mutacja gotowego
+// rekordu psuje przy okazji vid i podpis, wiec nie dowodzi niczego o strukturze.
+const podpisanaWeryfikacja = (dir, id, sid, k, o) => {
+  const output_sha256 = sha256(o.output);
+  const podpisane = {
+    problem: id, solution: sid, score: o.score, verdict: o.verdict,
+    output_sha256, tolerance: o.tolerance ?? 0.02, replaces: o.replaces,
+  };
+  const evidence = sg.evidencePath(id, output_sha256);
+  mkdirSync(join(dir, "problems", "evidence"), { recursive: true });
+  writeFileSync(join(dir, evidence), o.output);
+  return {
+    vid: sg.verificationId(sid, k.pub, output_sha256, o.verdict, o.score, o.replaces),
+    verifier: sg.fingerprint(k.pub),
+    key: k.pub,
+    sig: sigOf(k, sg.payload("verification", podpisane)),
+    score: o.score,
+    verdict: o.verdict,
+    output_sha256,
+    replaces: o.replaces,
+    evidence,
+    at: "2026-08-23",
+  };
 };
 
 const probFields = (o = {}) => ({
@@ -362,8 +408,22 @@ if (gate.sign)
           score: 0.4207,
           verdict: "ok",
           output_sha256: "f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda",
+          tolerance: 0.02,
+          replaces: "-",
         }),
-        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda"
+        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|-"
+      );
+      assert.equal(
+        sg.payload("verification", {
+          problem: "0001",
+          solution: "e2c43b145970c1ef",
+          score: 0.4207,
+          verdict: "ok",
+          output_sha256: "f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda",
+          tolerance: 0.05,
+          replaces: "aaaaaaaaaaaaaaaa",
+        }),
+        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.05|aaaaaaaaaaaaaaaa"
       );
       assert.equal(
         sg.payload("problem", {
@@ -539,12 +599,26 @@ if (gate.sign)
         );
     });
 
-    // Na tym wlasnie stoi decyzja o `sameKey` (sign.mjs): przy kluczu, na ktorym
-    // keyId rzuca, predykat wraca do porownania NAPISOW zamiast postaci kanonicznej.
-    // Jest to nieszkodliwe wylacznie dlatego, ze taki klucz nigdy nie uniesie
-    // poprawnego podpisu — check() idzie przez b64ToPub, a ten wola keyId.
-    // Gdyby ktos rozluznil b64ToPub, obejscie wariantem stalo by sie osiagalne,
-    // a zadne inne asercje by tego nie zobaczyly.
+    // D3: predykat samoweryfikacji dawniej WRACAL do porownania napisow, gdy keyId
+    // rzucil. Bylo to nieszkodliwe wylacznie dlatego, ze serwer odrzucal
+    // niekanoniczny klucz wczesniej — czyli niezmiennik 3 trzymal sie na cudzej
+    // bramce. Teraz klucz nie do odczytania jest nazwanym 400, nie cicha zamiana
+    // porownania kanonicznego na porownanie napisow.
+    test("klucz nie do odczytania to 400 z checkVerification, nigdy wyjatek (D3)", () => {
+      const dobry = mkKey();
+      const p = { acceptance: { tolerance: 0.02 } };
+      for (const zly of ["AAAA", "", "!!!!", null, 7, Buffer.alloc(31).toString("base64")]) {
+        const zWeryfikatora = sg.checkVerification(p, { key: dobry.pub, score: 0.42 }, { key: zly, score: 0.42, verdict: "ok" });
+        assert.equal(zWeryfikatora?.code, 400, `klucz weryfikatora ${JSON.stringify(zly)} ma dac 400, jest ${JSON.stringify(zWeryfikatora)}`);
+        const zRozwiazania = sg.checkVerification(p, { key: zly, score: 0.42 }, { key: dobry.pub, score: 0.42, verdict: "ok" });
+        assert.equal(zRozwiazania?.code, 400, `klucz rozwiazania ${JSON.stringify(zly)} ma dac 400, jest ${JSON.stringify(zRozwiazania)}`);
+      }
+      // dwa rozne nieczytelne klucze nie moga sie "zgodzic" przez rownosc napisow
+      assert.equal(sg.checkVerification(p, { key: "AAAA", score: 0.42 }, { key: "AAAA", score: 0.42, verdict: "ok" })?.code, 400);
+    });
+
+    // check() musi byc falszem dla takiego klucza niezaleznie od powyzszego:
+    // gdyby ktos rozluznil b64ToPub, zaden inny test by tego nie zobaczyl.
     test("klucz, na ktorym keyId rzuca, nigdy nie uniesie podpisu", () => {
       const k = mkKey();
       const msg = "cokolwiek";
@@ -960,19 +1034,90 @@ if (gate.server)
       assert.equal(build(TREE, "--check").code, 0);
     });
 
-    test("ten sam klucz moze poprawic swoj werdykt — liczy sie ostatni wpis", async () => {
+    // D1: korekta wlasnego werdyktu jest OGNIWEM, nie dopiskiem na koncu tablicy.
+    // Przed ta zmiana liczyl sie ostatni rekord w pliku, wiec przestawienie dwoch
+    // poprawnie podpisanych rekordow w pull requescie zmienialo status problemu,
+    // a --check zostawal zielony, bo kazdy rekord z osobna byl w porzadku.
+    test("ten sam klucz moze poprawic swoj werdykt — korekta nazywa wpis, ktory zastepuje", async () => {
       const P = await newProblem(SRV, { title: "Problem pod korekte werdyktu" });
       const kB = mkKey();
       const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/korekta", score: 0.42 }));
       is(s, 201, "rozwiazanie pod korekte");
-      is(await post(SRV, "verification", verBody(kB, { problem: P.id, solution: s.json.sid, score: 0.4207, verdict: "ok", output: "raz\n" })), 201, "ok");
-      is(await post(SRV, "verification", verBody(kB, { problem: P.id, solution: s.json.sid, score: 0.9, verdict: "mismatch", output: "dwa\n" })), 201, "korekta tym samym kluczem");
+      const v1 = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: s.json.sid, score: 0.4207, verdict: "ok", output: "raz\n" }));
+      is(v1, 201, "ok");
+
+      const bezReplaces = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: s.json.sid, score: 0.9, verdict: "mismatch", output: "dwa\n" }));
+      is(bezReplaces, 409, "korekta bez replaces musi nazwac wlasny werdykt, ktory podmienia");
+      assert.equal(bezReplaces.json?.replaces, v1.json.vid, "409 ma podac vid do podpisania");
+
+      is(
+        await post(SRV, "verification", verBody(kB, { problem: P.id, solution: s.json.sid, score: 0.9, verdict: "mismatch", output: "dwa\n", replaces: v1.json.vid })),
+        201,
+        "korekta tym samym kluczem"
+      );
       const sol = problemAt(TREE, P.id).solutions.find((x) => x.sid === s.json.sid);
       assert.equal(sol.verifications.length, 2, "oba wpisy zostaja na dysku");
-      assert.equal(sol.verified, false, "liczy sie OSTATNI wpis danego klucza");
+      assert.equal(sol.verified, false, "liczy sie GLOWA lancucha danego klucza");
       assert.equal(sol.disputed, true);
       assert.equal(sol.settled, false);
       assert.equal(problemAt(TREE, P.id).status, "in-progress");
+
+      // Wlasciwa teza D1: kolejnosc rekordow w pliku przestala cokolwiek znaczyc.
+      // PRZED zmiana ten sam ruch przewracal verified z false na true, a --check
+      // zostawal zielony, bo kazdy rekord z osobna byl poprawnie podpisany.
+      const dir = snapshotDir("chain-order");
+      const f = join(dir, "problems", problemName(dir, P.id));
+      const p = JSON.parse(readFileSync(f, "utf8"));
+      p.solutions.find((x) => x.sid === s.json.sid).verifications.reverse();
+      writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+      // Pelny przebieg, nie --check: przestawienie zmienia kolejnosc w index.json,
+      // wiec --check zglosilby rozjazd pliku. Pytanie brzmi, czy zmienia STAN.
+      const r = build(dir);
+      assert.equal(r.code, 0, `przestawienie poprawnych rekordow ma byc bez znaczenia, a nie bledem: ${r.err || r.out}`);
+      const wynik = JSON.parse(readFileSync(f, "utf8")).solutions.find((x) => x.sid === s.json.sid);
+      assert.equal(wynik.verified, false, "po przestawieniu rekordow werdykt MUSI zostac ten sam (D1)");
+      assert.equal(wynik.disputed, true);
+      assert.equal(wynik.settled, false);
+      assert.equal(JSON.parse(readFileSync(f, "utf8")).status, "in-progress", "przestawienie rekordow nie ma prawa ruszyc statusu problemu");
+    });
+
+    // Mutacja samego pola `replaces` w gotowym rekordzie NIE sprawdza kontroli
+    // lancucha: replaces wchodzi i do vid, i do podpisu, wiec taki plik padlby
+    // na jednym i drugim, zanim ktokolwiek spojrzalby na strukture. Dlatego
+    // rekordy ponizej sa budowane od zera i PRAWDZIWIE podpisane — psuja
+    // wylacznie pozycje w lancuchu.
+    //
+    // Petli w lancuchu nie da sie tu zbudowac i nie jest to przeoczenie: vid
+    // liczy sie z replaces, wiec zamkniecie cyklu wymagaloby punktu stalego
+    // sha256. Struktura wyklucza ten przypadek mocniej niz jakikolwiek test.
+    test("lancuch werdyktow: obce ogniwo, drugi korzen i widelec nie przechodza (D1)", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod lancuch werdyktow" });
+      const kB = mkKey();
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/lancuch", score: 0.42 }));
+      is(s, 201, "rozwiazanie pod lancuch");
+      const sid = s.json.sid;
+      const v1 = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: sid, score: 0.42, verdict: "ok", output: "l1\n" }));
+      is(v1, 201, "pierwszy werdykt");
+
+      // Kontrola pozytywna jest w tescie o korekcie: JEDEN rekord za v1 to
+      // poprawny lancuch. Ponizej sa trzy ksztalty, ktore poprawne nie sa.
+      for (const [label, doklejki, wzorzec] of [
+        ["obce ogniwo", ["f".repeat(16)], /no such record/],
+        ["drugi korzen", ["-"], /more than one record/],
+        ["widelec", [v1.json.vid, v1.json.vid], /two records replace the same/],
+      ]) {
+        const dir = snapshotDir(`chain-${label.split(" ")[0]}`);
+        const f = join(dir, "problems", problemName(dir, P.id));
+        const p = JSON.parse(readFileSync(f, "utf8"));
+        const cel = p.solutions.find((x) => x.sid === sid).verifications;
+        doklejki.forEach((replaces, n) =>
+          cel.push(podpisanaWeryfikacja(dir, P.id, sid, kB, { score: 0.9 + n, verdict: "mismatch", output: `${label}-${n}\n`, replaces }))
+        );
+        writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+        const r = build(dir, "--check");
+        assert.notEqual(r.code, 0, `${label}: uszkodzony lancuch werdyktow przeszedl walidacje (D1)`);
+        assert.match(r.err + r.out, wzorzec, `${label}: build padl, ale nie na lancuchu — to nie dowodzi niczego`);
+      }
     });
 
     test("ponowne zgloszenie podmienia wpis w miejscu i gubi stare weryfikacje", async () => {
@@ -1192,6 +1337,37 @@ if (gate.server)
         .join("\n");
       assert.ok(stan.includes("127.0.0.1"), ".state nie zna adresu klienta — licznik IP nie dziala");
       assert.ok(!stan.includes("::ffff:"), "adres v4-mapped tworzy osobny kubelek, wiec cap jest darmowy (finding 26)");
+      await stop(srv, "SIGKILL");
+    });
+
+    // D10: proba odrzucona z winy KLIENTA kosztuje adres proba i tak ma zostac —
+    // inaczej zalewanie smieciem jest darmowe. Ale awaria po stronie serwera nie
+    // jest wina klienta: przed ta zmiana jedna awaria wypalala dobowy budzet
+    // kazdemu, kto odpytywal, i po powrocie uslugi nie mial juz czym pisac.
+    test("budzet adresu nie placi za awarie serwera, placi za wlasne bledy (D10)", async () => {
+      const dir = newTree("zwrot-limitu");
+      writeFileSync(join(dir, "problems", "0002-obcy.json"), "{}\n"); // brudne drzewo -> tryb tylko do odczytu
+      const srv = await startServer(dir, { IP_CAP: "5" });
+      assert.ok(srv.port, srv.why);
+      const zostalo = async () => (await hit(srv, { path: "/api/pulse" })).json?.limits?.attempts_left;
+
+      assert.equal(await zostalo(), 5, "puls nie podaje budzetu adresu — spalenie go widac dopiero, gdy sie skonczy");
+      const awaria = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/zwrot", score: 0.42 }));
+      is(awaria, 503, "zapis w trybie tylko do odczytu");
+      assert.equal(await zostalo(), 5, "adres zaplacil za awarie, na ktora nie ma wplywu (D10)");
+
+      is(await post(srv, "solution", { problem: "0001" }), 503, "niepodpisane w trybie tylko do odczytu tez konczy sie 503");
+      assert.equal(await zostalo(), 5, "kolejna proba w czasie awarii tez ma byc darmowa");
+      await stop(srv, "SIGKILL");
+    });
+
+    test("budzet adresu placi za wlasne bledy (kontrola negatywna do D10)", async () => {
+      const srv = await startServer(newTree("zwrot-kontrola"), { IP_CAP: "5" });
+      assert.ok(srv.port, srv.why);
+      const zostalo = async () => (await hit(srv, { path: "/api/pulse" })).json?.limits?.attempts_left;
+      assert.equal(await zostalo(), 5);
+      is(await post(srv, "solution", { problem: "0001" }), 401, "niepodpisany zapis");
+      assert.equal(await zostalo(), 4, "odrzucona proba z winy klienta MUSI kosztowac adres, inaczej zalew jest darmowy");
       await stop(srv, "SIGKILL");
     });
 
@@ -1761,12 +1937,7 @@ if (gate.server)
   describe("walidator (build.mjs)", () => {
     // migawka DZIALAJACEGO rejestru: rekordy sa prawdziwe, wyprodukowane
     // przez serwer. Mutujemy je i patrzymy, czy build.mjs to lapie.
-    const snap = (label) => {
-      const dir = mkdtempSync(join(tmpdir(), `exit0-${label}-`));
-      for (const f of [...COPY, "index.json"]) cpSync(join(TREE, f), join(dir, f), { recursive: true });
-      trees.push(dir);
-      return dir;
-    };
+    const snap = snapshotDir;
     const patch = (dir, id, fn) => {
       const f = join(dir, "problems", problemName(dir, id));
       const p = JSON.parse(readFileSync(f, "utf8"));
@@ -1812,6 +1983,7 @@ if (gate.server)
           score: p.solutions[0].score,
           verdict: "ok",
           output_sha256: sha256("nic"),
+          replaces: "-",
           evidence: sg.evidencePath(p.id, sha256("nic")),
           at: "2026-08-23",
         });
@@ -1862,6 +2034,23 @@ if (gate.server)
       });
       assert.ok(zweryfikowane, "migawka bez weryfikacji nie sprawdzi niezmiennosci");
       assert.notEqual(build(b, "--check").code, 0, "tolerancje zmieniono wstecz przy istniejacych weryfikacjach (finding 36)");
+    });
+
+    // D4: kontrola z HEAD nie dziala tam, gdzie zmiana JEST w HEAD — czyli
+    // w pull requescie. Migawka nie ma wlasnego gita, wiec `fromHead` milczy
+    // i zostaje sam podpis: kazdy weryfikator podpisuje pasmo, w ktorym sadzil,
+    // wiec przesuniecie pasma lamie jego podpis w kazdym klonie, bez historii.
+    test("przesuniete pasmo lamie podpisy weryfikatorow takze bez historii gita (D4)", () => {
+      const dir = snapshotDir("snap-tol-bez-gita");
+      assert.ok(!existsSync(join(dir, ".git")), "migawka z gitem nie sprawdzi sciezki pull requesta");
+      const f = join(dir, "problems", problemName(dir, "0001"));
+      const p = JSON.parse(readFileSync(f, "utf8"));
+      assert.ok(p.solutions.some((s) => s.verifications.length), "migawka bez weryfikacji nie sprawdzi niczego");
+      p.acceptance.tolerance = 0.3;
+      writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
+      const r = build(dir, "--check");
+      assert.notEqual(r.code, 0, "pasmo przesunieto pod gotowymi werdyktami i nikt tego nie zauwazyl (D4)");
+      assert.match(r.err + r.out, /signature does not match/, "build padl, ale nie na podpisie weryfikatora — to nie dowodzi niczego");
     });
 
     test("schema z nieobslugiwanym slowem kluczowym psuje build, nie jest ignorowana", () => {

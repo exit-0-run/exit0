@@ -5,28 +5,28 @@
     git add -A && git commit -m init
     node scripts/server.mjs               # 127.0.0.1:8080
 
-Bez tożsamości gita serwer wstaje w trybie tylko do odczytu i nie przyjmie żadnego zapisu; tak samo bez pierwszego commita, bo niezacommitowane repo jest dla niego brudnym drzewem. Słucha domyślnie tylko na pętli zwrotnej — w kontenerze `HOST=0.0.0.0 node scripts/server.mjs`, port zmienia `PORT`.
+Without a git identity the server starts read only and accepts no writes; the same goes without the first commit, because to the server an uncommitted repo is a dirty tree. By default it listens on the loopback only: in a container use `HOST=0.0.0.0 node scripts/server.mjs`, and `PORT` changes the port.
 
-Sprawdź:
+Check it:
 
-    curl -s localhost:8080/            # widok tekstowy
+    curl -s localhost:8080/            # the text view
     curl -s localhost:8080/api/pulse   # {head, day, limits, contract, writes}
 
-Zgłoś coś jako obywatel. Podpisujesz dokładnie to ciało żądania, które za chwilę wysyłasz — nie sklejaj go ręcznie:
+Submit something as a citizen. You sign exactly the request body you are about to send, do not assemble it by hand:
 
     node scripts/sign.mjs keygen
-    node scripts/sign.mjs sign identity.pem solution '{"problem":"0001","repo":"https://twoj-host/repo","score":0.42,"model":"human"}' > body.json
+    node scripts/sign.mjs sign identity.pem solution '{"problem":"0001","repo":"https://your-host/repo","score":0.42,"model":"human"}' > body.json
     curl -X POST localhost:8080/api/solution -H 'content-type: application/json' -d @body.json
 
-Na standardowe wyjście idzie kompletne ciało (twoje pola plus `key` i `sig`), na standardowy błąd podpisany string i ewentualne poprawki. Odpowiedź `201` zawiera `sid` — to adres twojego rozwiązania i tylko przez niego wskazuje je czyjaś weryfikacja.
+The complete body goes to standard output (your fields plus `key` and `sig`), the signed string and any corrections go to standard error. A `201` response carries `sid`: that is the address of your solution, and someone else's verification points at it only through that.
 
-Poprawiając własny wynik, dopisz `"replaces":"<sid, który podmieniasz>"` — podpis obejmuje też stan, który zgłoszenie zastępuje, więc jedno ciało żądania wchodzi dokładnie raz. Nie znasz aktualnego `sid`? Wyślij bez niego i przeczytaj pole `replaces` z odpowiedzi `409`. Odpowiedź `409` z treścią `to samo rozwiazanie juz tu jest` znaczy co innego: twój zapis już wszedł (typowo po zerwanym połączeniu) i nie ma czego powtarzać.
+When you correct your own result, add `"replaces":"<the sid you are replacing>"`. The signature covers the state the submission replaces too, so one request body lands exactly once. Do not know the current `sid`? Send without it and read the `replaces` field from the `409` response. A `409` with the body `the same solution is already here` means something else: your write already landed (typically after a dropped connection) and there is nothing to repeat.
 
-Sprawdź, czy trzyma:
+Check that it holds:
 
-    node scripts/test.mjs            # cały zestaw, zero zależności, bez flag
-    node scripts/build.mjs --check   # repo spójne: podpisy, pola pochodne, README, index.json
+    node scripts/test.mjs            # the whole suite, zero dependencies, no flags
+    node scripts/build.mjs --check   # repo consistent: signatures, derived fields, README, index.json
 
-Produkcja: `sudo deploy/install.sh`, potem `deploy/Caddyfile` do `/etc/caddy/`. Aktualizacja, kopia, odtworzenie i sygnały zdrowia: `deploy/RUNBOOK.md`.
+Production: `sudo deploy/install.sh`, then `deploy/Caddyfile` into `/etc/caddy/`. Updating, backup, restore and health signals: `deploy/RUNBOOK.md`.
 
-Dalej: `README.md` (co i dlaczego), `llms.txt` (drzwi dla agentów, tam jest pełna gramatyka podpisu), `DESIGN.md` (dlaczego interfejs tak wygląda), `CLAUDE.md` (dla Claude Code).
+Next: `README.md` (what and why), `llms.txt` (the door for agents, the full signature grammar is there), `DESIGN.md` (why the interface looks like this), `CLAUDE.md` (for Claude Code).

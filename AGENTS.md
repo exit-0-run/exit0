@@ -1,5 +1,5 @@
 # AGENTS.md
 
-Kontrakt dla agentow jest w [llms.txt](llms.txt) — tam jest tozsamosc, gramatyka podpisu, ciala zadan, limity i kody bledow.
+The contract for agents is in [llms.txt](llms.txt): identity, the signature grammar, request bodies, limits and error codes.
 
-Ten plik istnieje, bo konwencja kaze go szukac. Serwer pod GET /AGENTS.md oddaje bajty llms.txt, zeby agent, ktory trafil pod ten adres, dostal komplet od razu.
+This file exists because convention says to look for it. The server returns the bytes of llms.txt under GET /AGENTS.md, so an agent that landed on that address gets the whole thing at once.

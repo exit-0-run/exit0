@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Stawia rejestr na czystym Debianie/Ubuntu. Odpalane jako root: sudo deploy/install.sh
-# Drugie uruchomienie to aktualizacja: podmienia KOD, nie rusza danych rejestru.
-# Do nadpisania (druga instancja na tej samej maszynie albo test):
+# Brings the registry up on a clean Debian/Ubuntu. Run as root: sudo deploy/install.sh
+# A second run is an update: it replaces the CODE, it does not touch registry data.
+# Overridable (a second instance on the same machine, or a test):
 #   DIR UNIT_DIR SVC_USER SVC_GROUP PORT
 set -euo pipefail
 
@@ -14,82 +14,82 @@ PORT="${PORT:-8080}"
 UNIT=exit0.service
 
 die() { echo "install: $*" >&2; exit 1; }
-trap 'echo "install: PRZERWANE — deploy/RUNBOOK.md, sekcja Awarie. Usluga moze byc zatrzymana." >&2' ERR
+trap 'echo "install: ABORTED. deploy/RUNBOOK.md, section Failures. The service may be stopped." >&2' ERR
 
-# --- 1. czego wymagamy od hosta ---
-command -v git       >/dev/null || die "brak git"
-command -v systemctl >/dev/null || die "brak systemd (systemctl)"
-NODE=$(command -v node) || die "brak node — zainstaluj Node 20+"
-case "$NODE" in *[!a-zA-Z0-9_/.-]*) die "sciezka do node ma znak, ktorego nie wstawie do unitu: $NODE" ;; esac
+# --- 1. what we require from the host ---
+command -v git       >/dev/null || die "git missing"
+command -v systemctl >/dev/null || die "systemd missing (systemctl)"
+NODE=$(command -v node) || die "node missing: install Node 20+"
+case "$NODE" in *[!a-zA-Z0-9_/.-]*) die "the node path has a character I will not put into the unit: $NODE" ;; esac
 NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
-[ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null || die "node $("$NODE" -v) — wymagane 20+"
+[ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null || die "node $("$NODE" -v): 20+ required"
 
-# --- 2. komplet zrodla; kopia bez ktoregos z tych plikow to martwa usluga ---
+# --- 2. complete source; a copy missing any of these files is a dead service ---
 for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore .gitattributes \
          problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md; do
-  [ -e "$SRC/$f" ] || die "brak $f w $SRC"
+  [ -e "$SRC/$f" ] || die "$f missing in $SRC"
 done
 
-# --- 3. katalog, prawa, uzytkownik ---
-mkdir -p "$DIR" 2>/dev/null || die "nie moge utworzyc $DIR — odpal jako root"
-[ -w "$DIR" ]      || die "brak prawa zapisu do $DIR — odpal jako root"
-DIR=$(cd "$DIR" && pwd)   # unit chce sciezki absolutnej, a porownanie ponizej dokladnej
-[ "$DIR" != "$SRC" ] || die "katalog uslugi nie moze byc katalogiem zrodlowym: krok 6 kasuje $DIR/scripts"
-[ -d "$UNIT_DIR" ] || die "brak katalogu $UNIT_DIR"
-[ -w "$UNIT_DIR" ] || die "brak prawa zapisu do $UNIT_DIR — odpal jako root"
+# --- 3. directory, permissions, user ---
+mkdir -p "$DIR" 2>/dev/null || die "cannot create $DIR: run as root"
+[ -w "$DIR" ]      || die "no write permission on $DIR: run as root"
+DIR=$(cd "$DIR" && pwd)   # the unit wants an absolute path, the comparison below an exact one
+[ "$DIR" != "$SRC" ] || die "the service directory cannot be the source directory: step 6 deletes $DIR/scripts"
+[ -d "$UNIT_DIR" ] || die "directory $UNIT_DIR missing"
+[ -w "$UNIT_DIR" ] || die "no write permission on $UNIT_DIR: run as root"
 
 id "$SVC_USER" >/dev/null 2>&1 || useradd --system -d "$DIR" -s /usr/sbin/nologin "$SVC_USER"
 
-# Po chownie ponizej katalog nalezy do uslugi, wiec root (ten skrypt, potem RUNBOOK)
-# dostalby od gita "dubious ownership". Wpis musi byc PRZED pierwsza komenda gita.
+# After the chown below the directory belongs to the service, so root (this script, then the
+# RUNBOOK) would get "dubious ownership" from git. The entry must come BEFORE the first git command.
 git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$DIR" \
   || git config --global --add safe.directory "$DIR"
 
-# --- 4. nie nadpisuj cudzej niedokonczonej roboty ---
-# Kontrola jest tylko do odczytu, wiec idzie PRZED zatrzymaniem uslugi: odmowa
-# instalacji nie ma prawa zostawic rejestru wylaczonego.
+# --- 4. do not overwrite somebody else's unfinished work ---
+# The check is read-only, so it comes BEFORE stopping the service: a refused
+# install has no right to leave the registry switched off.
 if [ -d "$DIR/.git" ] && [ -n "$(git -C "$DIR" status --porcelain)" ]; then
   git -C "$DIR" status --short >&2
-  die "$DIR ma niezacommitowane zmiany — rozwiaz recznie i powtorz (RUNBOOK: Awarie)"
+  die "$DIR has uncommitted changes: resolve them by hand and retry (RUNBOOK: Failures)"
 fi
 
-# --- 5. stop przed dotknieciem plikow ---
+# --- 5. stop before touching files ---
 if systemctl is-active --quiet "$UNIT" 2>/dev/null; then
-  echo "install: zatrzymuje $UNIT"
+  echo "install: stopping $UNIT"
   systemctl stop "$UNIT"
 fi
 
-# --- 6. kod i dokumenty: zawsze swieze ---
-# rm przed cp, zeby po starszej wersji nie zostal plik, ktorego juz nie ma w zrodle.
-# .gitattributes jest tu kodem, nie preferencja: bez niego git przepisuje konce
-# linii w dowodach i zacommitowany blob przestaje odpowiadac swojej sumie sha256.
+# --- 6. code and documents: always fresh ---
+# rm before cp, so no file dropped from the source survives from an older version.
+# .gitattributes is code here, not a preference: without it git rewrites line
+# endings in evidence and the committed blob stops matching its sha256.
 rm -rf "$DIR/scripts" "$DIR/deploy"
 cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/llms.txt" "$SRC/.gitignore" "$SRC/.gitattributes" "$DIR/"
 for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md; do
-  if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$DIR/"; else echo "install: pomijam brakujacy dokument $f" >&2; fi
+  if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$DIR/"; else echo "install: skipping missing document $f" >&2; fi
 done
-# _schema.json to kontrakt plikow, czyli kod — build.mjs go czyta i musi isc ze skryptami.
+# _schema.json is the file contract, so it is code: build.mjs reads it and it must ship with the scripts.
 mkdir -p "$DIR/problems"
 cp "$SRC/problems/_schema.json" "$DIR/problems/"
 
-# --- 7. dane rejestru: tylko zasiew, nigdy nadpisanie ---
-# README.md i index.json wypelnia build.mjs. Skopiowane ze zrodla zostawialyby brudne
-# drzewo, a brudne drzewo to dla serwera tryb read-only.
+# --- 7. registry data: seed only, never overwrite ---
+# build.mjs fills in README.md and index.json. Copied from the source they would leave a dirty
+# tree, and a dirty tree means read-only mode to the server.
 for f in "$SRC"/problems/[0-9]*.json; do
   [ -e "$f" ] || continue
   [ -e "$DIR/problems/$(basename "$f")" ] || cp "$f" "$DIR/problems/"
 done
 mkdir -p "$DIR/problems/evidence"
 [ -f "$DIR/problems/evidence/.gitkeep" ] || : > "$DIR/problems/evidence/.gitkeep"
-# Dowody sa adresowane suma sha256, wiec sa niezmienne — kopiujemy brakujace, zeby
-# instalacja z pelnego klonu nie zostawila weryfikacji bez surowego outputu.
+# Evidence is addressed by sha256, so it is immutable: we copy what is missing, so an
+# install from a full clone does not leave a verification without its raw output.
 for f in "$SRC"/problems/evidence/*.txt; do
   [ -e "$f" ] || continue
   [ -e "$DIR/problems/evidence/$(basename "$f")" ] || cp "$f" "$DIR/problems/evidence/"
 done
 [ -f "$DIR/README.md" ] || cp "$SRC/README.md" "$DIR/"
 
-# --- 8. build i commit; po tym kroku drzewo MUSI byc czyste ---
+# --- 8. build and commit; after this step the tree MUST be clean ---
 cd "$DIR"
 "$NODE" scripts/build.mjs
 [ -d .git ] || git init -q
@@ -100,13 +100,13 @@ if [ -n "$(git status --porcelain)" ]; then
   git commit -qm "deploy $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 "$NODE" scripts/build.mjs --check
-[ -z "$(git status --porcelain)" ] || die "drzewo $DIR zostalo brudne — serwer wszedlby w tryb read-only"
+[ -z "$(git status --porcelain)" ] || die "tree $DIR came out dirty: the server would enter read-only mode"
 
 chown -R "$SVC_USER:$SVC_GROUP" "$DIR"
 
-# --- 9. unit renderowany pod ten host ---
-# Serwer wola `node` i `git` po nazwie, wiec katalog wykrytego node musi byc w PATH
-# jednostki. Bez tego odczyty dzialaja, a kazdy zapis pada na ENOENT.
+# --- 9. unit rendered for this host ---
+# The server calls `node` and `git` by name, so the directory of the detected node must be in
+# the unit's PATH. Without it reads work and every write dies on ENOENT.
 NODE_DIR=$(dirname "$NODE")
 BASE_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 case ":$BASE_PATH:" in
@@ -128,34 +128,34 @@ mv "$UNIT_DIR/.$UNIT.new" "$UNIT_DIR/$UNIT"
 systemctl daemon-reload
 systemctl enable --now "$UNIT"
 
-# --- 10. nie mow "stoi", zanim nie odpowie ---
+# --- 10. do not say "up" before it answers ---
 "$NODE" -e '
 const url = "http://127.0.0.1:" + process.argv[1] + "/api/pulse";
 const fail = (m) => { console.error("install: " + m); process.exit(1); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const main = async () => {
-  let last = "brak polaczenia";
+  let last = "no connection";
   for (let i = 0; i < 20; i++) {
     let res;
     try { res = await fetch(url); } catch (e) { last = e.message; await wait(500); continue; }
     const body = await res.text();
-    if (!res.ok) fail("pulse odpowiedzial HTTP " + res.status + ": " + body.slice(0, 200));
+    if (!res.ok) fail("pulse answered HTTP " + res.status + ": " + body.slice(0, 200));
     let j;
-    try { j = JSON.parse(body); } catch { fail("pulse nie jest JSON-em: " + body.slice(0, 200)); }
-    if (!j.head) fail("pulse bez pola head: " + body.slice(0, 200));
-    if (j.writes && j.writes !== "ok") fail("serwer w trybie read-only: " + (j.reason ?? "brak powodu"));
-    console.log("install: pulse OK, head=" + j.head + ", zapisy=" + (j.writes ?? "?"));
+    try { j = JSON.parse(body); } catch { fail("pulse is not JSON: " + body.slice(0, 200)); }
+    if (!j.head) fail("pulse has no head field: " + body.slice(0, 200));
+    if (j.writes && j.writes !== "ok") fail("server in read-only mode: " + (j.reason ?? "no reason given"));
+    console.log("install: pulse OK, head=" + j.head + ", writes=" + (j.writes ?? "?"));
     return;
   }
-  fail("serwer nie odpowiada na " + url + " (" + last + ")");
+  fail("server not answering at " + url + " (" + last + ")");
 };
 main();
-' "$PORT" || die "usluga wstala, ale nie odpowiada — journalctl -u $UNIT -n 50"
+' "$PORT" || die "service came up but does not answer: journalctl -u $UNIT -n 50"
 
 echo
-echo "install: gotowe. $DIR na porcie $PORT, jako $SVC_USER."
-echo "  stan:   systemctl status $UNIT"
-echo "  logi:   journalctl -u $UNIT -f"
-echo "  puls:   curl -s localhost:$PORT/api/pulse"
-echo "  TLS:    cp $DIR/deploy/Caddyfile /etc/caddy/Caddyfile, podmien domene, systemctl reload caddy"
-echo "  kopia, aktualizacja, awarie: $DIR/deploy/RUNBOOK.md"
+echo "install: done. $DIR on port $PORT, as $SVC_USER."
+echo "  state:  systemctl status $UNIT"
+echo "  logs:   journalctl -u $UNIT -f"
+echo "  pulse:  curl -s localhost:$PORT/api/pulse"
+echo "  TLS:    cp $DIR/deploy/Caddyfile /etc/caddy/Caddyfile, replace the domain, systemctl reload caddy"
+echo "  backup, update, failures: $DIR/deploy/RUNBOOK.md"

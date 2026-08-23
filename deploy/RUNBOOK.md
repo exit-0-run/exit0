@@ -46,17 +46,52 @@ and retry.
 
 ## Backup
 
-A backup is `git push --mirror`. First configure the remote once, by hand. The
-installer does not guess it:
+`deploy/backup.sh`, run **from another machine**. A copy on the same disk as the
+original is not a backup, so the script deliberately lives on the other side: it
+pulls, and the registry host holds no credentials for it and never writes anything
+outward.
 
-    # root's deploy key must have write access to the mirror
-    git -C /srv/exit0 remote add mirror git@your-host:you/exit0-backup.git
-    git -C /srv/exit0 push --mirror mirror     # first time by hand, so you see the error
+    deploy/backup.sh                                    # ssh://root@exit0.run/srv/exit0 -> ~/backups/exit0.git
+    deploy/backup.sh ssh://root@HOST/srv/exit0 /path/exit0.git
 
-Then cron:
+Every run also RESTORES the copy into a temporary directory and runs
+`build.mjs --check` over it. A copy nobody has restored is a claim, not a backup, and
+this way each run is a rehearsal of the restore below. The fetch is fast-forward only
+(no leading `+` in the refspec): if the history upstream was rewritten, the script
+fails loudly instead of quietly overwriting the last remaining copy of what was there.
+
+Schedule it wherever the copy lives. macOS, every 30 minutes:
+
+    # ~/Library/LaunchAgents/run.exit0.backup.plist, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/run.exit0.backup.plist
+    tail -f ~/backups/exit0-backup.log
+
+Linux:
 
     # /etc/cron.d/exit0-backup
+    */30 * * * * you /path/to/deploy/backup.sh || logger -t exit0 "backup failed"
+
+The host must be able to read the repository. It belongs to the service user, so a
+`root` shell needs the exception once (the installer adds it for the host itself):
+
+    git config --global --add safe.directory /srv/exit0/.git
+
+If instead you have a git remote with write access, the push direction also works and
+needs no second machine to be awake:
+
+    git -C /srv/exit0 remote add mirror git@your-host:you/exit0-backup.git
+    git -C /srv/exit0 push --mirror mirror
+    # /etc/cron.d/exit0-backup
     17 * * * * root git -C /srv/exit0 push --mirror mirror || logger -t exit0 "backup failed"
+
+It is the weaker of the two: a mirror push writes credentials onto the registry host,
+and anything that can take that host can then wipe the backup with the same key. Pull
+where you can.
+
+**A whole-VM snapshot from the hosting panel is not a backup of this registry.** It has
+the granularity of days, restoring it rolls back every other service on the machine,
+and nobody can `git clone` from it. Treat it as disaster recovery for the box, never as
+the copy of the registry.
 
 What we do **not** back up: `.state/` (daily counters and the lockfile, deliberately ephemeral,
 deleting them zeroes the limits) and `identity.pem`, which the server does not have at all.
@@ -129,6 +164,48 @@ When `reason` talks about a dirty tree, `/api/pulse` adds `"source": "HEAD"`, an
 view adds the line `view comes from HEAD`. That means reads **bypass the working tree**
 and report the state of the last commit: the tree may hold a write that is not in git,
 and by definition such a state does not exist (invariant 1).
+
+### Acceptance
+
+`deploy/acceptance.mjs` checks a DEPLOYED instance over HTTP, using only what that
+instance publishes: `/llms.txt` and `/sign.mjs`. `scripts/test.mjs` tests the code in
+this directory; this tests the promise, that a stranger holding nothing but the address
+can get a verified result in.
+
+    node deploy/acceptance.mjs                      # http://127.0.0.1:8080
+    node deploy/acceptance.mjs https://exit0.run    # a PUBLIC registry: it will write
+
+It writes one solution and several verifications under fresh keys, prints PASS or FAIL
+for each check with its evidence, and exits non-zero on any failure. Run it against a
+staging copy by default. Against the real registry it leaves real records, so undo them
+straight away with the revert commands it prints, and confirm the tree is clean
+afterwards, because a dirty tree stops writes for everybody.
+
+Run it after every deploy that touches the write path or the signature contract.
+
+### Watchdog
+
+`deploy/watch.sh`, installed by the installer as `exit0-watch.timer`, every 5 minutes.
+
+    systemctl list-timers exit0-watch.timer
+    journalctl -u exit0-watch -n 20 --no-pager
+    systemctl start exit0-watch.service      # run it now
+
+It watches `writes`, **not** `head`, and that is the entire reason it exists: with
+writes suspended the server keeps serving the last good index, so `head` looks
+perfectly normal while every POST has been answering 503 for hours. It also checks the
+unit, the cleanliness of the tree and free space.
+
+Exit codes: `0` healthy, `1` fault, `2` the registry did not answer at all. By default
+a fault only reaches journald. To reach a human, put a webhook in the unit:
+
+    systemctl edit exit0-watch.service
+    # [Service]
+    # Environment=EXIT0_ALERT_URL=https://...
+
+Pointing `EXIT0_URL` at the public name instead of `127.0.0.1` widens the check to
+DNS, TLS and the reverse proxy, at the cost of a false alarm whenever the box itself
+loses outbound network.
 
 ## Failures
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=exit0 registry watchdog, every 5 minutes
+Documentation=file:///srv/exit0/deploy/RUNBOOK.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Without this the whole fleet would ask at the same second after a reboot.
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

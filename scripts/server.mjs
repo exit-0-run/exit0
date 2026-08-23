@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
-  solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp,
+  solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead,
 } from "./sign.mjs";
 
 // Number() on an env var goes quiet in two ways and I measured both.
@@ -158,6 +158,28 @@ const chargeIp = (ip) => {
   db.used[ip] = used;
   writeState(IP_FILE, JSON.stringify(db));
   return { ok: used <= IP_CAP, used, cap: IP_CAP };
+};
+
+const peekIp = (ip) => {
+  const used = cnt(readCounter(IP_FILE).used[ip]);
+  return { used, cap: IP_CAP, left: Math.max(0, IP_CAP - used) };
+};
+
+// A rejected attempt costs the address its attempt, on purpose: without that,
+// flooding with unsigned junk is free. What the address must NOT pay for is a
+// rejection the client could do nothing about - the registry in read-only mode, a
+// full disk, an internal error. Before this, one outage drained the daily budget of
+// every polling client and they could not write once the service came back.
+// Deliberately silent on failure: a refund that fails must not turn a 503 about the
+// disk into a different 503 about the counter.
+const refundIp = (ip) => {
+  try {
+    const db = readCounter(IP_FILE);
+    const used = cnt(db.used[ip]);
+    if (used <= 0) return;
+    db.used[ip] = used - 1;
+    writeState(IP_FILE, JSON.stringify(db));
+  } catch {}
 };
 
 const quotaKey = (key, action) => `${fp32(key)}:${action}`;
@@ -761,7 +783,14 @@ const verification = (b) => {
   const p = readProblem(path);
   notDead(p);
   const out = evidenceBytes(b.output);
-  const f = { problem: p.id, solution: b.solution, score: b.score, verdict: b.verdict, output_sha256: b.output_sha256 };
+  // tolerance comes from the PROBLEM, never from the body: the verifier signs the
+  // band they judged under, and a client that signed a different one gets a 403
+  // carrying the exact payload the server expected, so the band is discoverable.
+  const f = {
+    problem: p.id, solution: b.solution, score: b.score, verdict: b.verdict,
+    output_sha256: b.output_sha256, tolerance: p.acceptance ? p.acceptance.tolerance : undefined,
+    replaces: b.replaces ?? "-",
+  };
   const msg = payload("verification", f);
   verifySig(b, msg, f);
   const outSha = sha(out);
@@ -775,9 +804,28 @@ const verification = (b) => {
   const err = checkVerification(p, sol, { key: b.key, score: f.score, verdict: f.verdict });
   if (err) throw bad(err.code, err.error);
 
-  const vid = verificationId(sol.sid, b.key, f.output_sha256, f.verdict, f.score);
+  const vid = verificationId(sol.sid, b.key, f.output_sha256, f.verdict, f.score, f.replaces);
   const list = Array.isArray(sol.verifications) ? sol.verifications : [];
   if (list.some((v) => v.vid === vid)) throw bad(409, "this same verification is already here", { info: { vid } });
+
+  // Correcting your own verdict is a new record that names the one it replaces, so
+  // the order of records in the file stops deciding anything. The order of the two
+  // checks matters for the same reason it does on the solution path: a body that
+  // already went in describes the PREVIOUS state, and it has to read as "already
+  // here", not as "sign with replaces X".
+  const chain = verdictHead(list, b.key);
+  if (chain.head === null)
+    throw bad(503, "the verdict chain of this key on this solution is inconsistent, an operator has to repair the file", {
+      info: { detail: chain.errors.map((e) => e.error).slice(0, 3) },
+    });
+  if (f.replaces !== chain.head)
+    throw bad(
+      409,
+      chain.head === "-"
+        ? 'you have not verified this solution yet, sign with "replaces":"-"'
+        : `your current verdict on this solution is ${chain.head}, sign the correction with "replaces":"${chain.head}"`,
+      { info: { replaces: chain.head } }
+    );
 
   // Evidence is content addressed. The same path with different bytes means
   // something is wrong with the sums, so we do not overwrite it.
@@ -788,7 +836,7 @@ const verification = (b) => {
   const verifier = fingerprint(b.key);
   list.push({
     vid, verifier, key: b.key, sig: b.sig, score: f.score, verdict: f.verdict,
-    output_sha256: f.output_sha256, evidence: ev, at: today(),
+    output_sha256: f.output_sha256, replaces: f.replaces, evidence: ev, at: today(),
   });
   sol.verifications = list;
 
@@ -910,11 +958,16 @@ const renderHtml = (idx) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>exit0</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>:root{color-scheme:dark}html{background:#000;color:#fff}pre{margin:1rem;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}</style>
+<style>:root{color-scheme:dark}html{background:#000;color:#fff}pre{margin:1rem;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}svg.mark{display:block;margin:1.5rem 1rem 0;height:52px;width:auto}</style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23000'/%3E%3Crect x='9' y='5' width='14' height='16' fill='%23fff'/%3E%3Crect x='9' y='24' width='14' height='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="alternate" type="application/json" href="/api/index.json">
 <link rel="help" href="/llms.txt">
-</head><body><pre>${esc(renderText(idx))}</pre></body></html>`;
+</head><body>
+<!-- The mark: a text cursor, block plus underscore, faithful proportions from
+     exit0-mark.png. Inline, so the "no external resources" invariant stands. Decorative:
+     the line right below the mark is the wordmark, in text, for everyone. -->
+<svg class="mark" viewBox="0 0 179 292" aria-hidden="true" fill="currentColor"><rect width="179" height="225"/><rect y="278" width="179" height="14"/></svg>
+<pre>${esc(renderText(idx))}</pre></body></html>`;
 
 // --- HTTP ---
 
@@ -988,7 +1041,12 @@ const readRoute = (req, res, path) => {
     return json(req, res, 200, {
       head: headOf(readIndex()),
       day: today(),
-      limits: { ...LIMITS, per_address: IP_CAP },
+      // attempts_left is about the address ASKING, and reading it costs nothing.
+      // Without it the only way to learn the address budget was to run out of it,
+      // which is exactly what an operator debugging with curl does not want to find
+      // out at attempt 60. Nothing per-key is exposed here: a key is public, so that
+      // would be someone else's counter.
+      limits: { ...LIMITS, per_address: IP_CAP, attempts_left: peekIp(clientIp(req)).left },
       contract: CONTRACT,
       writes: readonly ? "readonly" : "ok",
       ...(readonly ? { reason: readonly.reason, fix: readonly.fix, ...(readonly.tainted ? { source: "HEAD" } : {}) } : {}),
@@ -1069,8 +1127,18 @@ const clientIp = (req) => {
 // that went in; otherwise anyone can burn someone else's limit, because public
 // keys are public here by definition.
 const doWrite = (req, action, raw) => {
-  const ipq = chargeIp(clientIp(req));
+  const ip = clientIp(req);
+  const ipq = chargeIp(ip);
   if (!ipq.ok) throw bad(429, `daily limit for this address: ${ipq.cap} attempts (rejected ones count too)`, limitInfo(ipq, { limit: "per_address" }));
+  try {
+    return doWriteCharged(req, action, raw);
+  } catch (e) {
+    if (Number(e?.code) >= 500) refundIp(ip);
+    throw e;
+  }
+};
+
+const doWriteCharged = (req, action, raw) => {
   if (freshHealth(false)) guard();
 
   let b;

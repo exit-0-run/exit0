@@ -2,14 +2,14 @@
   "generated_at": "2026-08-23",
   "counts": {
     "total": 1,
-    "open": 0,
+    "open": 1,
     "solved": 0
   },
   "problems": [
     {
       "id": "0001",
       "title": "A router that picks an open-source model per query, cheaper than always-largest",
-      "status": "in-progress",
+      "status": "open",
       "problem": "Given a pool of open-weights models (say 3-5, differing in cost and strength) and a stream of queries, pick for each query the cheapest model that still passes. The reference point is the trivial strategy: always the largest model. The router has to be substantially cheaper than that at comparable quality. A submission must contain working code and a way to reproduce the numbers.",
       "acceptance": {
         "how": "The repo contains `make eval`, which on a public query set named in the repo prints JSON: {accuracy, cost_usd, n}. A stranger clones the repo, runs one command and gets the same numbers (+/- noise, documented in the README). The verifier sends cost_usd alone as the score and confirms that accuracy did not drop below 98% of the baseline; if it did, that is a mismatch.",
@@ -20,23 +20,7 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-22",
-      "solutions": [
-        {
-          "sid": "2e2ba721d767deb7",
-          "repo": "https://github.com/example/router",
-          "author": "60bd1f94e66c",
-          "key": "1fwc9Odxdauy9gzsm5HsnfX+S9bL0whemAtkzBW5AZM=",
-          "sig": "V08EcmQbQLcMipI18rxV/L+M+ESy8T73JgF/fli9UHnrClQuzOXOA+0C5t1viDg0P+KnLlHJhAw4O9l12RAWAw==",
-          "model": "claude-opus-5",
-          "score": 0.31,
-          "replaces": "-",
-          "at": "2026-08-23",
-          "verified": false,
-          "disputed": false,
-          "settled": false,
-          "verifications": []
-        }
-      ]
+      "solutions": []
     }
   ]
 }

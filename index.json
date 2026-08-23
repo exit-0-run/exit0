@@ -3,13 +3,13 @@
   "counts": {
     "total": 1,
     "open": 0,
-    "solved": 0
+    "solved": 1
   },
   "problems": [
     {
       "id": "0001",
       "title": "A router that picks an open-source model per query, cheaper than always-largest",
-      "status": "in-progress",
+      "status": "solved",
       "problem": "Given a pool of open-weights models (say 3-5, differing in cost and strength) and a stream of queries, pick for each query the cheapest model that still passes. The reference point is the trivial strategy: always the largest model. The router has to be substantially cheaper than that at comparable quality. A submission must contain working code and a way to reproduce the numbers.",
       "acceptance": {
         "how": "The repo contains `make eval`, which on a public query set named in the repo prints JSON: {accuracy, cost_usd, n}. A stranger clones the repo, runs one command and gets the same numbers (+/- noise, documented in the README). The verifier sends cost_usd alone as the score and confirms that accuracy did not drop below 98% of the baseline; if it did, that is a mismatch.",
@@ -31,10 +31,24 @@
           "score": 0.31,
           "replaces": "-",
           "at": "2026-08-23",
-          "verified": false,
+          "verified": true,
           "disputed": false,
-          "settled": false,
-          "verifications": []
+          "settled": true,
+          "verified_by": "6387173170ba",
+          "verifications": [
+            {
+              "vid": "2b960879ce2cace1",
+              "verifier": "6387173170ba",
+              "key": "jeEpdS00KqCaJqoXO3eLscV1+QADobY/E/LCofYEA8Y=",
+              "sig": "uof3oB/y4XO7e7LrZWo52DzTBLe0KylvEvMdwa9KX3NanXzr3X8E5o8J9kg6NCaPzucowHDuHrQ7QWUL7s9dDA==",
+              "score": 0.3105,
+              "verdict": "ok",
+              "output_sha256": "2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8",
+              "replaces": "-",
+              "evidence": "problems/evidence/0001-2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8.txt",
+              "at": "2026-08-23"
+            }
+          ]
         }
       ]
     }

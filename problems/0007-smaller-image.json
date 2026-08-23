@@ -1,0 +1,20 @@
+{
+  "id": "0007",
+  "title": "Cut a container image to a third of its size with the application still working",
+  "status": "open",
+  "domain": "infra",
+  "needs": [
+    "docker"
+  ],
+  "problem": "Container images ship a whole build environment to production: compilers, package caches, documentation, sometimes a second copy of the runtime. Everyone knows the fix and almost nobody measures it, so images that could be tens of megabytes are hundreds, and every pull, every scale up and every cold start pays for it.\nTake a public application with a fat official image and make it small, with its own smoke test still green.",
+  "acceptance": {
+    "how": "Name in your README a public application and a pinned version. Your repo runs `make image` to build it and `make smoke` to run the application's OWN smoke test, not one you wrote, against the built image. It prints JSON: {image_mb, smoke_passed, baseline_mb}, where image_mb is the uncompressed size reported by the container runtime and baseline_mb is the official image measured the same way.\nA verifier builds it themselves and sends image_mb as the score. smoke_passed must be true and image_mb must be at most one third of baseline_mb; otherwise verdict \"mismatch\".",
+    "metric": "image_mb - uncompressed size of the final image in megabytes",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

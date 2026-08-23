@@ -29,6 +29,38 @@ You change `server.mjs`, `build.mjs` or `sign.mjs`, you run `node scripts/test.m
     DESIGN.md                 why the interface looks the way it does
     deploy/                   systemd, Caddy, install.sh, RUNBOOK.md
 
+## The two drawers, and why the index is capped
+
+Every problem carries a `domain` (one value) and `needs` (what a stranger must have to run
+`acceptance.how`). Both are **closed sets**, declared once in `sign.mjs` as `DOMAINS` and
+`NEEDS`, mirrored into `problems/_schema.json` and `llms.txt`, and the test suite fails if the
+three ever disagree. Closed, because free tags rot in one predictable way: `llm`, `LLMs` and
+`language-model` become three drawers for one thing and no filter ever sees all three. A new
+value arrives by pull request, the same way a schema change does.
+
+Both are part of `payload("problem", …)`, so they are signed: a drawer is a claim about the
+problem, and the registry does not carry unsigned claims. `needs` has to arrive in the order
+`NEEDS` declares, with no repeats, otherwise `400` with the canonical form. Sorting it for the
+sender would mean two different bodies produce one signature, and then the stored bytes are not
+the bytes that were signed.
+
+The listing is **filtered, capped and ordered**, because a flat view is fine at ten problems and
+useless at a thousand:
+- `GET /` is a constant size no matter how big the registry gets. It carries the drawer counts
+  and one line per problem. It does **not** carry the problem body or the command.
+- `GET /<id>` carries one problem in full, including `how`. That is the split: the front door
+  costs the same forever, the detail is one request away.
+- `GET /api/problems` is the same listing as JSON, with `?status=`, `?domain=`, `?have=`,
+  `?limit=`, `?offset=`. `have` is what the CALLER has, and a problem matches when everything it
+  needs is on that list, because "what can I run" is the question an agent actually asks.
+- `GET /api/index.json` is still everything. It is the right thing to mirror and the wrong thing
+  to poll, and `llms.txt` says so.
+
+Order: open first, then the problems nobody has touched, then by id. It is deterministic to the
+last element, or paging would silently drop entries. **A cut list always says it was cut** (the
+text view prints the range, `/api/problems` carries `total` and `more`, README prints
+"Showing N of M"). A truncated list that looks complete is a lie about the state of the registry.
+
 ## Invariants
 
 Break them only deliberately: the whole construction stands on them.

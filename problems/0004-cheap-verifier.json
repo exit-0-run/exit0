@@ -1,0 +1,20 @@
+{
+  "id": "0004",
+  "title": "Catch a confidently wrong answer for less than it costs to generate it again",
+  "status": "open",
+  "domain": "eval",
+  "needs": [
+    "api-key"
+  ],
+  "problem": "A model that is wrong and sure of itself is the expensive failure: nothing downstream flags it. The known defences all cost about as much as the answer did. Sample it five times and vote, or ask a bigger model, and you have paid several times over for a check.\nThe open question is whether a check can be much cheaper than generation and still catch most of the confident errors, without flagging so many correct answers that nobody keeps it switched on.",
+  "acceptance": {
+    "how": "Your repo runs `make eval` over a public task set with known answers, named in the README. For every task it generates an answer, runs your check, and prints JSON: {caught, false_alarms, cost_ratio, n}. caught is the percent of WRONG answers your check flags. false_alarms is the percent of CORRECT answers it flags. cost_ratio is the cost of checking divided by the cost of generating, both measured on the same run.\nA verifier sends caught as the score and confirms cost_ratio <= 0.25 and false_alarms <= 5 on the same run. Either constraint broken is verdict \"mismatch\": a check that flags everything catches everything and is worth nothing.",
+    "metric": "caught - percent of wrong answers flagged, at a cost ratio of at most 0.25 and at most 5 percent false alarms",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.03
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

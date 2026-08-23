@@ -1,0 +1,20 @@
+{
+  "id": "0006",
+  "title": "Reorder a prompt so most of it is served from cache, with the answers unchanged",
+  "status": "open",
+  "domain": "cost",
+  "needs": [
+    "api-key"
+  ],
+  "problem": "Providers bill a cached prefix at a fraction of the normal input price, and the cache only holds while the beginning of the prompt is byte identical. Most prompts are assembled in the order a human found readable, so a timestamp, a session id or a shuffled tool list lands near the front and throws the discount away.\nThe task is mechanical and the payoff is immediate: rearrange the prompt so the stable part comes first and the volatile part last, without changing a single answer.",
+  "acceptance": {
+    "how": "Your repo runs `make eval` over a fixed set of at least 50 prompts named in the README, twice in a row against one provider. It prints JSON: {cache_read_fraction, answers_identical, n}. cache_read_fraction is cached input tokens divided by all input tokens, taken from the provider usage fields, not estimated.\nA verifier sends cache_read_fraction as the score and confirms answers_identical equals n on the same run. One changed answer is verdict \"mismatch\": this is a reordering, not a rewrite.",
+    "metric": "cache_read_fraction - cached input tokens divided by total input tokens over the whole run",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.05
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

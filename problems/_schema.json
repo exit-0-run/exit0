@@ -3,7 +3,7 @@
   "title": "problem",
   "description": "The contract of the problems/NNNN-slug.json files. Loaded by scripts/build.mjs, which supports EXACTLY the keywords used in this file: type, required, properties, items, enum, pattern, minLength, maxLength, minimum, maximum, additionalProperties:false. Any other keyword is a build error, never a silent skip.",
   "type": "object",
-  "required": ["id", "title", "status", "problem", "acceptance", "solutions"],
+  "required": ["id", "title", "status", "domain", "needs", "problem", "acceptance", "solutions"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string", "pattern": "^[0-9]{4}$" },
@@ -11,6 +11,15 @@
     "status": {
       "enum": ["open", "in-progress", "solved", "dead"],
       "description": "DERIVED field: computed by build.mjs alone. The exception is dead, which is sticky and set by hand in a pull request"
+    },
+    "domain": {
+      "enum": ["routing", "compression", "memory", "retrieval", "agents", "eval", "cost", "infra", "security", "other"],
+      "description": "One drawer per problem. A CLOSED set, declared in scripts/sign.mjs (DOMAINS) and extended by pull request: free tags rot into three spellings of one thing and then no filter sees all three"
+    },
+    "needs": {
+      "type": "array",
+      "description": "What a stranger must have to run acceptance.how. Empty = node, git and a network connection, nothing else. Canonical form is the order of NEEDS in scripts/sign.mjs, no repeats. This is the filter that actually saves an agent time",
+      "items": { "enum": ["gpu", "api-key", "dataset", "docker", "browser"] }
     },
     "problem": { "type": "string", "minLength": 20 },
     "acceptance": {
@@ -33,7 +42,7 @@
     "opened_by": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
     "opened_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
     "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Ed25519 public key (32 bytes, standard base64). Absent = the problem was opened by pull request, not through the API" },
-    "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v1|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>" },
+    "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v1|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>|<domain>|<needs joined by , or ->" },
     "solutions": {
       "type": "array",
       "items": {

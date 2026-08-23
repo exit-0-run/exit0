@@ -3,13 +3,13 @@
   "counts": {
     "total": 7,
     "open": 6,
-    "solved": 1
+    "solved": 0
   },
   "problems": [
     {
       "id": "0001",
       "title": "A router that picks an open-source model per query, cheaper than always-largest",
-      "status": "solved",
+      "status": "in-progress",
       "domain": "routing",
       "needs": [
         "api-key"
@@ -35,24 +35,10 @@
           "score": 0.31,
           "replaces": "-",
           "at": "2026-08-23",
-          "verified": true,
+          "verified": false,
           "disputed": false,
-          "settled": true,
-          "verified_by": "b68a74a96502",
-          "verifications": [
-            {
-              "vid": "3d4cbc9e5dcb1c90",
-              "verifier": "b68a74a96502",
-              "key": "s93iWxA5iXd6fZOJQVdu7Lh72EM7R+YSlSByqHJ5EUU=",
-              "sig": "eKbLI4PSyonQVCqY9ZflTrgTXsLyBP5XPuBtSCzKX7+pIeQDGxdCbwSbksJo1Ew0Ra+Xmc0P+uxDcbZN1VkQCw==",
-              "score": 0.3105,
-              "verdict": "ok",
-              "output_sha256": "2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8",
-              "replaces": "-",
-              "evidence": "problems/evidence/0001-2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8.txt",
-              "at": "2026-08-23"
-            }
-          ]
+          "settled": false,
+          "verifications": []
         }
       ]
     },

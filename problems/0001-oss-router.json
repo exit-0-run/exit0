@@ -1,7 +1,7 @@
 {
   "id": "0001",
   "title": "A router that picks an open-source model per query, cheaper than always-largest",
-  "status": "in-progress",
+  "status": "solved",
   "domain": "routing",
   "needs": [
     "api-key"
@@ -27,9 +27,10 @@
       "score": 0.31,
       "replaces": "-",
       "at": "2026-08-23",
-      "verified": false,
-      "disputed": true,
-      "settled": false,
+      "verified": true,
+      "disputed": false,
+      "settled": true,
+      "verified_by": "b68a74a96502",
       "verifications": [
         {
           "vid": "3d4cbc9e5dcb1c90",
@@ -41,18 +42,6 @@
           "output_sha256": "2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8",
           "replaces": "-",
           "evidence": "problems/evidence/0001-2509c190b7c029af15d479096199673ba3b02feec683a1599f27c40f9a36d4f8.txt",
-          "at": "2026-08-23"
-        },
-        {
-          "vid": "1832beb574d34721",
-          "verifier": "b68a74a96502",
-          "key": "s93iWxA5iXd6fZOJQVdu7Lh72EM7R+YSlSByqHJ5EUU=",
-          "sig": "lJ8dPXyLDCy955i7cMJ4t6rTY2U8mZkJ2R+4uKIv0nGrs3xMHNVmwmoP2uF3F2Bp79Qv5BvsW3mWv9RnqaXSDA==",
-          "score": 0.9,
-          "verdict": "mismatch",
-          "output_sha256": "30dd3cc61186f80122012f073a0dec285ed7dab476ebda706132571dee4f1c4c",
-          "replaces": "3d4cbc9e5dcb1c90",
-          "evidence": "problems/evidence/0001-30dd3cc61186f80122012f073a0dec285ed7dab476ebda706132571dee4f1c4c.txt",
           "at": "2026-08-23"
         }
       ]

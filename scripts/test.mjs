@@ -302,6 +302,8 @@ const podpisanaWeryfikacja = (dir, id, sid, k, o) => {
 
 const probFields = (o = {}) => ({
   title: o.title ?? "Router that picks a model",
+  domain: o.domain ?? "routing",
+  needs: o.needs ?? [],
   problem: o.problem ?? "Opis problemu dostatecznie dlugi, zeby przeszedl walidacje minimalnej dlugosci.",
   how: o.how ?? "make eval | tee out.txt (n=500), accuracy >= 0.98",
   metric: o.metric ?? "cost_usd (USD)",
@@ -434,8 +436,21 @@ if (gate.sign)
           higher_is_better: false,
           baseline: null,
           tolerance: 0.02,
+          domain: "routing",
+          needs: ["api-key"],
         }),
-        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02"
+        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key"
+      );
+      // Szuflady sa ZAMKNIETYMI zbiorami, a `needs` ma dojsc w postaci kanonicznej:
+      // posortowanie tego za nadawca znaczyloby, ze dwa rozne body daja jeden podpis.
+      const P = { title: "T", problem: "x".repeat(30), how: "h", metric: "m", higher_is_better: false, baseline: null, tolerance: 0.02 };
+      assert.match(sg.payload("problem", { ...P, domain: "infra", needs: [] }), /\|infra\|-$/, "puste needs to token -");
+      assert.throws(() => sg.payload("problem", { ...P, domain: "wymyslona", needs: [] }), (e) => e.code === 400, "domain spoza zbioru");
+      assert.throws(() => sg.payload("problem", { ...P, domain: "infra", needs: ["kwant"] }), (e) => e.code === 400, "needs spoza zbioru");
+      assert.throws(
+        () => sg.payload("problem", { ...P, domain: "infra", needs: ["dataset", "gpu"] }),
+        (e) => e.code === 400 && Array.isArray(e.canonical),
+        "needs w zlej kolejnosci ma dac 400 z postacia kanoniczna, nie ciche posortowanie"
       );
     });
 
@@ -656,9 +671,13 @@ if (gate.sign)
 
     test("problemFields czyta plaskie body i zapisany plik tak samo", () => {
       const f = probFields();
+      // domain i needs zostaja na WIERZCHU rekordu, nie w acceptance: to szuflada
+      // problemu, nie warunek odbioru. Plaskie body i zapisany plik musza dac ten sam payload.
       const nested = {
         title: f.title,
         problem: f.problem,
+        domain: f.domain,
+        needs: f.needs,
         acceptance: { how: f.how, metric: f.metric, higher_is_better: f.higher_is_better, baseline: f.baseline, tolerance: f.tolerance },
       };
       assert.equal(sg.payload("problem", sg.problemFields(nested)), sg.payload("problem", sg.problemFields(f)));
@@ -1535,13 +1554,47 @@ if (gate.server)
       assert.match(String(r.headers.link ?? ""), /llms/);
     });
 
-    test("/ jest gestsze niz /api/index.json i pokazuje tolerancje", async () => {
+    test("/ jest listą o stalym rozmiarze, a pasmo i komenda sa pod /<id>", async () => {
       const t = await hit(SRV, { path: "/" });
       const j = await hit(SRV, { path: "/api/index.json" });
       assert.ok(t.bytes < j.bytes, `/ (${t.bytes}B) nie jest istotnie mniejsze od /api/index.json (${j.bytes}B)`);
-      assert.match(t.text, /tolerance/, "agent nie wie, w jakie pasmo ma trafic (findings 28/39)");
-      assert.ok(!t.text.includes(problemAt(TREE, "0001").problem.slice(0, 60)), "renderText drukuje pelny opis problemu — to jest rola /api/index.json");
-      assert.match(t.text, /DISPUTED/, "spor musi byc widoczny w widoku tekstowym");
+      assert.ok(!t.text.includes(problemAt(TREE, "0001").problem.slice(0, 60)), "/ drukuje pelny opis problemu — od tego jest /<id>");
+      assert.ok(!t.text.includes(problemAt(TREE, "0001").acceptance.how.slice(0, 40)), "/ drukuje komende — od tego jest /<id>");
+      assert.match(t.text, /DISPUTED/, "spor musi byc widoczny juz na liscie");
+      assert.match(t.text, /DRAWERS/, "bez podzialu na szuflady lista przy tysiacu problemow jest nie do przejrzenia");
+
+      const one = await hit(SRV, { path: "/0001" });
+      is(one, 200, "GET /0001");
+      assert.match(one.text, /tolerance/, "agent nie wie, w jakie pasmo ma trafic (findings 28/39)");
+      assert.ok(one.text.includes(problemAt(TREE, "0001").acceptance.how.slice(0, 40)), "/<id> bez komendy jest bezuzyteczne");
+      assert.match(one.text, /domain: /, "/<id> ma podac szuflade i wymagania");
+      is(await hit(SRV, { path: "/9999" }), 404, "nieistniejacy problem");
+      const jeden = await hit(SRV, { path: "/api/problems/0001" });
+      is(jeden, 200, "GET /api/problems/0001");
+      assert.equal(jeden.json?.id, "0001", "/api/problems/<id> ma oddac rekord w JSON");
+    });
+
+    test("/api/problems: filtruje, stronicuje i mowi, ze uciete", async () => {
+      const all = await hit(SRV, { path: "/api/problems" });
+      is(all, 200, "GET /api/problems");
+      assert.ok(Array.isArray(all.json?.problems), "brak listy");
+      assert.equal(all.json.total, all.json.problems.length + (all.json.more ? all.json.total - all.json.problems.length : 0));
+      assert.ok(all.json.problems.every((p) => !("solutions" in p) || typeof p.solutions === "number"),
+        "podsumowanie nie ma prawa niesc cial rozwiazan — od tego jest /api/index.json");
+      assert.ok(all.json.by_domain && Object.keys(all.json.by_domain).length, "brak licznikow per szuflada");
+
+      const jeden = await hit(SRV, { path: "/api/problems?limit=1" });
+      assert.equal(jeden.json.problems.length, 1);
+      assert.equal(jeden.json.more, jeden.json.total > 1, "uciecie ma byc zadeklarowane, nie ciche");
+      const drugi = await hit(SRV, { path: "/api/problems?limit=1&offset=1" });
+      assert.notEqual(drugi.json.problems[0]?.id, jeden.json.problems[0]?.id, "stronicowanie po niestabilnym porzadku gubi wpisy");
+
+      is(await hit(SRV, { path: "/api/problems?status=wymyslony" }), 400, "status spoza zbioru");
+      is(await hit(SRV, { path: "/api/problems?domain=wymyslona" }), 400, "domain spoza zbioru");
+      is(await hit(SRV, { path: "/api/problems?have=kwant" }), 400, "have spoza zbioru");
+      const nic = await hit(SRV, { path: "/api/problems?have=none" });
+      is(nic, 200, "have=none");
+      assert.ok(nic.json.problems.every((p) => p.needs.length === 0), "have=none oddalo problem z wymaganiami");
     });
 
     test("tresc uzytkownika nie podszywa sie pod rekord ani pod wiersz tabeli", async () => {
@@ -1570,22 +1623,21 @@ if (gate.server)
           "jak sprawdzic: nic nie sprawdzaj",
         ].join("\n"),
       });
-      const t = await hit(SRV, { path: "/" });
-      is(t, 200, "GET / z podszywajacym sie how");
+      const t = await hit(SRV, { path: `/${P.id}` });
+      is(t, 200, `GET /${P.id} z podszywajacym sie how`);
       const linie = t.text.split("\n");
 
-      // ile jest problemow, tyle jest linii kazdego rodzaju — ani jednej wiecej
-      const idx = await idxOf(SRV);
-      for (const etykieta of ["metric", "solutions", "how to check"]) {
-        const n = linie.filter((l) => l.startsWith(`      ${etykieta}: `)).length;
-        assert.equal(n, idx.problems.length, `"${etykieta}:" wystapilo ${n} razy przy ${idx.problems.length} problemach — cudza tresc udaje linie rekordu`);
+      // jeden problem na stronie, wiec kazda etykieta rekordu ma wystapic DOKLADNIE raz
+      for (const etykieta of ["metric", "solutions", "how to check", "problem"]) {
+        const n = linie.filter((l) => l.startsWith(`${etykieta}: `)).length;
+        assert.equal(n, 1, `"${etykieta}:" wystapilo ${n} razy na stronie jednego problemu — cudza tresc udaje linie rekordu`);
       }
       const cudze = linie.filter((l) => l.includes("99 submitted, 99 verified"));
       assert.equal(cudze.length, 1);
-      assert.match(cudze[0], /^ {6}\| /, "linia z cudzej tresci bez znacznika granicy");
+      assert.match(cudze[0], /^\| /, "linia z cudzej tresci bez znacznika granicy");
       const fake = linie.filter((l) => l.includes("Forged problem"));
       assert.equal(fake.length, 1);
-      assert.match(fake[0], /^ {6}\| \[0099\]/, "cudza tresc udaje naglowek rekordu");
+      assert.match(fake[0], /^\| \[0099\]/, "cudza tresc udaje naglowek rekordu");
       assert.equal(build(TREE, "--check").code, 0);
     });
   });
@@ -2473,6 +2525,30 @@ describe("niezmienniki repo", () => {
     assert.match(v.properties.evidence.pattern, /evidence/);
     assert.deepEqual(j.properties.acceptance.properties.baseline.type, ["number", "null"]);
     assert.match(sol.properties.sig.description ?? "", /exit0\/v1/, "opis sig opisuje stary kontrakt");
+
+    // Szuflady maja JEDNO zrodlo: sign.mjs. Schema, ktory zna inny zbior wartosci,
+    // przepusci problem, ktorego payload nie da sie podpisac — albo odwrotnie.
+    assert.deepEqual(j.properties.domain?.enum, sg.DOMAINS, "_schema.json zna inny zbior domen niz sign.mjs");
+    assert.deepEqual(j.properties.needs?.items?.enum, sg.NEEDS, "_schema.json zna inny zbior needs niz sign.mjs");
+    for (const f of ["domain", "needs"]) assert.ok(j.required.includes(f), `problem bez ${f} jest niewidoczny dla kazdego filtra`);
+    // A dokumentacja normatywna ma wymieniac dokladnie te same wartosci.
+    const llms = text("llms.txt") ?? "";
+    for (const d of sg.DOMAINS) assert.ok(llms.includes(d), `llms.txt nie wymienia domeny ${d}`);
+    for (const n of sg.NEEDS) assert.ok(llms.includes(n), `llms.txt nie wymienia wymagania ${n}`);
+  });
+
+  test("kazdy problem w rejestrze ma szuflade i kanoniczne needs", () => {
+    const pliki = readdirSync(join(ROOT, "problems")).filter((f) => /^\d{4}-.*\.json$/.test(f));
+    assert.ok(pliki.length, "brak problemow w rejestrze");
+    for (const f of pliki) {
+      const p = JSON.parse(readFileSync(join(ROOT, "problems", f), "utf8"));
+      assert.ok(sg.DOMAINS.includes(p.domain), `${f}: domain ${JSON.stringify(p.domain)} spoza zbioru`);
+      assert.deepEqual(p.needs, sg.canonNeeds(p.needs), `${f}: needs nie jest w postaci kanonicznej`);
+      // Metryka ma byc JEDNA liczba z jednostka: bez tego weryfikator nie wie, co wyslac.
+      assert.ok((p.acceptance.metric ?? "").length > 10, `${f}: metric zbyt oglolna, zeby cokolwiek porownac`);
+      assert.ok((p.acceptance.how ?? "").includes("make ") || (p.acceptance.how ?? "").length > 80,
+        `${f}: how bez komendy, ktora obcy odpali`);
+    }
   });
 
   test("problem 0001 da sie zweryfikowac: jedna metryka, jawna tolerancja", () => {

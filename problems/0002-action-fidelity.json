@@ -1,0 +1,21 @@
+{
+  "id": "0002",
+  "title": "Compression judged by the next action, not by the text",
+  "status": "open",
+  "domain": "compression",
+  "needs": [
+    "api-key",
+    "dataset"
+  ],
+  "problem": "Compressors are scored against the original text: overlap, similarity, human ratings. An agent never reads the text. It reads a tool output and then does something. So score the thing that matters: compress a tool output, hand it to the agent instead of the original, and check whether the next tool call is the same one.\nThe interesting failures are not fluency. They are the deletions that read as harmless and are not: an identifier, a negation, a quantifier, a unit. A compressor can score well on similarity and still change what the agent does next.",
+  "acceptance": {
+    "how": "Your repo runs `make eval` over a public set of agent traces named in the README (each trace: a tool output plus the call the agent actually made next). For every trace it compresses the output, replays the turn against the compressed version, and prints JSON: {reduction, action_fidelity, n}. reduction is the fraction of input tokens removed, measured with the tokenizer named in the README.\nA verifier clones the repo, runs one command and sends action_fidelity as the score. It counts only if reduction >= 0.50 on the same run; below that, send verdict \"mismatch\" and say so in the output.",
+    "metric": "action_fidelity - percent of turns where the next tool call, name and arguments, is byte identical to the uncompressed run, at >= 50 percent token reduction",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

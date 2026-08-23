@@ -144,8 +144,17 @@ check(
   JSON.stringify(entry?.verifications?.map((v) => ({ vid: v.vid, replaces: v.replaces, verdict: v.verdict })))
 );
 
+// The listing is one line per problem and carries no sid: that is what keeps the
+// front door a constant size. The dispute has to be visible there anyway, and the sid
+// on the problem page.
 const view = await hit("/", { headers: { accept: "text/plain" } });
-check("the text view marks the entry as disputed", view.status === 200 && view.text.includes(SID) && /DISPUTED/.test(view.text), `HTTP ${view.status}`);
+check("the listing marks the problem as disputed without carrying the record", view.status === 200 && /DISPUTED/.test(view.text) && !view.text.includes(SID), `HTTP ${view.status}`);
+
+const page = await hit(`/${PID}`, { headers: { accept: "text/plain" } });
+check("the problem page carries the sid, the command and the band", page.status === 200 && page.text.includes(SID) && page.text.includes("how to check:") && /tolerance/.test(page.text), `HTTP ${page.status}: ${page.text.slice(0, 200)}`);
+
+const listed = await hit(`/api/problems?domain=${encodeURIComponent(problem.domain)}`);
+check("the filtered listing finds this problem and states whether it was cut", listed.status === 200 && (listed.json?.problems ?? []).some((x) => x.id === PID) && typeof listed.json?.more === "boolean", `HTTP ${listed.status}: ${listed.text.slice(0, 200)}`);
 
 const html = await hit("/", { headers: { accept: "text/html" } });
 check("HTML is served only on request, with no scripts and nothing pulled from the network", html.text.startsWith("<!doctype html") && !/<script/i.test(html.text) && !/\b(?:src|href)\s*=\s*["']https?:/i.test(html.text), html.text.slice(0, 120));

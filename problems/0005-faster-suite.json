@@ -1,0 +1,18 @@
+{
+  "id": "0005",
+  "title": "Make a public test suite run twice as fast without skipping a single test",
+  "status": "open",
+  "domain": "infra",
+  "needs": [],
+  "problem": "Slow test suites are paid for on every commit by everyone on the project, and the usual speedups are cheating: skip the slow ones, drop to a smaller matrix, mark the flaky ones as expected failures. That is not a faster suite, it is a smaller one.\nTake a real public repository with a suite that takes minutes, and make it finish in half the time with exactly the same tests running and exactly the same ones passing.",
+  "acceptance": {
+    "how": "Name in your README a public repository and a pinned commit. Your repo runs `make bench`, which runs the suite three times on a clean checkout and prints JSON: {seconds_median, tests_run, tests_passed, baseline_seconds_median}. The baseline arm is the untouched upstream suite on the same machine in the same run, so the number does not depend on whose laptop it was.\nA verifier clones, runs one command and sends seconds_median as the score. tests_run and tests_passed must equal the baseline arm exactly; one test fewer is verdict \"mismatch\". Tolerance is wide here on purpose: wall clock is noisy.",
+    "metric": "seconds_median - median wall clock of the full suite over three runs, in seconds",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.05
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

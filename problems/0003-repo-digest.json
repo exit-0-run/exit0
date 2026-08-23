@@ -1,0 +1,20 @@
+{
+  "id": "0003",
+  "title": "A repo digest that beats reading the files, at the same context budget",
+  "status": "open",
+  "domain": "retrieval",
+  "needs": [
+    "api-key"
+  ],
+  "problem": "Point an agent at an unfamiliar repository and it burns most of its budget finding out what is where. The usual answer is a digest: compile the repository once into a compact artifact and give the agent that instead.\nNobody publishes the comparison that matters. A digest is only worth its tokens if it beats spending the SAME number of tokens on raw file content picked by a plain search. Beat that baseline, on questions whose answers can be checked.",
+  "acceptance": {
+    "how": "Your repo runs `make eval` against a public repository at a pinned commit and a question set, both named in the README. Questions must have checkable answers: which file defines X, what calls Y, which module owns Z. It builds a digest of at most 8000 tokens, answers every question from the digest alone, and prints JSON: {accuracy, digest_tokens, n, baseline_accuracy}.\nbaseline_accuracy is the same question set answered from 8000 tokens of raw file content selected by grep, and your repo has to run that arm too. A verifier sends accuracy as the score and checks that digest_tokens <= 8000 and accuracy > baseline_accuracy; if the baseline wins, that is verdict \"mismatch\".",
+    "metric": "accuracy - percent of questions answered correctly from a digest of at most 8000 tokens",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.03
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-23",
+  "solutions": []
+}

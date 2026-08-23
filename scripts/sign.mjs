@@ -174,6 +174,45 @@ const tolT = (v) => {
   return numToken(t);
 };
 
+// --- the two drawers ---
+// A registry with a thousand problems is unusable without a filter, and a filter is
+// only worth anything if the values are closed. Free tags rot in one predictable way:
+// "llm", "LLMs" and "language-model" become three drawers for one thing, and no
+// filter ever sees all three. So both axes are CLOSED SETS, extended by pull request
+// the same way the schema is. This is the one place they are declared; _schema.json
+// and the documentation are checked against it by the test suite.
+//
+// DOMAIN answers "is this my area", one value per problem.
+export const DOMAINS = ["routing", "compression", "memory", "retrieval", "agents", "eval", "cost", "infra", "security", "other"];
+// NEEDS answers "can I even run this", which is the filter that actually saves an
+// agent time. Empty means: node, git and a network connection, nothing else. It is
+// about the COMMAND in `how`, not about the problem being interesting.
+export const NEEDS = ["gpu", "api-key", "dataset", "docker", "browser"];
+
+const domainT = (v) => {
+  if (typeof v !== "string" || !DOMAINS.includes(v)) throw bad(400, `domain: one of ${DOMAINS.join(", ")}`, { canonical: "other" });
+  return v;
+};
+
+// Canonical form is sorted and deduplicated, in the order NEEDS declares. Sorting it
+// for the sender would make two different bodies produce one signature, and then the
+// stored bytes would not be the bytes that were signed.
+export const canonNeeds = (v) => {
+  const a = v ?? [];
+  if (!Array.isArray(a) || a.some((x) => typeof x !== "string")) throw bad(400, "needs: an array of strings");
+  const bad_ = a.filter((x) => !NEEDS.includes(x));
+  if (bad_.length) throw bad(400, `needs: unknown value ${bad_.join(", ")}. Allowed: ${NEEDS.join(", ")}`);
+  return NEEDS.filter((n) => a.includes(n));
+};
+
+const needsT = (v) => {
+  const c = canonNeeds(v);
+  const given = v ?? [];
+  if (given.length !== c.length || given.some((x, i) => x !== c[i]))
+    throw bad(400, "needs: send the canonical form (sorted, no repeats)", { canonical: c });
+  return c.length ? c.join(",") : "-";
+};
+
 // The ONLY place where the flat body and the stored file meet.
 export const problemFields = (x) => ({
   title: x.title,
@@ -183,6 +222,8 @@ export const problemFields = (x) => ({
   higher_is_better: x.acceptance ? x.acceptance.higher_is_better : x.higher_is_better,
   baseline: x.acceptance ? x.acceptance.baseline : x.baseline,
   tolerance: (x.acceptance ? x.acceptance.tolerance : x.tolerance) ?? 0.02,
+  domain: x.domain,
+  needs: x.needs,
 });
 
 export const payload = (action, f) => {
@@ -225,6 +266,8 @@ export const payload = (action, f) => {
       boolT(f.higher_is_better, "higher_is_better"),
       optNum(f.baseline),
       tolT(f.tolerance),
+      domainT(f.domain),
+      needsT(f.needs),
     ].join("|");
   throw bad(404, "unknown action");
 };
@@ -430,6 +473,16 @@ export const cell = (s) =>
 export const mdUrl = (s) =>
   `<${String(s).replace(/[<>\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)}>`;
 
+// The order of the listing, shared by the server and by the README generator: a rule
+// written twice drifts apart. Open problems first, and inside a status the ones nobody
+// has touched, because that is where a newcomer is worth most. Deterministic down to
+// the last element, or a listing could not be paged.
+export const STATUS_RANK = { open: 0, "in-progress": 1, solved: 2, dead: 3 };
+export const probCmp = (a, b) =>
+  (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9) ||
+  (a.solutions?.length ?? 0) - (b.solutions?.length ?? 0) ||
+  a.id.localeCompare(b.id);
+
 export const solCmp = (p) => (a, b) => {
   const w = (s) => (s.verified && !s.disputed ? 0 : 1);
   if (w(a) !== w(b)) return w(a) - w(b);
@@ -501,6 +554,8 @@ const canonBody = (action, b, changed) => {
       higher_is_better: !!b.higher_is_better,
       baseline: b.baseline ?? null,
       tolerance: b.tolerance ?? 0.02,
+      domain: b.domain,
+      needs: fix("needs", b.needs, canonNeeds(b.needs)),
     };
   throw bad(404, `unknown action "${action}": solution, verification or problem`);
 };

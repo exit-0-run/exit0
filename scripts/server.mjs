@@ -904,6 +904,7 @@ const renderHtml = (idx) =>
   `<!doctype html><html lang="pl"><head><meta charset="utf-8">
 <title>exit0</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<style>:root{color-scheme:dark}html{background:#000;color:#fff}pre{margin:1rem;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}</style>
 <link rel="alternate" type="application/json" href="/api/index.json">
 <link rel="help" href="/llms.txt">
 </head><body><pre>${esc(renderText(idx))}</pre></body></html>`;

@@ -1251,7 +1251,7 @@ if (gate.server)
 
 if (gate.server)
   describe("reprezentacje", () => {
-    test("/ domyslnie text/plain, HTML tylko na zadanie, bez CSS i JS", async () => {
+    test("/ domyslnie text/plain, HTML tylko na zadanie, bez JS i bez zasobow zewnetrznych", async () => {
       const t = await hit(SRV, { path: "/" });
       is(t, 200, "GET /");
       assert.match(String(t.headers["content-type"]), /^text\/plain/);
@@ -1264,7 +1264,9 @@ if (gate.server)
       is(h, 200, "GET / (text/html)");
       assert.match(String(h.headers["content-type"]), /^text\/html/);
       assert.ok(h.text.includes("<pre>"));
-      assert.ok(!/<style|<script/i.test(h.text), "HTML ma byc bez CSS i JS");
+      assert.ok(!/<script/i.test(h.text), "HTML ma byc bez JS");
+      assert.ok(!/\b(?:src|href)\s*=\s*["\']https?:/i.test(h.text), "HTML nie ma prawa ciagnac niczego z sieci");
+      assert.ok(!/@import|url\(/i.test(h.text), "CSS nie ma prawa ciagnac zasobu");
       assert.notEqual(h.headers.etag, t.headers.etag, "dwie reprezentacje pod jednym ETagiem to bledne 304");
 
       const j = await hit(SRV, { path: "/", headers: { accept: "application/json" } });

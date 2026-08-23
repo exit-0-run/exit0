@@ -290,7 +290,31 @@ const CONT = "| ";
 export const fieldBlock = (label, value, indent = 6) =>
   value.split("\n").map((l, i) => " ".repeat(indent) + (i ? CONT : label + ": ") + l).join("\n");
 
-export const cell = (s) => String(s).replace(/\|/g, "\\|");
+// Komorka tabeli w README. Samo "\|" nie wystarcza z dwoch powodow, oba
+// zmierzone na dzialajacym serwerze:
+//   1. tytul z "<!-- INDEX:END -->" laduje W SRODKU regionu generowanego,
+//      wiec build.mjs tnie README po CUDZYM znaczniku i przestaje sie zbiegac —
+//      jeden podpisany POST wylaczal zapisy calego rejestru na stale,
+//   2. "[klik](https://phish)" renderuje sie na GitHubie jako prawdziwy odnosnik
+//      w tabeli, ktora caly projekt przedstawia jako zweryfikowana.
+// Dlatego: "<", ">" i "&" ida na encje (to zabija znacznik), reszta interpunkcji
+// Markdowna dostaje odwrotny ukosnik. Kolejnosc jest istotna — encje wchodza
+// pierwsze, bo inaczej ukosnik trafilby w srodek "&amp;".
+const ENT = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+export const cell = (s) =>
+  String(s)
+    .replace(/[&<>]/g, (c) => ENT[c])
+    .replace(/[\\`*_[\]()~|!]/g, "\\$&")
+    .replace(/\r?\n/g, " ");
+
+// Cel odnosnika. Nawias zamykajacy przezywa canonUrl (sprawdzone:
+// "https://example.com/a)x" wychodzi bez zmian), a w postaci [tekst](cel)
+// konczy odnosnik za wczesnie i reszta URL-a staje sie tekstem strony.
+// Postac <cel> tego nie ma; lamia ja tylko "<", ">" i biale znaki, a te
+// canonUrl juz procentuje — wiec ponizsze jest siatka bezpieczenstwa, nie
+// zmiana adresu.
+export const mdUrl = (s) =>
+  `<${String(s).replace(/[<>\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)}>`;
 
 export const solCmp = (p) => (a, b) => {
   const w = (s) => (s.verified && !s.disputed ? 0 : 1);

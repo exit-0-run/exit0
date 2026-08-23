@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
   canonUrl, canonText, canonLine, solutionId, verificationId,
-  evidencePath, checkVerification, cell, solCmp,
+  evidencePath, checkVerification, cell, mdUrl, solCmp,
 } from "./sign.mjs";
 
 const DIR = "problems";
@@ -28,7 +28,19 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 
 // --- 1. parse ---
 
-const files = readdirSync(DIR).filter((f) => f.endsWith(".json") && !f.startsWith("_")).sort();
+// Sciezki sa wzgledem KATALOGU BIEZACEGO, wiec odpalenie po sciezce absolutnej
+// z cudzego katalogu sprawdza cudzy rejestr. Bez tej bramki wychodzil z tego
+// pewny siebie "OK" o zupelnie innym drzewie (RUNBOOK, Odtworzenie).
+const dirList = (dir) => {
+  try {
+    return readdirSync(dir);
+  } catch (e) {
+    console.error(`brak katalogu ${dir}/ w ${process.cwd()} (${e.code ?? e.message}) — build.mjs czyta sciezki wzgledem katalogu biezacego, wiec odpal go z katalogu rejestru: cd <rejestr> && node scripts/build.mjs`);
+    process.exit(1);
+  }
+};
+
+const files = dirList(DIR).filter((f) => f.endsWith(".json") && !f.startsWith("_")).sort();
 const loaded = [];
 for (const file of files) {
   const path = join(DIR, file);
@@ -170,10 +182,14 @@ if (schema && errors.length === beforeSchema) {
 // Sprawdzane tylko dla plikow, ktore przeszly schemat: inaczej powtarzalibysmy
 // ten sam blad ksztaltu w kilku brzmieniach.
 
+// --no-optional-locks przy KAZDYM czytaniu z gita: inaczej walidator odpalany
+// przez serwer konkuruje o .git/index.lock z commitem, ktory sam ma przepuscic.
+const gitRead = (...a) => execFileSync("git", ["--no-optional-locks", ...a], { stdio: ["ignore", "pipe", "ignore"] });
+
 const seenIds = new Set();
 const fromHead = (path) => {
   try {
-    return execFileSync("git", ["show", `HEAD:${path}`], { stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+    return gitRead("show", `HEAD:${path}`).toString("utf8");
   } catch {
     return null;
   }
@@ -192,7 +208,7 @@ const headOids = (paths) => {
   if (!paths.length) return out;
   let lines;
   try {
-    lines = execFileSync("git", ["cat-file", "--batch-check"], {
+    lines = execFileSync("git", ["--no-optional-locks", "cat-file", "--batch-check"], {
       input: paths.map((p) => `HEAD:${p}`).join("\n") + "\n",
       stdio: ["pipe", "pipe", "ignore"],
       maxBuffer: 1 << 24,
@@ -428,7 +444,7 @@ const rows = shaped
     const good = sols.filter((s) => s.verified && !s.disputed);
     const sporne = sols.filter((s) => s.disputed).length;
     const link = good.length
-      ? `[${good.length} zweryfikowanych](${cell(good[0].repo)})`
+      ? `[${good.length} zweryfikowanych](${mdUrl(good[0].repo)})`
       : sols.length
         ? `${sols.length} zgloszonych, 0 zweryfikowanych`
         : "—";
@@ -443,6 +459,20 @@ const table = [
   ...rows,
 ].join("\n");
 
+// Region generowany jest wycinany po znacznikach, wiec znacznik W TRESCI
+// rozsadza granice: jeden podpisany POST z tytulem zawierajacym END wsadzal
+// go do wiersza tabeli, kolejny przebieg ciol README po nim i --check przestawal
+// sie zbiegac NA STALE (zapisy calego rejestru na 503). Pierwsza obrona to
+// cell() z encjami, druga jest tutaj: znaczniki maja byc dokladnie po jednym,
+// a tabela nie ma prawa ich zawierac. Kazde zlamanie tego to glosny blad,
+// nigdy ciche rozjechanie sie.
+const count = (s, needle) => s.split(needle).length - 1;
+
+if (table.includes(START) || table.includes(END)) {
+  console.error(`${README}: wygenerowana tabela zawiera znacznik regionu — to znaczy, ze cell() przepuscil tresc uzytkownika i region sie rozjedzie`);
+  process.exit(1);
+}
+
 let readme;
 try {
   readme = readFileSync(README, "utf8");
@@ -454,6 +484,13 @@ const a = readme.indexOf(START);
 const b = readme.indexOf(END);
 if (a === -1 || b === -1 || b < a) {
   console.error(`${README}: brak znacznikow ${START} / ${END} albo sa w zlej kolejnosci`);
+  process.exit(1);
+}
+if (count(readme, START) !== 1 || count(readme, END) !== 1) {
+  console.error(
+    `${README}: znacznik regionu wystepuje wiecej niz raz (${count(readme, START)}x START, ${count(readme, END)}x END). ` +
+      `Region generowany musi byc ograniczony dokladnie jedna para — usun nadmiarowe znaczniki z ${README} i odpal ponownie.`
+  );
   process.exit(1);
 }
 const nextReadme = readme.slice(0, a + START.length) + "\n" + table + "\n" + readme.slice(b);
@@ -482,8 +519,11 @@ const read = (path) => {
   }
 };
 
+// Nazwa pliku tymczasowego musi byc unikalna na proces. Wspolna ".tmp" znaczy,
+// ze drugi piszacy podmienia ja pod pierwszym i rename konczy sie ENOENT —
+// zmierzone przy kilku instancjach nad jednym katalogiem.
 const writeAtomic = (path, text) => {
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, text);
   renameSync(tmp, path);
 };

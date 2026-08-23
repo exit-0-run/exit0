@@ -91,10 +91,21 @@ const SIGN_ETAG = `"${CONTRACT}"`;
 const ensureState = () => { if (!existsSync(STATE)) mkdirSync(STATE, { recursive: true }); };
 ensureState();
 
+// Nazwa pliku tymczasowego musi byc unikalna na proces. Wspolna ".tmp" znaczy,
+// ze drugi piszacy podmienia ja pod pierwszym, a rename konczy sie ENOENT
+// (zmierzone: piec instancji nad jednym katalogiem, ENOENT na ip.json.tmp
+// i na problems/0001-*.json.tmp).
 const writeAtomic = (path, data) => {
-  const tmp = `${path}.tmp`;
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, data);
   renameSync(tmp, path);
+};
+
+// Blokujaca pauza bez palenia procesora. Sekcja krytyczna jest synchroniczna
+// z zalozenia (patrz withWriteLock), wiec ponowienie po kolizji o .git/index.lock
+// tez musi byc synchroniczne — inaczej wpuscilibysmy tu przeplot zadan.
+const sleepSync = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
 
 // --- liczniki (.state, celowo poza gitem: to stan maszyny, nie rejestru) ---
@@ -158,6 +169,16 @@ let chain = Promise.resolve();
 const NONCE = randomUUID();
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 
+// Zwraca wlasciciela blokady albo null. Uzywane tez przez health(): zakleszczona
+// blokada zatrzymuje 100% zapisow, wiec nie ma prawa byc niewidoczna w /api/pulse.
+const lockOwner = () => {
+  let raw;
+  try { raw = readFileSync(LOCK, "utf8"); } catch { return null; }
+  let s = null;
+  try { s = JSON.parse(raw); } catch {}
+  return s && typeof s === "object" ? s : { pid: null, nonce: null, smiec: true };
+};
+
 const takeFileLock = () => {
   ensureState();
   for (let i = 0; i < 2; i++) {
@@ -168,10 +189,15 @@ const takeFileLock = () => {
       return true;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      let s = null;
-      try { s = JSON.parse(readFileSync(LOCK, "utf8")); } catch {}
+      const s = lockOwner();
       if (s && s.pid && alive(s.pid)) return false;
-      try { unlinkSync(LOCK); } catch {}
+      // Odbior musi byc ATOMOWY. unlink + open("wx") to okno, w ktorym drugi
+      // proces zaklada wlasna blokade, a my ja zaraz kasujemy — i obaj jestesmy
+      // w sekcji krytycznej. rename udaje sie dokladnie jednemu, przegrany
+      // dostaje ENOENT i wraca po blokade normalna droga.
+      const mine = `${LOCK}.${process.pid}.${NONCE}`;
+      try { renameSync(LOCK, mine); } catch { return false; }
+      try { unlinkSync(mine); } catch {}
     }
   }
   return false;
@@ -186,7 +212,11 @@ const releaseFileLock = () => {
 
 const withWriteLock = (fn) => {
   const run = async () => {
-    if (!takeFileLock()) throw bad(503, "inny proces pisze do tego katalogu", { headers: { "retry-after": "1" } });
+    if (!takeFileLock())
+      throw bad(503, "inny proces pisze do tego katalogu", {
+        info: { fix: `sprawdz pid w ${LOCK}; jesli proces nie zyje albo nie jest tym serwerem: rm ${LOCK}`, lock: LOCK },
+        headers: { "retry-after": "1" },
+      });
     try { return await fn(); } finally { releaseFileLock(); }
   };
   const next = chain.then(run, run);
@@ -198,14 +228,81 @@ const withWriteLock = (fn) => {
 
 const git = (...a) => execFileSync("git", a, { stdio: "pipe" });
 const build = (...a) => execFileSync("node", ["scripts/build.mjs", ...a], { stdio: "pipe" });
-const dirty = (...paths) => String(git("status", "--porcelain", "--", ...paths)).trim();
+
+// Odczyt z gita NIE MA PRAWA walczyc o .git/index.lock z commitem, ktory wlasnie
+// trwa. `git status` bez tej flagi odswieza indeks, czyli bierze lock — zmierzone:
+// jedna petla `git status --porcelain` (dokladnie ta z RUNBOOK-a, jako sygnal
+// zdrowia) wywracala 25-44% poprawnie podpisanych zapisow.
+const gitRead = (...a) => git("--no-optional-locks", ...a);
+const dirty = (...paths) => String(gitRead("status", "--porcelain", "--", ...paths)).trim();
+
+// Kolizja o indeks jest PRZEJSCIOWA i zwykle cudza: bierze go kazdy git w tym
+// katalogu (cron kopii zapasowej, `git status` operatora, druga instancja).
+// Odpowiedzia jest ponowienie, nie utrata zapisu.
+const LOCKED = /index\.lock|Unable to create|File exists|cannot lock/i;
+const isLocked = (e) => LOCKED.test(detailOf(e));
+const WAITS = [0, 50, 150, 400];
+const gitTry = (...a) => {
+  let last;
+  for (const w of WAITS) {
+    if (w) sleepSync(w);
+    try { return git(...a); } catch (e) { last = e; if (!isLocked(e)) throw e; }
+  }
+  throw last;
+};
+
+// Zalegly .git/index.lock (po przerwanym `git add`, po zabitym gicie) nie znika
+// sam, a potrzebuje go i commit, i sprzatanie po nim — wiec zapis zastosowany
+// mimo niego zostaje na dysku NA ZAWSZE i wychodzi z rejestru jako stan spoza
+// commita. Dlatego pytamy o to PRZED apply: odmowa przed zapisem nic nie kosztuje,
+// a kolizji przejsciowej (cudzy git trwa ulamek sekundy) dajemy chwile.
+const GIT_DIR = (() => {
+  try { return String(gitRead("rev-parse", "--git-dir")).trim() || ".git"; } catch { return ".git"; }
+})();
+const INDEX_LOCK = join(GIT_DIR, "index.lock");
+
+// Cudza kolizja jest przejsciowa, wiec CZEKAMY, zamiast od razu odmawiac:
+// sekcja krytyczna jest i tak zserializowana, a zapisy sa rzadkie — sekunda
+// czekania jest tansza niz odeslanie poprawnie podpisanego zapisu z niczym.
+const LOCK_WAIT = 1000;
+const LOCK_STEP = 25;
+
+const gitReady = () => {
+  const koniec = performance.now() + LOCK_WAIT;
+  while (existsSync(INDEX_LOCK)) {
+    if (performance.now() >= koniec)
+      throw bad(503, "git w tym katalogu jest zajety (.git/index.lock) — powtorz zadanie", {
+        info: { fix: `sprawdz, czy nie trwa inny git w tym katalogu; jesli zaden: rm ${INDEX_LOCK}`, lock: INDEX_LOCK },
+        headers: { "retry-after": "1" },
+      });
+    sleepSync(LOCK_STEP);
+  }
+};
+
+// Sprzatanie musi UDOWODNIC, ze posprzatalo. Gdy to git byl tym, co padlo,
+// kazdy krok ponizej pada tak samo — i na dysku zostaje zapis, ktorego nie ma
+// w zadnym commicie, a serwer podaje go dalej w /api/index.json jako rejestr.
+// To jest zlamanie niezmiennika 1, wiec musi byc GLOSNE: osobny powod w
+// /api/pulse, a odczyty przelaczaja sie na HEAD (readIndex).
+let rollbackFailed = false;
 
 // Kazdy krok osobno: blad sprzatania nie moze zjesc bledu pierwotnego.
 // checkout leci z HEAD, bo indeks jest juz zatruty przez add.
 const rollback = () => {
-  try { git("reset", "-q", "--", ...PATHS); } catch (e) { logErr("rollback reset", e); }
-  try { git("checkout", "-q", "HEAD", "--", ...PATHS); } catch (e) { logErr("rollback checkout", e); }
-  try { git("clean", "-fdq", "--", DIR); } catch (e) { logErr("rollback clean", e); }
+  try { gitTry("reset", "-q", "--", ...PATHS); } catch (e) { logErr("rollback reset", e); }
+  try { gitTry("checkout", "-q", "HEAD", "--", ...PATHS); } catch (e) { logErr("rollback checkout", e); }
+  try { gitTry("clean", "-fdq", "--", DIR); } catch (e) { logErr("rollback clean", e); }
+  let left;
+  try {
+    left = dirty(...PATHS);
+  } catch (e) {
+    logErr("rollback status", e);
+    left = "nie da sie sprawdzic stanu drzewa";
+  }
+  if (!left) return true;
+  rollbackFailed = true;
+  logErr("rollback", new Error(`drzewo nadal brudne po sprzataniu: ${left.replace(/\n/g, " | ")}`));
+  return false;
 };
 
 const commit = (msg) => {
@@ -218,11 +315,20 @@ const commit = (msg) => {
     throw bad(422, "odrzucone przez walidatora", { info: { detail: detailOf(e).slice(0, 600) } });
   }
   try {
-    git("add", "--", ...PATHS);
-    git("commit", "-q", "--only", "-m", msg, "--", ...PATHS);
+    gitTry("add", "--", ...PATHS);
+    gitTry("commit", "-q", "--only", "-m", msg, "--", ...PATHS);
   } catch (e) {
-    rollback();
-    throw bad(500, "blad wewnetrzny", { info: { ref: logRef(e) } });
+    const swept = rollback();
+    const ref = logRef(e);
+    // Zajety indeks to klasa, o ktorej llms.txt mowi wprost "powtorz pozniej",
+    // czyli 503. 500 kazaloby agentowi uznac poprawnie podpisany zapis za
+    // stracony — a to jest dokladnie to, czego rzadkosc limitow ma nie robic.
+    if (isLocked(e))
+      throw bad(503, "git w tym katalogu jest zajety (.git/index.lock) — powtorz zadanie", {
+        info: { ref, rolled_back: swept },
+        headers: { "retry-after": "1" },
+      });
+    throw bad(500, "blad wewnetrzny", { info: { ref } });
   }
 };
 
@@ -241,11 +347,40 @@ const EVIDENCE_PROBE = join(DIR, "evidence", "0000-probe.txt");
 const evidenceRaw = () => {
   let out;
   try {
-    out = String(git("check-attr", "text", "--", EVIDENCE_PROBE));
+    out = String(gitRead("check-attr", "text", "--", EVIDENCE_PROBE));
   } catch {
     return true; // nie umiem sprawdzic -> nie blokuje; blob i tak jest weryfikowany w build.mjs
   }
   return / text: unset$/m.test(out.trim());
+};
+
+// Zakleszczona blokada i uszkodzony licznik zatrzymuja 100% zapisow i zadne
+// z nich nie jest przejsciowe: blokada po martwym serwerze nie znika sama
+// (wieku sciennego celowo nie ma), a uszkodzony licznik trzeba skasowac recznie.
+// Werdykt zdrowia, ktory ich nie widzi, mowi "ok" przez cala awarie.
+const lockHealth = () => {
+  const s = lockOwner();
+  if (!s) return null;
+  if (s.nonce === NONCE) return null; // trzymamy ja sami: to jest trwajacy zapis
+  if (s.smiec || !s.pid)
+    return { reason: "plik blokady zapisu jest uszkodzony", fix: `skasuj ${LOCK} (zaden proces sie do niego nie przyznaje)` };
+  if (!alive(s.pid)) return null; // martwy wlasciciel: nastepny zapis odbierze blokade
+  return {
+    reason: "blokada zapisu jest zajeta",
+    fix: `sprawdz pid w ${LOCK}; jesli proces nie zyje albo nie jest tym serwerem: rm ${LOCK}`,
+    lock: { pid: s.pid },
+  };
+};
+
+const counterHealth = () => {
+  for (const f of [LIMITS_FILE, IP_FILE]) {
+    try {
+      readCounter(f);
+    } catch (e) {
+      return { reason: "licznik limitow jest nieczytelny", fix: `skasuj ${f} (limity dobowe startuja wtedy od zera)`, detail: e.message };
+    }
+  }
+  return null;
 };
 
 const health = () => {
@@ -255,7 +390,7 @@ const health = () => {
       fix: `dodaj .gitattributes z linia "problems/evidence/** -text" i zacommituj (bez tego klon nie odtworzy sum sha256)`,
     };
   try {
-    git("var", "GIT_COMMITTER_IDENT");
+    gitRead("var", "GIT_COMMITTER_IDENT");
   } catch (e) {
     return {
       reason: "git nie ma tozsamosci do commitowania",
@@ -269,7 +404,32 @@ const health = () => {
   } catch (e) {
     return { reason: "to nie jest repozytorium git", fix: "git init && git add -A && git commit -m init", detail: detailOf(e).slice(0, 300) };
   }
-  if (d) return { reason: "drzewo robocze jest brudne", fix: "cofnij albo zacommituj zmiany w problems/, README.md, index.json, scripts/", dirty: d.split("\n").slice(0, 20) };
+  // tainted znaczy: w plikach REJESTRU moze lezec zapis, ktorego nie ma w zadnym
+  // commicie — readIndex() czyta wtedy z HEAD, bo stan spoza gita nie istnieje
+  // (niezmiennik 1). Brud wylacznie w scripts/ wstrzymuje zapisy, ale nie zmienia
+  // tresci rejestru, wiec nie ma po co siegac do HEAD.
+  if (d) {
+    let tainted;
+    try {
+      tainted = dirty(...PATHS) !== "";
+    } catch {
+      tainted = true;
+    }
+    return rollbackFailed
+      ? {
+          reason: "sprzatanie po nieudanym zapisie nie doszlo do skutku",
+          fix: "git checkout HEAD -- problems README.md index.json && git clean -fd -- problems",
+          dirty: d.split("\n").slice(0, 20),
+          tainted,
+        }
+      : {
+          reason: "drzewo robocze jest brudne",
+          fix: "cofnij albo zacommituj zmiany w problems/, README.md, index.json, scripts/",
+          dirty: d.split("\n").slice(0, 20),
+          tainted,
+        };
+  }
+  rollbackFailed = false;
   try {
     build("--check");
   } catch (e) {
@@ -277,7 +437,7 @@ const health = () => {
     const file = (detail.match(/problems\/[^\s:]+\.json/) ?? [])[0];
     return { reason: "rejestr jest niespojny", fix: "node scripts/build.mjs", detail, ...(file ? { file } : {}) };
   }
-  return null;
+  return lockHealth() ?? counterHealth();
 };
 
 // Puls i widok tekstowy MUSZA mowic o stanie TERAZ, a nie o ostatniej probie
@@ -287,30 +447,56 @@ const health = () => {
 //
 // Pelne health() to git plus `build.mjs --check`, wiec nie odpala sie na kazde
 // zadanie. Odpala sie wtedy, gdy zmienilo sie cokolwiek, od czego zalezy:
-// brud w drzewie albo HEAD. Ta probka to dwa tanie wywolania gita, wiec edycja
-// operatora jest widoczna w NASTEPNYM odczycie, bez czekania na zegar.
-// TTL zostaje wylacznie jako zapas na zmiany konfiguracji (tozsamosc gita,
-// .gitattributes), ktorych probka nie widzi. Zegar monotoniczny, nie scienny:
-// skok NTP nie ma prawa przedluzyc waznosci werdyktu.
+// brud w drzewie albo HEAD.
+//
+// Sama probka tez ma sufit czestosci, i to nie jest optymalizacja "na zapas".
+// execFileSync zatrzymuje petle zdarzen CALEGO procesu, wiec dwa wywolania
+// gita na kazdy odczyt kosztowaly zmierzone 55 zadan/s przy 3400 zadan/s na
+// trasie bez gita — a /api/pulse jest dokladnie ta trasa, ktora dokumentacja
+// kaze agentom odpytywac. Sufit 1 s zostawia niezmiennik 10 w mocy (werdykt
+// nadal powstaje na sciezce ODCZYTU, nie przy zapisie) i trzyma opoznienie
+// widocznosci edycji operatora ponizej sekundy. Zapis omija sufit: guard()
+// wola freshHealth(true).
+// Zegar monotoniczny, nie scienny: skok NTP nie ma prawa przedluzyc waznosci.
 const HEALTH_TTL = 10000;
+const PROBE_TTL = 1000;
 let healthAt = -Infinity;
+let probeAt = -Infinity;
 let lastProbe = null;
 
+// Blokada zapisu i liczniki sa czescia probki, choc leza poza gitem: obie te
+// awarie zatrzymuja 100% zapisow, a zadna nie rusza ani HEAD, ani brudu w drzewie.
+// Bez nich serwer wchodzil w te stany i wychodzil z nich dopiero po HEALTH_TTL,
+// wiec przez 10 s mowil "ok" o katalogu, w ktorym nie da sie pisac (albo odwrotnie).
+// Koszt to trzy readFileSync malych plikow, raz na PROBE_TTL.
 const probe = () => {
   try {
-    return `${String(git("rev-parse", "HEAD")).trim()} ${dirty(...PATHS, "scripts")}`;
+    const s = lockOwner();
+    const c = counterHealth();
+    return `${String(gitRead("rev-parse", "HEAD")).trim()} ${dirty(...PATHS, "scripts")} ${s ? `${s.pid}/${s.nonce}` : "-"} ${c ? c.detail : "-"}`;
   } catch {
     return null;
   }
 };
 
-const freshHealth = (force) => {
-  const now = probe();
-  if (!force && now !== null && now === lastProbe && performance.now() - healthAt < HEALTH_TTL) return readonly;
+const recheck = () => {
   readonly = health();
-  lastProbe = now;
   healthAt = performance.now();
   return readonly;
+};
+
+const freshHealth = (force) => {
+  if (force) {
+    lastProbe = probe();
+    probeAt = performance.now();
+    return recheck();
+  }
+  if (performance.now() - probeAt < PROBE_TTL) return readonly;
+  const now = probe();
+  probeAt = performance.now();
+  if (now !== null && now === lastProbe && probeAt - healthAt < HEALTH_TTL) return readonly;
+  lastProbe = now;
+  return recheck();
 };
 
 const guard = () => {
@@ -321,13 +507,42 @@ const guard = () => {
 
 let lastGood = null;
 
+const parseIndex = (text) => {
+  const idx = JSON.parse(text);
+  if (!idx || !Array.isArray(idx.problems) || !idx.counts) throw new Error("index.json bez problems/counts");
+  return idx;
+};
+
+// Brudne drzewo znaczy, ze index.json na dysku moze zawierac zapis, ktorego
+// NIE MA w zadnym commicie — zmierzone: po nieudanym commicie serwer podawal
+// w /api/index.json rozwiazanie, o ktorym autorowi powiedzial 500, a `git show
+// HEAD:` go nie znal. Niezmiennik 1 mowi, ze taki stan nie istnieje, wiec przez
+// cala awarie czytamy z HEAD. Wynik trzymamy po sygnaturze probki (HEAD + brud),
+// zeby nie odpalac gita na kazdy odczyt.
+let headIdx = null;
+let headIdxAt = null;
+
+const indexFromHead = () => {
+  if (headIdx && headIdxAt === lastProbe) return headIdx;
+  const idx = parseIndex(String(gitRead("show", "HEAD:index.json")));
+  headIdx = idx;
+  headIdxAt = lastProbe;
+  return idx;
+};
+
 // Czytamy i parsujemy przy KAZDYM wywolaniu: zacommitowany zapis musi byc
 // widoczny w nastepnym /api/pulse. Kopia zapasowa wchodzi tylko wtedy,
 // gdy plik jest nieczytelny — nigdy jako cache.
 const readIndex = () => {
+  if (readonly && readonly.tainted) {
+    try {
+      return indexFromHead();
+    } catch (e) {
+      logErr("index z HEAD", e);
+    }
+  }
   try {
-    const idx = JSON.parse(readFileSync("index.json", "utf8"));
-    if (!idx || !Array.isArray(idx.problems) || !idx.counts) throw new Error("index.json bez problems/counts");
+    const idx = parseIndex(readFileSync("index.json", "utf8"));
     lastGood = idx;
     return idx;
   } catch (e) {
@@ -554,6 +769,7 @@ const renderText = (idx) => {
   L.push(`           ${IP_CAP} prob/dobe na adres — tu liczy sie KAZDA proba, takze odrzucona`);
   L.push("PELNE      /llms.txt   kontrakt podpisu: /sign.mjs");
   if (readonly) L.push(`UWAGA      zapisy wstrzymane: ${readonly.reason} — POST odpowie 503`);
+  if (readonly && readonly.tainted) L.push("           widok pochodzi z HEAD: w drzewie roboczym lezy stan spoza commita");
   L.push("");
   L.push("PROBLEMY");
   for (const p of idx.problems) {
@@ -659,7 +875,7 @@ const readRoute = (req, res, path) => {
       limits: { ...LIMITS, per_address: IP_CAP },
       contract: CONTRACT,
       writes: readonly ? "readonly" : "ok",
-      ...(readonly ? { reason: readonly.reason } : {}),
+      ...(readonly ? { reason: readonly.reason, fix: readonly.fix, ...(readonly.tainted ? { source: "HEAD" } : {}) } : {}),
     }, { "cache-control": "no-store" });
 
   const idx = readIndex();
@@ -731,6 +947,7 @@ const doWrite = (req, action, raw) => {
   if (!q.ok) throw bad(429, `limit dobowy wyczerpany: ${q.cap} ${action}/dobe`, limitInfo(q, { limit: action, author: fingerprint(b.key) }));
 
   guard();
+  gitReady();
   plan.apply();
   commit(plan.msg);
   const used = chargeQuota(b.key, action);
@@ -820,8 +1037,11 @@ srv.on("error", (e) => { logErr("gniazdo", e); process.exit(1); });
 process.on("uncaughtException", (e) => logErr("uncaughtException", e));
 process.on("unhandledRejection", (e) => logErr("unhandledRejection", e));
 
-try { readIndex(); } catch (e) { logErr("start", e); }
+// Werdykt zdrowia idzie PRZED pierwszym czytaniem indeksu: gdy drzewo jest
+// brudne juz przy starcie, readIndex ma od razu siegnac do HEAD, a nie ogrzac
+// sobie kopii zapasowej stanem spoza commita.
 if (freshHealth(true)) console.error(`START W TRYBIE TYLKO DO ODCZYTU: ${readonly.reason} -> ${readonly.fix}`);
+try { readIndex(); } catch (e) { logErr("start", e); }
 if (!TRUST_PROXY && (HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost"))
   console.error("TRUST_PROXY wylaczony przy nasluchu na petli zwrotnej: ruch z proxy wpadnie do jednego kubelka IP");
 

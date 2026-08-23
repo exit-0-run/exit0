@@ -73,6 +73,21 @@ const seal = (dir) => {
 };
 
 const newTree = (label) => seal(mkTree(label));
+
+// Podstawiony `git` w PATH: dopisuje linie do logu i oddaje sterowanie
+// prawdziwemu. Dzieki temu "ile razy sciezka odczytu forkuje gita" jest liczba,
+// a nie pomiarem czasu — ten sam wynik na kazdej maszynie i pod obciazeniem.
+const gitLicznik = (dir) => {
+  const bin = join(dir, "gitbin");
+  const log = join(dir, "git-wywolania.log");
+  mkdirSync(bin, { recursive: true });
+  const prawdziwy = String(execFileSync("sh", ["-c", "command -v git"])).trim();
+  writeFileSync(join(bin, "git"), `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(prawdziwy)} "$@"\n`, { mode: 0o755 });
+  return {
+    bin,
+    ile: () => (existsSync(log) ? String(readFileSync(log, "utf8")).split("\n").filter(Boolean).length : 0),
+  };
+};
 const commits = (dir) => Number(git(dir, "rev-list", "--count", "HEAD"));
 const dirty = (dir) => git(dir, "status", "--porcelain", "--", "problems", "README.md", "index.json");
 const problemName = (dir, id) => readdirSync(join(dir, "problems")).find((f) => f.startsWith(`${id}-`) && f.endsWith(".json"));
@@ -1375,6 +1390,20 @@ if (gate.server)
         const t = await hit(srv, { path: "/" });
         return { writes: p.json?.writes, reason: p.json?.reason, uwaga: /UWAGA/.test(t.text) };
       };
+      // Probka ma sufit czestosci (PROBE_TTL = 1 s), bo dwa synchroniczne
+      // wywolania gita na kazdy odczyt kosztowaly zmierzone 55 zadan/s zamiast
+      // 4000 (D3/D6). Niezmiennik 10 mowi wiec: sciezka ODCZYTU sama dochodzi do
+      // prawdy w okolo sekundzie, BEZ ani jednej proby zapisu. Tego tu pilnujemy,
+      // wiec czekamy do 4 s — i nadal jest to test o odczycie, nie o zapisie.
+      const stanAz = async (writes) => {
+        const koniec = Date.now() + 4000;
+        let s = await stan();
+        while (s.writes !== writes && Date.now() < koniec) {
+          await sleep(150);
+          s = await stan();
+        }
+        return s;
+      };
 
       const zdrowy = await stan();
       assert.equal(zdrowy.writes, "ok");
@@ -1382,7 +1411,7 @@ if (gate.server)
 
       // operator edytuje sledzony plik; nikt nie probuje pisac
       writeFileSync(join(dir, "README.md"), readFileSync(join(dir, "README.md"), "utf8") + "\nbrud\n");
-      const brudny = await stan();
+      const brudny = await stanAz("readonly");
       assert.equal(brudny.writes, "readonly", "puls mowi ok przez cala awarie — agent dowie sie dopiero paloc probe (D4/D7)");
       assert.match(String(brudny.reason), /brudne/);
       assert.equal(brudny.uwaga, true, "widok tekstowy nie ostrzega o wstrzymanych zapisach");
@@ -1390,10 +1419,106 @@ if (gate.server)
 
       // operator sprzata; nadal zaden zapis
       git(dir, "checkout", "--", "README.md");
-      const naprawiony = await stan();
+      const naprawiony = await stanAz("ok");
       assert.equal(naprawiony.writes, "ok", "puls trzyma readonly po naprawie — agent w ogole nie sprobuje (D4/D7)");
       assert.equal(naprawiony.uwaga, false);
       is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/swiezosc-2", score: 0.42 })), 201, "zapis po naprawie");
+      await stop(srv, "SIGKILL");
+    });
+
+    // Sciezka odczytu nie ma prawa forkowac gita na kazde zadanie. execFileSync
+    // zatrzymuje petle zdarzen CALEGO procesu, wiec dwa wywolania na odczyt daly
+    // zmierzone 55 zadan/s tam, gdzie trasa bez gita robi 3400 — a /api/pulse
+    // jest dokladnie ta, ktora dokumentacja kaze agentom odpytywac. Liczymy
+    // wywolania, nie czas: wynik jest ten sam na kazdej maszynie.
+    test("odczyty nie forkuja gita na kazde zadanie (D3/D6)", async () => {
+      const dir = newTree("git-na-odczycie");
+      const licznik = gitLicznik(dir);
+      const srv = await startServer(dir, { PATH: `${licznik.bin}:${process.env.PATH}` });
+      assert.ok(srv.port, srv.why);
+      const start = licznik.ile();
+      const N = 60;
+      for (let i = 0; i < N; i++) {
+        is(await hit(srv, { path: i % 2 ? "/" : "/api/pulse" }), 200, `odczyt ${i}`);
+      }
+      const uzyte = licznik.ile() - start;
+      // sufit to jedna probka (2 wywolania) na sekunde; caly ten blok trwa
+      // ulamek sekundy, wiec realnie schodzi do zera-kilku
+      assert.ok(uzyte < N / 2, `${N} odczytow wywolalo gita ${uzyte} razy — probka nie ma sufitu czestosci i blokuje petle zdarzen (D3/D6)`);
+      await stop(srv, "SIGKILL");
+    });
+
+    // Awarie, ktore zatrzymuja 100% zapisow, a nie ruszaja ani HEAD, ani drzewa:
+    // zakleszczona blokada i uszkodzony licznik. Puls, ktory ich nie widzi, mowi
+    // "ok" przez cala awarie i agent pali proby, zeby sie dowiedziec.
+    test("puls widzi zakleszczona blokade i uszkodzony licznik (D5)", async () => {
+      const dir = newTree("puls-awarie");
+      mkdirSync(join(dir, ".state"), { recursive: true });
+      const lock = join(dir, ".state", "write.lock");
+      writeFileSync(lock, JSON.stringify({ pid: 1, nonce: "martwy-serwer", at: 1 }));
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+
+      const puls = async () => (await hit(srv, { path: "/api/pulse" })).json ?? {};
+      const azDo = async (writes, ile = 4000) => {
+        const koniec = Date.now() + ile;
+        let p = await puls();
+        while (p.writes !== writes && Date.now() < koniec) { await sleep(150); p = await puls(); }
+        return p;
+      };
+
+      const zablokowany = await puls();
+      assert.equal(zablokowany.writes, "readonly", "puls mowi ok, a blokada zatrzymuje kazdy zapis (D5)");
+      assert.match(String(zablokowany.reason), /blokada/);
+      assert.match(String(zablokowany.fix), /write\.lock/, "503 i puls musza podac komende naprawcza");
+      assert.match(srv.err, /blokada/, "log startu milczy o blokadzie, ktora wylaczyla zapisy");
+
+      const odm = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/blokada", score: 0.42 }));
+      is(odm, 503, "zapis przy zakleszczonej blokadzie");
+      assert.match(String(odm.json?.fix ?? ""), /write\.lock/, "503 bez pola fix zostawia operatora bez wyjscia (D5)");
+
+      unlinkSync(lock);
+      assert.equal((await azDo("ok")).writes, "ok", "puls trzyma readonly po zdjeciu blokady");
+
+      writeFileSync(join(dir, ".state", "limits.json"), "nie-json");
+      const zepsuty = await azDo("readonly");
+      assert.equal(zepsuty.writes, "readonly", "uszkodzony licznik zatrzymuje zapisy, a puls mowi ok (D5)");
+      assert.match(String(zepsuty.reason), /licznik/);
+      assert.match(String(zepsuty.fix), /limits\.json/);
+
+      unlinkSync(join(dir, ".state", "limits.json"));
+      assert.equal((await azDo("ok")).writes, "ok", "puls trzyma readonly po naprawie licznika");
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/po-naprawie", score: 0.42 })), 201, "zapis po naprawie");
+      await stop(srv, "SIGKILL");
+    });
+
+    // Niezmiennik 1 wprost: stan, ktorego nie ma w gicie, NIE ISTNIEJE. Gdy zapis
+    // zostal zastosowany, a commit nie wszedl, serwer podawal go dalej jako rejestr
+    // — autorowi mowiac przy tym, ze zapis padl.
+    test("brudne drzewo: odczyty ida z HEAD, nie z drzewa roboczego (D8)", async () => {
+      const dir = newTree("odczyt-z-head");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/z-head", score: 0.42 })), 201, "zapis, ktory ma zostac tylko na dysku");
+
+      // cofamy sam commit: pliki zostaja, HEAD nie zna juz tego rozwiazania
+      git(dir, "reset", "-q", "--soft", "HEAD~1");
+      git(dir, "reset", "-q");
+      assert.equal(JSON.parse(String(fromHead(dir, "index.json"))).problems[0].solutions.length, 0, "przygotowanie: HEAD ma znac zero rozwiazan");
+      assert.equal(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")).problems[0].solutions.length, 1, "przygotowanie: na dysku ma lezec jedno");
+
+      const koniec = Date.now() + 4000;
+      let idx = await idxOf(srv);
+      while (idx?.problems?.[0]?.solutions?.length !== 0 && Date.now() < koniec) {
+        await sleep(150);
+        idx = await idxOf(srv);
+      }
+      assert.equal(idx.problems[0].solutions.length, 0, "serwer publikuje rekord, ktorego nie ma w zadnym commicie (D8, niezmiennik 1)");
+      const p = (await hit(srv, { path: "/api/pulse" })).json;
+      assert.equal(p.writes, "readonly");
+      assert.equal(p.source, "HEAD", "puls nie mowi, ze widok pochodzi z HEAD");
+      const txt = (await hit(srv, { path: "/" })).text;
+      assert.match(txt, /widok pochodzi z HEAD/, "widok tekstowy nie mowi, skad pochodzi");
       await stop(srv, "SIGKILL");
     });
 
@@ -1598,6 +1723,81 @@ if (gate.server)
       assert.notEqual(zly.code, 0, "build przepuscil dowod, ktorego zacommitowane bajty nie odtwarzaja sumy (D3)");
       assert.match(zly.err + zly.out, /zacommitowany dowod/, "komunikat ma nazwac przyczyne");
     });
+
+    // Region tabeli jest wycinany po znacznikach, wiec znacznik W TRESCI rozsadza
+    // granice: jeden podpisany POST z tytulem zawierajacym END wsadzal go do
+    // wiersza, kolejny przebieg ciol README po CUDZYM znaczniku i --check
+    // przestawal sie zbiegac NA STALE — czyli zapisy calego rejestru na 503,
+    // z darmowego klucza, jednym zadaniem.
+    test("tytul ze znacznikiem regionu nie rozsadza README (D1)", async () => {
+      const dir = newTree("znacznik-w-tytule");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const tytul = `Router X ${"<!-- INDEX:" + "END -->"} pwned`;
+      is(await post(srv, "problem", probBody(mkKey(), { title: tytul })), 201, "problem z zatrutym tytulem");
+
+      const readme = readFileSync(join(dir, "README.md"), "utf8");
+      const ile = (s, n) => s.split(n).length - 1;
+      assert.equal(ile(readme, "<!-- INDEX:" + "START -->"), 1, "znacznik START zwielokrotniony");
+      assert.equal(ile(readme, "<!-- INDEX:" + "END -->"), 1, "tresc uzytkownika wniosla drugi znacznik END do README (D1)");
+      assert.match(readme, /&lt;/, "znacznik mial zostac zneutralizowany encjami");
+
+      assert.equal(build(dir, "--check").code, 0, "build --check nie zbiega sie po zatrutym tytule (D1)");
+      assert.equal(build(dir).code, 0);
+      assert.equal(build(dir, "--check").code, 0, "drugi przebieg buduje inny README — region sie rozjezdza (D1)");
+      assert.equal(dirty(dir), "", "po zatrutym tytule zostal niezacommitowany stan");
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/po-zatruciu", score: 0.42 })), 201, "rejestr przyjmuje zapisy po zatrutym tytule");
+      await stop(srv, "SIGKILL");
+    });
+
+    // README jest kanonicznym artefaktem, ktory czyta kazdy przechodzien
+    // (raw.githubusercontent.com). Jeden tani zapis wstawial do tabeli
+    // "zweryfikowanych rozwiazan" klikalny odnosnik pod kontrola zglaszajacego.
+    test("tytul i repo nie wnosza Markdownu do tabeli (D2)", async () => {
+      assert.equal(sg.cell("a|b"), "a\\|b");
+      assert.equal(sg.cell("[k](https://phish.example)"), "\\[k\\]\\(https://phish.example\\)");
+      assert.equal(sg.cell("`kod`"), "\\`kod\\`");
+      assert.equal(sg.cell("<b> & </b>"), "&lt;b&gt; &amp; &lt;/b&gt;");
+      assert.ok(!sg.cell(`x ${"<!-- INDEX:" + "END -->"} y`).includes("<!-- INDEX:" + "END -->"));
+      // nawias zamykajacy przezywa canonUrl, wiec w [tekst](cel) urywa odnosnik
+      assert.equal(sg.mdUrl("https://example.com/a)x"), "<https://example.com/a)x>");
+      assert.equal(sg.mdUrl("https://example.com/a b"), "<https://example.com/a%20b>");
+
+      const dir = newTree("markdown-w-tabeli");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      is(await post(srv, "problem", probBody(mkKey(), { title: "Router [KLIKNIJ TU](https://phish.example) `rm -rf`" })), 201, "problem z Markdownem w tytule");
+
+      const autor = mkKey();
+      const repo = "https://example.com/x)[KLIKNIJ](https://phish.example";
+      is(await post(srv, "solution", solBody(autor, { problem: "0001", repo, score: 0.42 })), 201, "rozwiazanie z wrogim URL-em");
+      const sid = problemAt(dir, "0001").solutions.at(-1).sid;
+      const output = '{"accuracy":0.98,"cost_usd":0.42,"n":500}';
+      is(await post(srv, "verification", verBody(mkKey(), { problem: "0001", solution: sid, score: 0.42, verdict: "ok", output })), 201, "weryfikacja, zeby w tabeli pojawil sie odnosnik");
+
+      const readme = readFileSync(join(dir, "README.md"), "utf8");
+      const wiersze = readme.split("\n").filter((l) => l.startsWith("| 000"));
+      assert.ok(wiersze.length >= 2, "tabela ma miec oba wiersze");
+      for (const w of wiersze) {
+        assert.ok(!/\[[^\]\\]*\]\(http/.test(w.replace(/\]\(<[^>]*>\)/g, "")), `wiersz niesie cudzy odnosnik Markdown: ${w}`);
+        assert.ok(!w.includes("](https://phish.example)"), `wiersz linkuje do hosta zglaszajacego: ${w}`);
+      }
+      assert.match(readme, /\]\(<https:\/\/example\.com\/x\)/, "cel odnosnika musi byc w postaci <...>, inaczej nawias urywa go w polowie");
+      assert.equal(build(dir, "--check").code, 0);
+      await stop(srv, "SIGKILL");
+    });
+
+    // build.mjs czyta sciezki wzgledem katalogu biezacego, wiec odpalony po
+    // sciezce absolutnej sprawdza CUDZE drzewo. RUNBOOK robil dokladnie to
+    // w sanity checku po odtworzeniu z lustra i dostawal pewne siebie "OK".
+    test("odpalony z zlego katalogu mowi, co jest nie tak (D10)", () => {
+      const pusty = mkdtempSync(join(tmpdir(), "open-problems-zly-cwd-"));
+      trees.push(pusty);
+      const r = run(pusty, join(ROOT, "scripts/build.mjs"), ["--check"]);
+      assert.equal(r.code, 1, "build.mjs w katalogu bez problems/ ma padac z komunikatem, nie ze stosem");
+      assert.match(r.err, /brak katalogu problems/, `stderr: ${r.err.slice(0, 300)}`);
+      assert.match(r.err, /katalogu biezacego/, "komunikat ma nazwac przyczyne: sciezki sa wzgledne");
+    });
   });
 
 // =====================================================================
@@ -1630,6 +1830,92 @@ if (gate.server)
       writeFileSync(lock, JSON.stringify({ pid: 999999, nonce: "trup", at: Date.now() }));
       is(await post(SRV, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/lock-b", score: 0.42 })), 201, "zapis po martwym wlascicielu blokady");
       assert.ok(!existsSync(lock), "blokada zostala po udanym zapisie");
+    });
+
+    // Zalegly .git/index.lock (po przerwanym `git add`, po kill -9) nie znika sam.
+    // Wczesniej zapis byl STOSOWANY mimo niego, commit padal, sprzatanie tez —
+    // bo ono rowniez potrzebuje indeksu — i rejestr zostawal brudny NA ZAWSZE,
+    // z 500 dla autora. Teraz pytamy o zamek PRZED apply.
+    test("zalegly .git/index.lock: 503, zero zastosowanych zmian, powrot po usunieciu (D4)", async () => {
+      const dir = newTree("index-lock");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const c0 = commits(dir);
+      const zamek = join(dir, ".git", "index.lock");
+      writeFileSync(zamek, "");
+
+      const r = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/zamek", score: 0.42 }));
+      is(r, 503, "zajety indeks gita to klasa do powtorzenia (503), nie utracony zapis (500)");
+      assert.match(String(r.json?.error ?? ""), /index\.lock/);
+      assert.match(String(r.json?.fix ?? ""), /index\.lock/, "503 bez komendy naprawczej zostawia operatora bez wyjscia");
+      assert.equal(r.headers["retry-after"], "1");
+      assert.equal(dirty(dir), "", "zapis zostal zastosowany mimo zajetego indeksu i nie ma go kto cofnac (D4)");
+      assert.equal(commits(dir), c0, "commit mimo zajetego indeksu");
+
+      unlinkSync(zamek);
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/zamek", score: 0.42 })), 201, "rejestr nie wraca po zdjeciu zamka (D4)");
+      assert.equal(dirty(dir), "");
+      assert.equal(build(dir, "--check").code, 0);
+      await stop(srv, "SIGKILL");
+    });
+
+    // Petla `git status --porcelain` to komenda, ktora RUNBOOK podaje jako
+    // GLOWNY sygnal zdrowia. Bez ponowien wywracala 25-44% poprawnie podpisanych
+    // zapisow, a rollback padal razem z commitem i zostawial rejestr brudny.
+    test("zapisy przezywaja cudzego gita w tym samym katalogu (D9)", async () => {
+      const dir = newTree("cudzy-git");
+      const srv = await startServer(dir, { IP_CAP: "100000" });
+      assert.ok(srv.port, srv.why);
+      const petle = Array.from({ length: 3 }, () =>
+        spawn("sh", ["-c", "while :; do git status --porcelain >/dev/null 2>&1; done"], { cwd: dir, stdio: "ignore" })
+      );
+      const kody = [];
+      try {
+        for (let i = 0; i < 8; i++) {
+          const res = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: `https://example.com/cudzy-${i}`, score: 0.42 }));
+          kody.push(res.status);
+        }
+      } finally {
+        for (const p of petle) p.kill("SIGKILL");
+      }
+      const stracone = kody.filter((c) => c === 500);
+      assert.equal(stracone.length, 0, `zapisy stracone na 500 przy cudzym gicie: ${kody.join(",")} (D9)`);
+      assert.ok(kody.includes(201), `zaden zapis nie przeszedl: ${kody.join(",")}`);
+      // 503 jest dopuszczalne (llms.txt: "powtorz pozniej"), byle nic nie zostalo
+      assert.equal(dirty(dir), "", "po kolizji z cudzym gitem zostal niezacommitowany zapis (D8/D9)");
+      assert.equal(build(dir, "--check").code, 0, "rejestr niespojny po kolizji z cudzym gitem");
+      const p = (await hit(srv, { path: "/api/pulse" })).json;
+      assert.equal(p.writes, "ok", `rejestr zostal w trybie tylko do odczytu: ${p.reason}`);
+      await stop(srv, "SIGKILL");
+    });
+
+    // Odbior blokady byl unlink + open("wx"), czyli okno, w ktorym drugi proces
+    // zaklada wlasna blokade, a my ja kasujemy — i obaj jestesmy w sekcji
+    // krytycznej. Zmierzone przy pieciu instancjach: ENOENT na rename plikow
+    // tymczasowych, czyli dwa procesy piszace ten sam plik problemu naraz.
+    test("dwa procesy nie wchodza razem do sekcji krytycznej (D7)", async () => {
+      const dir = newTree("wyscig-o-blokade");
+      mkdirSync(join(dir, ".state"), { recursive: true });
+      const lock = join(dir, ".state", "write.lock");
+      const a = await startServer(dir, { IP_CAP: "100000" });
+      const b = await startServer(dir, { IP_CAP: "100000" });
+      assert.ok(a.port && b.port, a.why || b.why);
+      let piecsetki = 0;
+      for (let i = 0; i < 6; i++) {
+        writeFileSync(lock, JSON.stringify({ pid: 999999, nonce: "sierota", at: Date.now() }));
+        const res = await Promise.all([
+          post(a, "solution", solBody(mkKey(), { problem: "0001", repo: `https://example.com/wyscig-a-${i}`, score: 0.42 })),
+          post(b, "solution", solBody(mkKey(), { problem: "0001", repo: `https://example.com/wyscig-b-${i}`, score: 0.43 })),
+        ]);
+        piecsetki += res.filter((r) => r.status >= 500 && r.status < 503).length;
+        assert.ok(res.some((r) => r.status === 201 || r.status === 503), `statusy rundy ${i}: ${res.map((r) => r.status).join(",")}`);
+      }
+      assert.equal(piecsetki, 0, "500 przy odbiorze osieroconej blokady = dwa procesy w sekcji krytycznej (D7)");
+      assert.equal((a.err + b.err).match(/ENOENT/g)?.length ?? 0, 0, `w logach jest ENOENT z rename — pliki tymczasowe kolizjonuja miedzy procesami (D7): ${(a.err + b.err).slice(0, 300)}`);
+      assert.equal(dirty(dir), "");
+      assert.equal(build(dir, "--check").code, 0);
+      await stop(a, "SIGKILL");
+      await stop(b, "SIGKILL");
     });
   });
 
@@ -1673,6 +1959,25 @@ describe("niezmienniki repo", () => {
     assert.match(src, /"--only"/, "commit bez --only zagarnia cudza prace z indeksu");
     assert.ok(!/"add",\s*"-A"/.test(src), "git add -A zatruwa indeks przed rollbackiem");
     assert.match(src, /"clean"/, "bez git clean odrzucony nowy plik zostaje na dysku");
+  });
+
+  // Trzy reguly, ktore rozjechaly sie ostatnio i za kazdym razem wygladaly
+  // niewinnie w diffie. Grep, bo kazda z nich jest o KSZTALCIE kodu, a skutek
+  // widac dopiero pod kilkoma procesami naraz.
+  test("wspolbieznosc: odczyty z gita bez zamka, blokada odbierana atomowo, pliki tymczasowe na proces", () => {
+    const srv = text("scripts/server.mjs") ?? "";
+    const bld = text("scripts/build.mjs") ?? "";
+    assert.match(srv, /--no-optional-locks/, "odczyt z gita bez --no-optional-locks konkuruje o .git/index.lock z wlasnym commitem (D4/D9)");
+    assert.match(bld, /--no-optional-locks/, "build.mjs biegnie w sciezce zapisu serwera i tez nie moze walczyc o indeks (D4/D9)");
+    assert.ok(
+      /renameSync\(\s*LOCK/.test(srv),
+      "odbior blokady musi byc atomowy (rename), bo unlink + open to okno na dwa procesy w sekcji krytycznej (D7)"
+    );
+    for (const [nazwa, src] of [["server.mjs", srv], ["build.mjs", bld]]) {
+      const wa = /const writeAtomic = \([^)]*\) => \{[\s\S]{0,240}?\};/.exec(src);
+      assert.ok(wa, `${nazwa}: nie znalazlem writeAtomic`);
+      assert.match(wa[0], /process\.pid/, `${nazwa}: wspolna nazwa pliku tymczasowego = ENOENT przy dwoch piszacych (D7)`);
+    }
   });
 
   test("server.mjs: kontrakt startu, brak new URL na request-targecie, null-prototype akcji", () => {

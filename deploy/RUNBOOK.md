@@ -77,38 +77,56 @@ niczego innego. Pilnuj rozmiaru: `du -sh /srv/open-problems/problems/evidence`.
 Klon przynosi dane i historię; instalator dokłada kod, tożsamość gita, unit i start.
 Ponieważ świeży klon jest czysty, kontrola „niezacommitowane zmiany” przechodzi.
 
-Sanity check po odtworzeniu:
+Sanity check po odtworzeniu — **z katalogu rejestru**, nie ze źródeł:
 
-    node /srv/open-problems/scripts/build.mjs --check
+    (cd /srv/open-problems && node scripts/build.mjs --check)
     curl -s localhost:8080/api/pulse
+
+`build.mjs` czyta `problems/`, `README.md` i `index.json` **względem katalogu
+bieżącego**. Odpalony po ścieżce absolutnej z `/opt/open-problems-src` sprawdza więc
+źródła, a nie rejestr — i wypisuje pewne siebie `OK` o zupełnie innym drzewie. Ta
+sekcja zostawia cię w `/opt/open-problems-src` (poprzednia komenda to `cd`), dlatego
+`cd` powyżej jest częścią sprawdzenia, a nie ozdobą.
 
 ## Zdrowie
 
 Trzy rzeczy, w tej kolejności:
 
-    git -C /srv/open-problems status --porcelain     # MUSI być pusto
+    git --no-optional-locks -C /srv/open-problems status --porcelain   # MUSI być pusto
     curl -s localhost:8080/api/pulse                 # writes: "ok", head się zmienia po zapisie
     systemctl status open-problems
+
+`--no-optional-locks` nie jest ozdobnikiem: zwykły `git status` **odświeża indeks**,
+czyli bierze `.git/index.lock`, i pętla takiego sprawdzenia konkuruje z commitem
+serwera. Serwer to przeżywa (ponawia, a gdy się nie uda — 503 z `retry-after`, bez
+utraty zapisu), ale bez tej flagi sam sygnał zdrowia niepotrzebnie odrzuca cudze zapisy.
 
 `writes: "readonly"` oznacza, że serwer przyjmuje odczyty i odrzuca zapisy z 503. To
 samo widać w widoku tekstowym: `curl -s localhost:8080/ | grep UWAGA` pokazuje wtedy
 linię `UWAGA zapisy wstrzymane`. Powód jest w polu `reason`, a gotowa komenda naprawcza
-w polu `fix` ciała 503. Powody są cztery:
+w polu `fix` — zarówno w ciele 503, jak i w `/api/pulse`. Powody:
 
 | `reason` | Sprawdzenie | Naprawa |
 |---|---|---|
 | `git nie ma tozsamosci do commitowania` | `sudo -u openproblems git -C /srv/open-problems var GIT_COMMITTER_IDENT` | `git -C /srv/open-problems config user.email registry@localhost` i `user.name open-problems` |
 | `to nie jest repozytorium git` | `ls -d /srv/open-problems/.git` | katalog nie pochodzi z instalatora — odtwórz z lustra (`Odtworzenie`) |
 | `drzewo robocze jest brudne` | `git -C /srv/open-problems status --short` | patrz `Awarie` |
-| `rejestr jest niespojny` | `node /srv/open-problems/scripts/build.mjs --check` | popraw wskazany plik i przebuduj albo cofnij commit |
+| `sprzatanie po nieudanym zapisie nie doszlo do skutku` | `git -C /srv/open-problems status --short` | `git checkout HEAD -- problems README.md index.json && git clean -fd -- problems`; sprawdź w logu, dlaczego git był zajęty |
+| `rejestr jest niespojny` | `(cd /srv/open-problems && node scripts/build.mjs --check)` | popraw wskazany plik i przebuduj albo cofnij commit |
+| `blokada zapisu jest zajeta` | `cat /srv/open-problems/.state/write.lock`, potem `ps -p <pid>` | jeśli proces nie żyje albo to nie ten serwer: `rm /srv/open-problems/.state/write.lock` |
+| `plik blokady zapisu jest uszkodzony` | `cat /srv/open-problems/.state/write.lock` | `rm /srv/open-problems/.state/write.lock` |
+| `licznik limitow jest nieczytelny` | `cat /srv/open-problems/.state/limits.json /srv/open-problems/.state/ip.json` | skasuj wskazany plik — limity dobowe startują wtedy od zera |
+| `git moze przepisac bajty dowodow` | `git -C /srv/open-problems check-attr text -- problems/evidence/0000-probe.txt` | przywróć `.gitattributes` z linią `problems/evidence/** -text` i zacommituj |
 
-Serwer sprawdza stan przy starcie i przy każdej próbie zapisu, więc wychodzi z trybu
-read-only sam, gdy usuniesz przyczynę. Restart nie jest potrzebny i nie pomoże, jeśli
-przyczyna została.
+Serwer sprawdza stan przy każdym **odczycie** (tania próbka: `HEAD`, brud w drzewie,
+blokada, liczniki — z sufitem raz na sekundę) i wymusza pełne sprawdzenie przy każdej
+próbie zapisu, więc wychodzi z trybu read-only sam, w ciągu ~sekundy od usunięcia
+przyczyny. Restart nie jest potrzebny i nie pomoże, jeśli przyczyna została.
 
-Dlatego `git status --porcelain` jest w tej tabeli pierwszy: `pulse` i widok tekstowy
-pokazują **ostatni znany** stan, a ten odświeża się dopiero przy próbie zapisu. Zaraz po
-tym, jak coś zabrudzi drzewo, `pulse` potrafi jeszcze przez chwilę mówić `writes: "ok"`.
+Gdy `reason` mówi o brudnym drzewie, `/api/pulse` dokłada `"source": "HEAD"`, a widok
+tekstowy linię `widok pochodzi z HEAD`. To znaczy, że odczyty **omijają drzewo robocze**
+i podają stan z ostatniego commita: w drzewie może leżeć zapis, którego nie ma w gicie,
+a taki stan z definicji nie istnieje (niezmiennik 1).
 
 ## Awarie
 
@@ -138,6 +156,21 @@ procesie, a `ps` nic nie pokazuje:
     sudo systemctl stop open-problems
     sudo rm /srv/open-problems/.state/write.lock
     sudo systemctl start open-problems
+
+Nie musisz zgadywać, czy to ten przypadek: `/api/pulse` mówi wtedy
+`"reason": "blokada zapisu jest zajeta"` i podaje tę samą komendę w polu `fix`.
+
+**Zapisy zwracają 503 „git w tym katalogu jest zajety (.git/index.lock)”.** To jest
+zaległy zamek gita — zostaje po przerwanym `git add`/`git commit` albo po `kill -9` na
+czymkolwiek, co dotykało indeksu. Serwer czeka na niego do sekundy i **nie stosuje
+zapisu**, dopóki zamka nie ma, więc drzewo zostaje czyste, a autor dostaje 503 z
+`retry-after`, nie utracony zapis. Sprawdź, czy naprawdę nikt nie pracuje, i usuń:
+
+    ls -l /srv/open-problems/.git/index.lock
+    ps aux | grep '[g]it'
+    sudo rm /srv/open-problems/.git/index.lock
+
+Zapisy wracają od następnego żądania — bez restartu.
 
 **Każdy zapis pada, odczyty działają.** Najczęściej `node` nie jest w `PATH`
 jednostki — serwer woła `node scripts/build.mjs` po nazwie. Sprawdź, co instalator

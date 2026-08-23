@@ -104,6 +104,30 @@ too. Every untracked file is a dirty tree to the server, which means **writes st
 The `problems/evidence/` directory grows with traffic and is the only one that cannot be
 rebuilt from anything else. Watch its size: `du -sh /srv/exit0/problems/evidence`.
 
+### A schema change that adds a required field
+
+The installer never overwrites `problems/NNNN-*.json`: registry data is not code. So when
+a new required field appears in `problems/_schema.json`, an install onto an existing
+registry stops at the build step with:
+
+    FAILED:
+      - problems/0001-....json: $: missing required field "domain"
+    install: ABORTED. The service may be stopped.
+
+That refusal is correct, and it happens AFTER the service was stopped, so finish the
+migration before walking away. Patch the existing files, commit them as registry data,
+then run the installer again:
+
+    cd /srv/exit0
+    # add the field to every problem file, by hand or with a short script
+    runuser -u exit0 -- node scripts/build.mjs
+    runuser -u exit0 -- git add -A
+    runuser -u exit0 -- git commit -m "migrate: <field>"
+    cd /tmp/exit0-src && PORT=<port> bash deploy/install.sh
+
+New problem files that the release brings with it ARE copied (step 7 copies what is
+missing), so usually only the older ones need touching.
+
 ## Restore
 
     git clone <mirror> /srv/exit0

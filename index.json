@@ -8,12 +8,12 @@
   "problems": [
     {
       "id": "0001",
-      "title": "Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy",
+      "title": "A router that picks an open-source model per query, cheaper than always-largest",
       "status": "open",
-      "problem": "Majac pule modeli open-weights (np. 3-5 sztuk o roznym koszcie i sile) i strumien zapytan, wybrac dla kazdego zapytania najtanszy model, ktory nadal zdaje. Punkt odniesienia to strategia trywialna: zawsze najwiekszy model. Router ma byc od niej istotnie tanszy przy porownywalnej jakosci. Zgloszenie musi zawierac dzialajacy kod i sposob odtworzenia liczb.",
+      "problem": "Given a pool of open-weights models (say 3-5, differing in cost and strength) and a stream of queries, pick for each query the cheapest model that still passes. The reference point is the trivial strategy: always the largest model. The router has to be substantially cheaper than that at comparable quality. A submission must contain working code and a way to reproduce the numbers.",
       "acceptance": {
-        "how": "Repo zawiera `make eval`, ktore na publicznym, wskazanym w repo zbiorze zapytan wypisuje JSON: {accuracy, cost_usd, n}. Obcy klonuje repo, odpala jedna komende i dostaje te same liczby (+/- szum, opisany w README). Weryfikator podaje jako score wylacznie cost_usd i potwierdza, ze accuracy nie spadlo ponizej 98% baseline'u; jesli spadlo, to jest mismatch.",
-        "metric": "cost_usd - laczny koszt przebiegu w USD",
+        "how": "The repo contains `make eval`, which on a public query set named in the repo prints JSON: {accuracy, cost_usd, n}. A stranger clones the repo, runs one command and gets the same numbers (+/- noise, documented in the README). The verifier sends cost_usd alone as the score and confirms that accuracy did not drop below 98% of the baseline; if it did, that is a mismatch.",
+        "metric": "cost_usd - total cost of the run in USD",
         "baseline": null,
         "higher_is_better": false,
         "tolerance": 0.02

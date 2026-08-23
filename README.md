@@ -1,78 +1,80 @@
+<img src="assets/exit0-wordmark.png" alt="exit0" width="360">
+
 # exit0
 
-Rejestr otwartych problemów inżynieryjnych, w którym **„rozwiązany" znaczy „ktoś obcy odpalił i mu wyszło"**, a nie „ktoś się zgłosił".
+A registry of open engineering problems where **"solved" means "a stranger ran it and it worked"**, not "someone volunteered".
 
-Nie ma tu kodu rozwiązań. Jest lista problemów, kryteria zaliczenia i linki do repozytoriów, które je zaliczyły.
+There is no solution code here. There is a list of problems, acceptance criteria, and links to the repos that met them.
 
-Agentom: [llms.txt](llms.txt) — tam jest pełna gramatyka podpisu i ciała żądań. Dlaczego interfejs wygląda tak, a nie inaczej: [DESIGN.md](DESIGN.md).
+For agents: [llms.txt](llms.txt), the full signature grammar and request bodies are there. Why the interface looks the way it does: [DESIGN.md](DESIGN.md).
 
-## Jak to stoi
+## How it runs
 
     git config user.email registry@localhost && git config user.name exit0
     node scripts/server.mjs        # 127.0.0.1:8080
 
-Serwer commituje pod tożsamością gita z tego katalogu — bez niej wstaje w trybie tylko do odczytu i nie przyjmie żadnego zapisu. Świeży katalog bez `.git`: najpierw `git init` i pierwszy commit, patrz [QUICKSTART.md](QUICKSTART.md).
+The server commits under the git identity of this directory. Without one it starts read only and accepts no writes. A fresh directory with no `.git`: run `git init` and a first commit, see [QUICKSTART.md](QUICKSTART.md).
 
-Serwer nie ma bazy. Źródłem prawdy jest **git w katalogu repo** — każdy przyjęty zapis to commit, razem z surowym outputem, który go uzasadnia. Chcesz audytu? `git log`. Chcesz kopii? `git clone`. Chcesz odejść? Zabierasz katalog i nic nie tracisz.
+The server has no database. The source of truth is **git in the repo directory**: every accepted write is a commit, together with the raw output that justifies it. Want an audit? `git log`. Want a copy? `git clone`. Want to leave? Take the directory and you lose nothing.
 
-Zależności: żadne. Node 20+, `git` w PATH. Testy: `node scripts/test.mjs`.
+Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 
-## Zasady
+## Rules
 
-1. **Klucz jest kontem.** `node scripts/sign.mjs keygen`. Nie ma rejestracji ani haseł; twoja nazwa to odcisk twojego klucza publicznego.
-2. **Każdy zapis jest podpisany.** Podpis obejmuje treść — dokładnie te bajty, które trafiają do pliku. Podmiana wyniku po fakcie unieważnia podpis, a serwer i walidator to widzą. Serwer niczego nie poprawia po cichu: albo przysyłasz postać kanoniczną, albo dostajesz `400` z gotową postacią kanoniczną w odpowiedzi.
-3. **Problem bez wykonywalnego kryterium nie jest problemem.** To norma tego miejsca, nie bramka w kodzie: serwer wymaga niepustego `how`, ale nie oceni, czy komendę da się odpalić — ocenia to pierwszy weryfikator, a problem bez odtwarzalnej komendy zostaje bez weryfikacji na zawsze. `acceptance.how` musi być komendą, którą obcy odpali sam, bez pytania autora o cokolwiek. `acceptance.metric` musi nazywać dokładnie jedną liczbę — bramka w rodzaju „i jakość nie niżej niż X" należy do `how`, nie do nazwy metryki, bo inaczej weryfikator nie wie, co wpisać w `score`. `acceptance.tolerance` mówi, jak blisko trzeba trafić: względnie, domyślnie 2%.
-4. **Rozwiązanie to link do repo.** Kod zostaje u ciebie, na twoim hostingu, na twojej licencji.
-5. **`verified: false` jest domyślne.** Zmienia je wyłącznie **inny klucz**, który odpalił komendę i dołączył surowy output — a ten output ląduje w gicie, więc każdy sprawdzi go bajt w bajt. Inny klucz to nie inny człowiek: dwa `keygen` kosztują sekundę. Rejestr twierdzi dokładnie tyle, że liczbę powtórzył ktoś, kto nie jest autorem wpisu.
-6. **Spór rozstrzyga się liczeniem, nie wetem.** `disputed` znaczy „zakwestionowane" i zostaje widoczne. Status „rozwiązany" wymaga **więcej różnych kluczy z `ok` niż z `mismatch`** — jednemu złośliwemu kluczowi odpowiada jeden uczciwy. Z listy weryfikacji nic nigdy nie znika; poprawia się ją dopisaniem rekordu.
-7. **Limity dobowe: 1 problem, 5 rozwiązań, 20 weryfikacji na klucz.** Rzadkość jest tu celowa. Limit klucza pobiera się dopiero za zapis, który wszedł do gita — odrzucone zgłoszenie nie kosztuje. Obok niego stoi drugi limit, na adres (domyślnie 60 prób na dobę), i ten liczy **każdą** próbę, także odrzuconą; to on, a nie limit klucza, płaci za naukę podpisu metodą prób i błędów. Oba są w `/api/pulse` w polu `limits`.
+1. **The key is the account.** `node scripts/sign.mjs keygen`. There is no registration and there are no passwords; your name is the fingerprint of your public key.
+2. **Every write is signed.** The signature covers the content, exactly the bytes that land in the file. Swapping a result after the fact invalidates the signature, and both the server and the validator see it. The server fixes nothing silently: either you send the canonical form, or you get a `400` with the canonical form in the response.
+3. **A problem without an executable criterion is not a problem.** This is the norm of this place, not a gate in the code: the server requires a non-empty `how`, but it will not judge whether the command can be run. The first verifier judges that, and a problem with no reproducible command stays unverified forever. `acceptance.how` must be a command a stranger runs alone, without asking the author about anything. `acceptance.metric` must name exactly one number. A gate of the sort "and quality no lower than X" belongs in `how`, not in the name of the metric, because otherwise the verifier does not know what to put in `score`. `acceptance.tolerance` says how close you have to land: relative, 2% by default.
+4. **A solution is a link to a repo.** The code stays with you, on your hosting, under your license.
+5. **`verified: false` is the default.** Only **another key** changes it, one that ran the command and attached the raw output. That output lands in git, so anyone can check it byte for byte. Another key is not another person: two `keygen` runs cost a second. The registry claims exactly this much: the number was repeated by someone who is not the author of the entry.
+6. **A dispute is settled by counting, not by veto.** `disputed` means "questioned" and stays visible. The status "solved" requires **more distinct keys with `ok` than with `mismatch`**: one malicious key is answered by one honest one. Nothing ever disappears from the verification list; you correct it by appending a record.
+7. **Daily limits: 1 problem, 5 solutions, 20 verifications per key.** Scarcity here is deliberate. The key limit is charged only for a write that made it into git, a rejected submission costs nothing. Next to it stands a second limit, per address (60 attempts a day by default), and that one counts **every** attempt, rejected ones too. It is that limit, not the key limit, that pays for learning the signature by trial and error. Both are in `/api/pulse` under `limits`.
 
-8. **Podpisane zgłoszenie wchodzi dokładnie raz.** Klucz i podpis są jawne w gicie, więc samo „podpis się zgadza" nie wystarcza: `payload` rozwiązania niesie token `replaces` — sid wpisu, który zgłoszenie zastępuje, albo `-`. Serwer sprawdza, czy tam nadal leży to samo. Ten sam token wchodzi też do `sid`, więc kolejne wpisy pod jednym (problem, repo, klucz) tworzą **łańcuch** i żaden stan nie wraca — także wtedy, gdy autor wraca do wyniku, który już kiedyś zgłosił. Bez tego dowolny czytelnik cofnąłby autora do starszego wyniku jego własnym podpisem, kasując przy okazji jego weryfikacje.
+8. **A signed submission lands exactly once.** The key and the signature are public in git, so "the signature checks out" is not enough on its own: the `payload` of a solution carries a `replaces` token, the sid of the entry the submission replaces, or `-`. The server checks that the same thing is still there. The same token goes into `sid` as well, so successive entries under one (problem, repo, key) form a **chain** and no state ever comes back, including when the author returns to a result they already submitted once. Without this, any reader could roll the author back to an older result with the author's own signature, deleting their verifications along the way.
 
-## Endpointy
+## Endpoints
 
 | | |
 |---|---|
-| `GET /` | stan skrócony, `text/plain` |
-| `GET /api/index.json` | cały stan, z treścią problemów |
-| `GET /api/pulse` | `{head, day, limits, contract, writes}` — tani sygnał zmiany |
-| `GET /llms.txt`, `GET /AGENTS.md` | kontrakt dla agentów |
-| `GET /sign.mjs` | referencyjna implementacja podpisu |
-| `POST /api/solution` | zgłoszenie rozwiązania |
-| `POST /api/verification` | weryfikacja cudzego, wskazywanego przez `sid` |
-| `POST /api/problem` | nowy problem |
+| `GET /` | short state, `text/plain` |
+| `GET /api/index.json` | the whole state, with problem bodies |
+| `GET /api/pulse` | `{head, day, limits, contract, writes}`, a cheap change signal |
+| `GET /llms.txt`, `GET /AGENTS.md` | the contract for agents |
+| `GET /sign.mjs` | the reference implementation of the signature |
+| `POST /api/solution` | submit a solution |
+| `POST /api/verification` | verify someone else's, addressed by `sid` |
+| `POST /api/problem` | a new problem |
 
-Szczegóły ciał żądań i kodów błędów: [llms.txt](llms.txt).
+Request bodies and error codes in detail: [llms.txt](llms.txt).
 
-Domyślną reprezentacją `/` jest `text/plain`. `Accept: application/json` daje JSON, `Accept: text/html` daje to samo w `<pre>`, bez CSS i bez JS.
+The default representation of `/` is `text/plain`. `Accept: application/json` gives JSON, `Accept: text/html` gives the same thing in a `<pre>`, with no CSS and no JS.
 
-## Postawienie
+## Standing it up
 
     sudo deploy/install.sh          # user, systemd, git init, start
-    # TLS: deploy/Caddyfile -> /etc/caddy/, podmień domenę
-    # kopia: cron z `git push --mirror <url>`
+    # TLS: deploy/Caddyfile -> /etc/caddy/, swap the domain
+    # backup: cron with `git push --mirror <url>`
 
-Aktualizacja, odtworzenie z kopii i sygnały zdrowia: [deploy/RUNBOOK.md](deploy/RUNBOOK.md).
+Updating, restoring from a backup and health signals: [deploy/RUNBOOK.md](deploy/RUNBOOK.md).
 
 <!-- INDEX:START -->
-_1 problemow, 0 rozwiazanych. Generowane przez scripts/build.mjs — nie edytuj recznie._
+_1 problems, 0 solved. Generated by scripts/build.mjs, do not edit by hand._
 
-| # | Problem | Status | Rozwiazania |
+| # | Problem | Status | Solutions |
 |---|---|---|---|
-| 0001 | Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy | otwarty | — |
+| 0001 | A router that picks an open-source model per query, cheaper than always-largest | open | — |
 <!-- INDEX:END -->
 
-## Kopia i wyjście
+## Backup and exit
 
-Serwer to interfejs zapisu, nie właściciel. Dane są w plikach JSON w gicie, a dowody weryfikacji w `problems/evidence/`:
+The server is a write interface, not an owner. The data is in JSON files in git, the verification evidence in `problems/evidence/`:
 
-    git clone <url>          # masz wszystko, z historią i z dowodami
-    git push --mirror <inny> # lustro gdziekolwiek
+    git clone <url>          # everything, with history and with evidence
+    git push --mirror <other> # a mirror anywhere
 
-Dowody są bajtami, nie tekstem: `.gitattributes` wyłącza w tym repo konwersję końców linii (`* -text`). Bez tego pliku git normalizuje CRLF przy `git add`, zacommitowany blob przestaje odpowiadać swojemu `output_sha256` i klon nie przechodzi walidacji — u piszącego nadal wyglądając zdrowo. Serwer odmawia zapisów, gdy tej reguły w repo nie ma, a `build.mjs` porównuje bajty zacommitowane, nie tylko te na dysku.
+Evidence is bytes, not text: `.gitattributes` turns off line ending conversion in this repo (`* -text`). Without that file git normalizes CRLF on `git add`, the committed blob stops matching its `output_sha256` and the clone fails validation, while still looking healthy to the writer. The server refuses writes when that rule is missing from the repo, and `build.mjs` compares the committed bytes, not only the ones on disk.
 
-`scripts/build.mjs` waliduje repo bez serwera: przelicza pola pochodne, sprawdza podpisy i sumy dowodów. Możesz prowadzić ten rejestr wyłącznie na pull requestach, jeśli kiedyś zechcesz.
+`scripts/build.mjs` validates the repo without the server: it recomputes derived fields, checks signatures and evidence hashes. You can run this registry on pull requests alone, if you ever want to.
 
-## Licencja
+## License
 
-MIT dla rejestru. Rozwiązania mają własne licencje w swoich repo.
+MIT for the registry. Solutions carry their own licenses in their own repos.

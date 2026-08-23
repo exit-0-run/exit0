@@ -1,6 +1,6 @@
 # /etc/systemd/system/exit0.service
-# Nie kopiuj tego pliku recznie. deploy/install.sh renderuje z niego wersje docelowa:
-# podmienia ExecStart, PATH, PORT, User, WorkingDirectory, ReadWritePaths i Documentation.
+# Do not copy this file by hand. deploy/install.sh renders the target version from it:
+# it replaces ExecStart, PATH, PORT, User, WorkingDirectory, ReadWritePaths and Documentation.
 #   sudo deploy/install.sh
 #   systemctl status exit0
 
@@ -14,35 +14,35 @@ Type=simple
 User=exit0
 WorkingDirectory=/srv/exit0
 
-# Serwer odpala `node scripts/build.mjs` i `git` PO NAZWIE, nie po sciezce. Domyslny
-# PATH jednostki nie zawiera /opt/... ani nvm, wiec bez tej linii kazdy zapis konczy
-# sie ENOENT, a odczyty dzialaja — awaria wyglada jak zdrowy serwer.
+# The server runs `node scripts/build.mjs` and `git` BY NAME, not by path. The unit's
+# default PATH holds neither /opt/... nor nvm, so without this line every write ends in
+# ENOENT while reads keep working: the failure looks like a healthy server.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PORT=8080
-# Publiczny ruch wchodzi wylacznie przez Caddy z deploy/Caddyfile.
+# Public traffic comes in only through Caddy, from deploy/Caddyfile.
 Environment=HOST=127.0.0.1
-# Ten unit ma wlasne proxy przed soba i ono nadpisuje X-Forwarded-For. Bez tego caly
-# ruch wpada do jednego kubelka ::ffff:127.0.0.1 i limit po IP dusi cale wdrozenie.
+# This unit has a proxy in front of it and the proxy overwrites X-Forwarded-For. Without
+# that, all traffic lands in one ::ffff:127.0.0.1 bucket and the per-IP limit chokes the deploy.
 Environment=TRUST_PROXY=1
 ExecStart=/usr/bin/node scripts/server.mjs
 Restart=always
 RestartSec=2
 
-# Zapis to build + commit. SIGTERM ma domknac kolejke, a nie urwac ja w polowie.
+# A write is build + commit. SIGTERM should close the queue, not cut it off halfway.
 KillSignal=SIGTERM
 TimeoutStopSec=15
 
-# Swiadomie BEZ ExecStartPre z `build.mjs --check`: niespojne repo to w tym serwerze
-# tryb read-only (503 na zapisy, odczyty dzialaja), a nie wyjscie z procesu. Bramka
-# w ExecStartPre razem z Restart=always dawalaby petle restartow zamiast diagnozy.
+# Deliberately WITHOUT an ExecStartPre running `build.mjs --check`: in this server an
+# inconsistent repo means read-only mode (503 on writes, reads work), not a process exit.
+# That gate in ExecStartPre plus Restart=always would give a restart loop, not a diagnosis.
 
-# Serwer wykonuje `git` i `node`, pisze wylacznie do swojego katalogu, nasluchuje na
-# porcie > 1024 i nie potrzebuje ani jednej capability.
+# The server runs `git` and `node`, writes only to its own directory, listens on a
+# port > 1024 and needs not a single capability.
 NoNewPrivileges=true
 CapabilityBoundingSet=
 AmbientCapabilities=
-# Tresc rejestru jest publiczna, ale .state/ip.json trzyma liczniki po adresach klientow.
-# Nie ma powodu, zeby na wspoldzielonym hoscie czytal je kazdy.
+# Registry content is public, but .state/ip.json holds counters keyed by client addresses.
+# On a shared host there is no reason for everyone to be able to read them.
 UMask=0027
 PrivateTmp=true
 PrivateDevices=true

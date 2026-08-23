@@ -1,10 +1,10 @@
 # /etc/caddy/Caddyfile
-# TLS zalatwia sie sam. Podmien domene.
-# Sprawdzone: `caddy validate --config Caddyfile --adapter caddyfile` (caddy 2, alpine).
+# TLS takes care of itself. Replace the domain.
+# Checked with: `caddy validate --config Caddyfile --adapter caddyfile` (caddy 2, alpine).
 {
 	servers {
-		# Sciana na powodz polaczen. Rate limit to w Caddy modul zewnetrzny, wiec go tu
-		# nie ma — limity zapisow siedza w serwerze (po kluczu i po IP).
+		# A wall against a flood of connections. Rate limiting is an external module in
+		# Caddy, so it is not here: write limits live in the server (per key and per IP).
 		timeouts {
 			read_body 10s
 			read_header 5s
@@ -17,31 +17,31 @@
 exit0.example {
 	encode gzip
 
-	# Agent czyta naglowki. Powiedz mu, gdzie sa drzwi.
+	# The agent reads headers. Tell it where the door is.
 	header {
 		Link "</llms.txt>; rel=\"llms\", </AGENTS.md>; rel=\"help\""
 		X-Content-Type-Options nosniff
 		-Server
 	}
 
-	# Ten sam limit, co w serwerze. Odcinamy przed proxy, zeby wielkie ciala
-	# nie przechodzily przez oba procesy.
+	# The same limit as in the server. We cut it off before the proxy, so large
+	# bodies do not pass through both processes.
 	request_body {
 		max_size 128KB
 	}
 
 	reverse_proxy localhost:8080 {
-		# Caddy domyslnie DOPISUJE adres klienta do tego, co przyszlo z zewnatrz.
-		# Nadpisujemy, zeby w naglowku byl wylacznie adres bezposredniego klienta:
-		# wtedy podszycie sie pod cudze IP nie dziala niezaleznie od tego, ktory
-		# koniec listy czyta serwer, log czy przyszly kod. `caddy validate` uznaje
-		# to za zbedne — nie jest, to jest ta gwarancja.
+		# By default Caddy APPENDS the client address to whatever arrived from outside.
+		# We overwrite it so the header holds only the address of the direct client:
+		# then spoofing somebody else's IP fails no matter which end of the list the
+		# server, the log or some future code reads. `caddy validate` calls this
+		# redundant. It is not, it is the guarantee.
 		header_up X-Forwarded-For {remote_host}
 
 		transport http {
-			# Zapisy sa serializowane (kolejka + lockfile), wiec pod obciazeniem
-			# odpowiedz potrafi przyjsc po kilku sekundach. Przy 10s klient dostawal
-			# 502 na zapis, ktory i tak sie commitowal.
+			# Writes are serialized (queue + lockfile), so under load the response
+			# can take several seconds. At 10s the client got a 502 for a write
+			# that was committed anyway.
 			read_timeout 30s
 		}
 	}

@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// Tozsamosc, kontrakt podpisu i postac kanoniczna. Jeden modul, bo regula
-// zaimplementowana dwa razy zawsze sie rozjezdza: server.mjs i build.mjs
-// IMPORTUJA stad, nigdy nie odtwarzaja.
+// Identity, the signature contract and the canonical form. One module, because a rule
+// implemented twice always drifts apart: server.mjs and build.mjs
+// IMPORT from here, they never reimplement it.
 //
-//   node scripts/sign.mjs keygen [plik.pem] [--force]
-//   node scripts/sign.mjs whoami [plik.pem]
-//   node scripts/sign.mjs sign <klucz.pem> <action> <json|@plik|->
+//   node scripts/sign.mjs keygen [file.pem] [--force]
+//   node scripts/sign.mjs whoami [file.pem]
+//   node scripts/sign.mjs sign <key.pem> <action> <json|@file|->
 
 import { generateKeyPairSync, sign, verify, createPublicKey, createPrivateKey, createHash } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-// Kontrakt podpisu. Zmiana tutaj uniewaznia KAZDY istniejacy podpis.
+// The signature contract. A change here invalidates EVERY existing signature.
 export const PREFIX = "exit0/v1";
 
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");
 
-// Budzety sa w BAJTACH utf-8, nie w znakach.
+// Budgets are in utf-8 BYTES, not characters.
 export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, output: 32768 };
 
 export const bad = (code, msg, extra) => {
@@ -27,42 +27,42 @@ export const bad = (code, msg, extra) => {
   return e;
 };
 
-// Klucz publiczny w POSTACI KANONICZNEJ. base64 jest wieloznaczne: cztery rozne
-// stringi dekoduja sie do tych samych 32 bajtow, wiec porownywanie stringow
-// przepuszcza samoweryfikacje. Porownuj WYLACZNIE keyId.
+// The public key in CANONICAL FORM. base64 is ambiguous: four different
+// strings decode to the same 32 bytes, so comparing strings lets
+// self-verification through. Compare keyId ONLY.
 export const keyId = (b64) => {
-  if (typeof b64 !== "string") throw bad(400, "key musi byc tekstem");
+  if (typeof b64 !== "string") throw bad(400, "key must be a string");
   const r = Buffer.from(b64, "base64");
-  if (r.length !== 32) throw bad(400, "klucz publiczny Ed25519 ma 32 bajty w base64");
+  if (r.length !== 32) throw bad(400, "an Ed25519 public key is 32 bytes in base64");
   return r.toString("base64");
 };
 
 export const fp32 = (b64) => sha(Buffer.from(keyId(b64), "base64"));
 export const fingerprint = (b64) => fp32(b64).slice(0, 12);
 
-// Token liczbowy: "%.9f" bez koncowych zer. Ta sama regula w kazdym jezyku.
+// Number token: "%.9f" with trailing zeros stripped. The same rule in every language.
 export const numToken = (n) => {
-  if (typeof n !== "number" || !Number.isFinite(n)) throw bad(400, "musi byc liczba JSON (nie tekst, nie null)");
+  if (typeof n !== "number" || !Number.isFinite(n)) throw bad(400, "must be a JSON number (not a string, not null)");
   const x = n + 0;
-  if (Math.abs(x) >= 1e15) throw bad(400, "liczba za duza: |wartosc| < 1e15");
+  if (Math.abs(x) >= 1e15) throw bad(400, "number too large: |value| < 1e15");
   let t = x.toFixed(9);
   if (t.includes(".")) t = t.replace(/0+$/, "").replace(/\.$/, "");
-  if (Number(t) !== x) throw bad(400, "liczba: max 9 miejsc po przecinku");
-  if (t.replace(/[-.]/g, "").replace(/^0+/, "").length > 15) throw bad(400, "liczba: max 15 cyfr znaczacych");
+  if (Number(t) !== x) throw bad(400, "number: max 9 decimal places");
+  if (t.replace(/[-.]/g, "").replace(/^0+/, "").length > 15) throw bad(400, "number: max 15 significant digits");
   return t;
 };
 
 export const canonUrl = (raw) => {
-  if (typeof raw !== "string") throw bad(400, "repo musi byc tekstem");
-  if (bytes(raw) > MAXLEN.repo) throw bad(400, `repo: max ${MAXLEN.repo} bajtow`);
+  if (typeof raw !== "string") throw bad(400, "repo must be a string");
+  if (bytes(raw) > MAXLEN.repo) throw bad(400, `repo: max ${MAXLEN.repo} bytes`);
   let u;
   try {
     u = new URL(raw);
   } catch {
-    throw bad(400, "repo nie jest URL-em");
+    throw bad(400, "repo is not a URL");
   }
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw bad(400, "repo musi byc http(s)");
-  if (!u.hostname) throw bad(400, "repo bez hosta");
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw bad(400, "repo must be http(s)");
+  if (!u.hostname) throw bad(400, "repo has no host");
   u.hash = "";
   u.username = "";
   u.password = "";
@@ -72,14 +72,14 @@ export const canonUrl = (raw) => {
   return s;
 };
 
-// Znaki sterujace C0, DEL, separatory linii i sterowanie BiDi. Tabulator i LF
-// sa poza zbiorem celowo: normalizuja je regexy nizej. Zbior jest zbudowany z
-// escape'ow w stringu, bo literal niedrukowalny czyni ten plik binarnym.
+// C0 controls, DEL, line separators and BiDi controls. Tab and LF are
+// outside the set on purpose: the regexes below normalize them. The set is built from
+// escapes inside a string, because a non-printing literal makes this file binary.
 const CTRL = new RegExp("[\\u0000-\\u0008\\u000B-\\u001F\\u007F\\u200E\\u200F\\u202A-\\u202E\\u2028\\u2029\\u2066-\\u2069]", "g");
 const NUL = String.fromCharCode(0);
 
 export const canonText = (raw, label, max) => {
-  if (typeof raw !== "string") throw bad(400, `${label} musi byc tekstem`);
+  if (typeof raw !== "string") throw bad(400, `${label} must be a string`);
   const s = raw
     .normalize("NFC")
     .replace(/\r\n?/g, "\n")
@@ -88,31 +88,31 @@ export const canonText = (raw, label, max) => {
     .replace(/[ \t]*\n[ \t]*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  if (bytes(s) > max) throw bad(400, `${label}: max ${max} bajtow, ma ${bytes(s)}`);
+  if (bytes(s) > max) throw bad(400, `${label}: max ${max} bytes, has ${bytes(s)}`);
   return s;
 };
 
 export const canonLine = (raw, label, max) => {
   const s = canonText(raw, label, Infinity).replace(/\n/g, " ").replace(/ +/g, " ").trim();
-  if (bytes(s) > max) throw bad(400, `${label}: max ${max} bajtow, ma ${bytes(s)}`);
+  if (bytes(s) > max) throw bad(400, `${label}: max ${max} bytes, has ${bytes(s)}`);
   return s;
 };
 
-// Serwer NIGDY nie poprawia po cichu. Albo postac kanoniczna, albo 400 z podpowiedzia.
+// The server NEVER fixes anything silently. Either the canonical form, or a 400 with a hint.
 export const assertCanon = (fn, v, label, max) => {
   const c = fn(v, label, max);
-  if (c !== v) throw bad(400, `${label}: przyslij postac kanoniczna`, { canonical: c });
+  if (c !== v) throw bad(400, `${label}: send the canonical form`, { canonical: c });
   return v;
 };
 
-// Surowy output weryfikacji NIE jest kanonikalizowany: to dowod, nie tresc.
-// Zapisujemy bajt w bajt, podpisujemy jego sha256.
+// The raw verification output is NOT canonicalized: it is evidence, not prose.
+// We store it byte for byte and sign its sha256.
 export const evidenceBytes = (raw) => {
-  if (typeof raw !== "string") throw bad(400, "output musi byc tekstem");
-  if (!raw.trim()) throw bad(400, "surowy output jest wymagany");
-  if (raw.indexOf(NUL) !== -1) throw bad(400, "output nie moze zawierac bajtu zerowego");
+  if (typeof raw !== "string") throw bad(400, "output must be a string");
+  if (!raw.trim()) throw bad(400, "raw output is required");
+  if (raw.indexOf(NUL) !== -1) throw bad(400, "output must not contain a zero byte");
   const b = Buffer.from(raw, "utf8");
-  if (b.length > MAXLEN.output) throw bad(400, `output: max ${MAXLEN.output} bajtow, ma ${b.length} — podlinkuj go zamiast wklejac`);
+  if (b.length > MAXLEN.output) throw bad(400, `output: max ${MAXLEN.output} bytes, has ${b.length}. Link to it instead of pasting it`);
   return b;
 };
 
@@ -132,49 +132,49 @@ export const check = (keyB64, sigB64, msg) => {
   }
 };
 
-// --- kontrakt podpisu ---
-// Kazde pole zmiennej dlugosci jest ramkowane jako <dlugosc_utf8>:<wartosc>,
-// kazde pozostale jest tokenem z gramatyki, ktora nie moze zawierac "|".
-// Injektywnosc jest wiec strukturalna, a payload zostaje czytelny w tresci 403.
+// --- signature contract ---
+// Every variable-length field is framed as <utf8len>:<value>,
+// every other one is a token from a grammar that cannot contain "|".
+// Injectivity is therefore structural, and the payload stays readable inside a 403.
 
 const F = (s) => `${bytes(s)}:${s}`;
 
 const pid = (v) => {
-  if (typeof v !== "string" || !/^\d{4}$/.test(v)) throw bad(400, 'problem: 4 cyfry, np. "0001"');
+  if (typeof v !== "string" || !/^\d{4}$/.test(v)) throw bad(400, 'problem: 4 digits, e.g. "0001"');
   return v;
 };
 const hex16 = (v, l) => {
-  if (typeof v !== "string" || !/^[0-9a-f]{16}$/.test(v)) throw bad(400, `${l}: 16 znakow hex`);
+  if (typeof v !== "string" || !/^[0-9a-f]{16}$/.test(v)) throw bad(400, `${l}: 16 hex characters`);
   return v;
 };
 const hex64 = (v, l) => {
-  if (typeof v !== "string" || !/^[0-9a-f]{64}$/.test(v)) throw bad(400, `${l}: 64 znaki hex`);
+  if (typeof v !== "string" || !/^[0-9a-f]{64}$/.test(v)) throw bad(400, `${l}: 64 hex characters`);
   return v;
 };
 const verdictT = (v) => {
-  if (v !== "ok" && v !== "mismatch") throw bad(400, 'verdict musi byc "ok" albo "mismatch"');
+  if (v !== "ok" && v !== "mismatch") throw bad(400, 'verdict must be "ok" or "mismatch"');
   return v;
 };
 const boolT = (v, l) => {
   if (v === undefined || v === null) return "0";
-  if (typeof v !== "boolean") throw bad(400, `${l} musi byc true/false`);
+  if (typeof v !== "boolean") throw bad(400, `${l} must be true/false`);
   return v ? "1" : "0";
 };
 const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
-// Stan, ktory to zgloszenie zastepuje: "-" gdy pod (problem, repo, klucz) nie
-// ma jeszcze nic, albo sid wpisu, ktory tam lezal w chwili podpisu. Bez tego
-// tokenu podpisane body jest wazne w nieskonczonosc: kazdy, kto je widzial —
-// a widzi je caly rejestr, bo key i sig sa w gicie — cofa nim autora do
-// starszego wyniku, kasuje weryfikacje i pobiera przy okazji limit autora.
+// The state this submission replaces: "-" when nothing sits under (problem, repo, key)
+// yet, or the sid of the entry that sat there at signing time. Without this
+// token a signed body stays valid forever: anyone who saw it, and the whole
+// registry sees it, because key and sig are in git, can roll the author back to
+// an older score, wipe the verifications and spend the author's quota on the way.
 export const replacesT = (v) => (v === undefined || v === null || v === "-" ? "-" : hex16(v, "replaces"));
 const tolT = (v) => {
   const t = v ?? 0.02;
   if (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > 0.5)
-    throw bad(400, "tolerance: liczba z przedzialu [0, 0.5]");
+    throw bad(400, "tolerance: a number in [0, 0.5]");
   return numToken(t);
 };
 
-// JEDYNE miejsce, w ktorym plaskie body i zapisany plik sie spotykaja.
+// The ONLY place where the flat body and the stored file meet.
 export const problemFields = (x) => ({
   title: x.title,
   problem: x.problem,
@@ -219,21 +219,21 @@ export const payload = (action, f) => {
       optNum(f.baseline),
       tolT(f.tolerance),
     ].join("|");
-  throw bad(404, "nieznana akcja");
+  throw bad(404, "unknown action");
 };
 
-// --- identyfikatory wyprowadzone z tresci ---
+// --- content-derived identifiers ---
 
-// sid jest LANCUCHEM, nie adresem tresci: kazdy bierze sid stanu, ktory
-// zastapil. Bez tego ogniwa "podpisane body wchodzi dokladnie raz" bylo prawda
-// tylko o jeden krok. sid liczony wylacznie z (problem, repo, score, klucz)
-// wraca do tej samej wartosci, gdy autor wraca do wczesniejszego wyniku
-// (0.42 -> 0.39 -> 0.42), a razem z nim ozywa KAZDE historyczne body, ktorego
-// replaces wskazywalo ten stan — i znowu cofa autora, kasuje cudze weryfikacje
-// i pobiera limit autora. Zmierzone: stan wracal do sid_1 w trzech ruchach.
-// Z ogniwem stan nie moze sie powtorzyc: powtorka wymagalaby kolizji sha256,
-// bo "-" wystepuje dokladnie raz (rekord nigdy nie znika), a kazde nastepne
-// ogniwo commituje sie do poprzedniego.
+// sid is a CHAIN, not a content address: each one carries the sid of the state it
+// replaced. Without that link "a signed body lands exactly once" was true
+// for exactly one step. A sid computed only from (problem, repo, score, key)
+// returns to the same value when the author returns to an earlier score
+// (0.42 -> 0.39 -> 0.42), and with it EVERY historical body whose
+// replaces pointed at that state comes back to life, rolls the author back again, wipes
+// other people's verifications and spends the author's quota. Measured: the state returned to sid_1 in three moves.
+// With the link the state cannot repeat: a repeat would need a sha256 collision,
+// because "-" occurs exactly once (a record never disappears) and every next
+// link commits to the previous one.
 export const solutionId = (problemId, repo, score, key, replaces) =>
   sha(
     Buffer.from(
@@ -253,16 +253,16 @@ export const verificationId = (sid, key, outSha, verdict, score) =>
 export const evidencePath = (problemId, outSha) =>
   `problems/evidence/${pid(problemId)}-${hex64(outSha, "output_sha256")}.txt`;
 
-// --- regula akceptacji: niezmiennik 3 plus tolerancja ---
-// Wolana z server.mjs I z build.mjs. Zwraca null albo {code, error} — kod
-// idzie do klienta bez przemapowania, walidator traktuje kazde nie-null jako blad.
+// --- acceptance rule: invariant 3 plus tolerance ---
+// Called from server.mjs AND from build.mjs. Returns null or {code, error}: the code
+// goes to the client unmapped, the validator treats every non-null as an error.
 
-// Zmierzone, nie zalozone — nie zamieniaj tego na samo keyId(a) === keyId(b),
-// bo predykat zacznie rzucac zamiast zwracac {code, error}. Awaryjne porownanie
-// napisow NIE oslabia niezmiennika 3: (1) dla kazdej z czterech pisowni base64
-// prawdziwego klucza keyId sie UDAJE, wiec wariantowe obejscie nigdy tu nie
-// dochodzi i konczy sie na 403; (2) klucz, na ktorym keyId rzuca, ma check()
-// zawsze false, wiec nie da sie pod nim wyprodukowac zadnej weryfikacji.
+// Measured, not assumed. Do not reduce this to plain keyId(a) === keyId(b),
+// or the predicate starts throwing instead of returning {code, error}. The fallback
+// string comparison does NOT weaken invariant 3: (1) for each of the four base64
+// spellings of a real key keyId SUCCEEDS, so the spelling-variant bypass never gets
+// here and ends at a 403; (2) a key that makes keyId throw has check()
+// always false, so no verification can be produced under it.
 const sameKey = (a, b) => {
   try {
     return keyId(a) === keyId(b);
@@ -271,50 +271,50 @@ const sameKey = (a, b) => {
   }
 };
 
-// Pasmo to iloczyn dwoch liczb zmiennoprzecinkowych, wiec 0.02 * 0.39 wychodzi
-// 0.0078000000000000005. Porownanie nizej zostaje DOKLADNE — obcinamy tylko forme
-// w komunikacie, i to w dol, zeby nigdy nie obiecac pasma szerszego niz egzekwowane.
+// The band is a product of two floats, so 0.02 * 0.39 comes out as
+// 0.0078000000000000005. The comparison below stays EXACT: we trim only the form
+// shown in the message, and downwards, so we never promise a wider band than we enforce.
 const bandText = (b) => {
   const t = (Math.floor(b * 1e9) / 1e9).toFixed(9).replace(/0+$/, "").replace(/\.$/, "");
   return t === "-0" ? "0" : t;
 };
 
 export const checkVerification = (p, sol, v) => {
-  if (sameKey(v.key, sol.key)) return { code: 403, error: "nie mozesz zweryfikowac wlasnego rozwiazania" };
-  if (v.verdict !== "ok" && v.verdict !== "mismatch") return { code: 400, error: 'verdict musi byc "ok" albo "mismatch"' };
-  if (typeof v.score !== "number" || !Number.isFinite(v.score)) return { code: 400, error: "score weryfikacji musi byc liczba" };
-  if (typeof sol.score !== "number" || !Number.isFinite(sol.score)) return { code: 400, error: "score rozwiazania musi byc liczba" };
+  if (sameKey(v.key, sol.key)) return { code: 403, error: "you cannot verify your own solution" };
+  if (v.verdict !== "ok" && v.verdict !== "mismatch") return { code: 400, error: 'verdict must be "ok" or "mismatch"' };
+  if (typeof v.score !== "number" || !Number.isFinite(v.score)) return { code: 400, error: "the verification score must be a number" };
+  if (typeof sol.score !== "number" || !Number.isFinite(sol.score)) return { code: 400, error: "the solution score must be a number" };
   const tol = p.acceptance.tolerance ?? 0.02;
   const band = tol * Math.abs(sol.score);
   const diff = Math.abs(v.score - sol.score);
   if (v.verdict === "ok" && diff > band)
-    return { code: 422, error: `verdict "ok" wymaga wyniku w pasmie +/-${bandText(band)} od ${sol.score}; masz ${v.score} — wyslij verdict "mismatch"` };
+    return { code: 422, error: `verdict "ok" requires a score within the band +/-${bandText(band)} of ${sol.score}; you have ${v.score}. Send verdict "mismatch"` };
   if (v.verdict === "mismatch" && diff <= band)
-    return { code: 422, error: `verdict "mismatch" wymaga wyniku POZA pasmem +/-${bandText(band)} od ${sol.score}; masz ${v.score} — to jest zgodnosc, wyslij verdict "ok"` };
+    return { code: 422, error: `verdict "mismatch" requires a score OUTSIDE the band +/-${bandText(band)} of ${sol.score}; you have ${v.score}. That is a match, send verdict "ok"` };
   return null;
 };
 
-// --- render, wspoldzielony przez serwer i build.mjs ---
+// --- rendering, shared by the server and build.mjs ---
 
-// Kontynuacja pola wielolinijkowego dostaje znacznik, ktorego kanonikalizacja
-// NIE wyprodukuje: po canonText zadna linia tresci nie zaczyna sie od spacji,
-// wiec "<wciecie>| " jest dla obcego tekstu nieosiagalne. Samo wciecie nie
-// wystarczylo — linie rekordu ("metryka:", "rozwiazania:") stoja w tej samej
-// kolumnie co kontynuacja, wiec wielolinijkowe `how` podszywalo sie pod nie.
+// A continuation line of a multi-line field gets a marker that canonicalization
+// will NOT produce: after canonText no content line starts with a space,
+// so "<indent>| " is unreachable for foreign text. Indentation alone was not
+// enough: the record lines ("metric:", "solutions:") stand in the same
+// column as a continuation, so a multi-line `how` impersonated them.
 const CONT = "| ";
 export const fieldBlock = (label, value, indent = 6) =>
   value.split("\n").map((l, i) => " ".repeat(indent) + (i ? CONT : label + ": ") + l).join("\n");
 
-// Komorka tabeli w README. Samo "\|" nie wystarcza z dwoch powodow, oba
-// zmierzone na dzialajacym serwerze:
-//   1. tytul z "<!-- INDEX:END -->" laduje W SRODKU regionu generowanego,
-//      wiec build.mjs tnie README po CUDZYM znaczniku i przestaje sie zbiegac —
-//      jeden podpisany POST wylaczal zapisy calego rejestru na stale,
-//   2. "[klik](https://phish)" renderuje sie na GitHubie jako prawdziwy odnosnik
-//      w tabeli, ktora caly projekt przedstawia jako zweryfikowana.
-// Dlatego: "<", ">" i "&" ida na encje (to zabija znacznik), reszta interpunkcji
-// Markdowna dostaje odwrotny ukosnik. Kolejnosc jest istotna — encje wchodza
-// pierwsze, bo inaczej ukosnik trafilby w srodek "&amp;".
+// A README table cell. "\|" alone is not enough, for two reasons, both
+// measured on a running server:
+//   1. a title carrying "<!-- INDEX:END -->" lands INSIDE the generated region,
+//      so build.mjs cuts README at a FOREIGN marker and stops converging:
+//      one signed POST disabled writes for the whole registry permanently,
+//   2. "[click](https://phish)" renders on GitHub as a real link
+//      inside a table that the whole project presents as verified.
+// So: "<", ">" and "&" become entities (that kills the marker), the rest of the
+// Markdown punctuation gets a backslash. Order matters: the entities go
+// first, otherwise the backslash would land in the middle of "&amp;".
 const ENT = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 export const cell = (s) =>
   String(s)
@@ -322,12 +322,12 @@ export const cell = (s) =>
     .replace(/[\\`*_[\]()~|!]/g, "\\$&")
     .replace(/\r?\n/g, " ");
 
-// Cel odnosnika. Nawias zamykajacy przezywa canonUrl (sprawdzone:
-// "https://example.com/a)x" wychodzi bez zmian), a w postaci [tekst](cel)
-// konczy odnosnik za wczesnie i reszta URL-a staje sie tekstem strony.
-// Postac <cel> tego nie ma; lamia ja tylko "<", ">" i biale znaki, a te
-// canonUrl juz procentuje — wiec ponizsze jest siatka bezpieczenstwa, nie
-// zmiana adresu.
+// The link target. A closing parenthesis survives canonUrl (checked:
+// "https://example.com/a)x" comes out unchanged), and in the [text](target) form
+// it ends the link too early, so the rest of the URL becomes page text.
+// The <target> form has no such problem; only "<", ">" and whitespace break it, and
+// canonUrl already percent-encodes those, so the below is a safety net, not
+// an address rewrite.
 export const mdUrl = (s) =>
   `<${String(s).replace(/[<>\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)}>`;
 
@@ -341,13 +341,13 @@ export const solCmp = (p) => (a, b) => {
 // --- CLI ---
 
 const USAGE = [
-  "uzycie:",
-  "  node scripts/sign.mjs keygen [plik.pem] [--force]",
-  "  node scripts/sign.mjs whoami [plik.pem]",
-  "  node scripts/sign.mjs sign <klucz.pem> <solution|verification|problem> <json|@plik|->",
+  "usage:",
+  "  node scripts/sign.mjs keygen [file.pem] [--force]",
+  "  node scripts/sign.mjs whoami [file.pem]",
+  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem> <json|@file|->",
   "",
-  "Trzeci argument komendy sign to DOKLADNIE to body, ktore zaraz POST-ujesz.",
-  "Na stdout wychodzi kompletne body z polami key i sig; stderr niesie tylko komentarz.",
+  "The third argument of sign is EXACTLY the body you are about to POST.",
+  "stdout carries the complete body with the key and sig fields; stderr carries commentary only.",
 ].join("\n");
 
 const readArg = (a) => {
@@ -356,8 +356,8 @@ const readArg = (a) => {
   return a;
 };
 
-// Kanonikalizacja po stronie klienta: serwer nigdy nie poprawia, wiec robi to
-// CLI i mowi, co zmienilo.
+// Canonicalization on the client side: the server never fixes anything, so the
+// CLI does it and says what it changed.
 const canonBody = (action, b, changed) => {
   const fix = (label, before, after) => {
     if (before !== undefined && before !== after) changed.push([label, before, after]);
@@ -372,8 +372,8 @@ const canonBody = (action, b, changed) => {
     };
     const note = fix("note", b.note, canonText(b.note ?? "", "note", MAXLEN.note));
     if (note) out.note = note;
-    // "-" = pod (problem, repo, klucz) nie ma jeszcze nic. Poprawiajac wlasny
-    // wpis, podaj sid, ktory tam lezy; serwer sprawdzi, czy nadal lezy.
+    // "-" = nothing sits under (problem, repo, key) yet. When you correct your own
+    // entry, pass the sid that sits there; the server checks it still does.
     out.replaces = replacesT(b.replaces);
     return out;
   }
@@ -398,7 +398,7 @@ const canonBody = (action, b, changed) => {
       baseline: b.baseline ?? null,
       tolerance: b.tolerance ?? 0.02,
     };
-  throw bad(404, `nieznana akcja "${action}": solution, verification albo problem`);
+  throw bad(404, `unknown action "${action}": solution, verification or problem`);
 };
 
 const cli = (argv) => {
@@ -408,15 +408,15 @@ const cli = (argv) => {
   if (cmd === "keygen") {
     const out = rest[0] ?? "identity.pem";
     if (existsSync(out) && !flags.includes("--force")) {
-      console.error(`${out} juz istnieje — to jest twoje konto. Nadpisz swiadomie: keygen ${out} --force`);
+      console.error(`${out} already exists, this is your account. Overwrite it deliberately: keygen ${out} --force`);
       process.exit(1);
     }
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     writeFileSync(out, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
     const pub = pubToB64(publicKey);
-    console.log(`klucz prywatny -> ./${out}   NIE commituj, nie wysylaj, nie pokazuj`);
-    console.log("klucz publiczny:", pub);
-    console.log("twoja nazwa:    ", fingerprint(pub));
+    console.log(`private key -> ./${out}   do NOT commit it, do not send it, do not show it`);
+    console.log("public key:", pub);
+    console.log("your name: ", fingerprint(pub));
     return;
   }
 
@@ -438,7 +438,7 @@ const cli = (argv) => {
     try {
       parsed = JSON.parse(readArg(body));
     } catch (e) {
-      throw bad(400, `trzeci argument nie jest poprawnym JSON-em: ${e.message}`);
+      throw bad(400, `the third argument is not valid JSON: ${e.message}`);
     }
     const changed = [];
     const out = canonBody(action, parsed, changed);
@@ -446,8 +446,8 @@ const cli = (argv) => {
     out.key = pub;
     out.sig = sign(null, Buffer.from(msg, "utf8"), priv).toString("base64");
     for (const [label, before, after] of changed)
-      console.error(`poprawiono ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
-    console.error(`podpisano: ${msg}`);
+      console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    console.error(`signed: ${msg}`);
     console.log(JSON.stringify(out, null, 2));
     return;
   }
@@ -460,8 +460,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     cli(process.argv.slice(2));
   } catch (e) {
-    console.error(`blad: ${e.message}`);
-    if (e.canonical !== undefined) console.error(`postac kanoniczna: ${JSON.stringify(e.canonical)}`);
+    console.error(`error: ${e.message}`);
+    if (e.canonical !== undefined) console.error(`canonical form: ${JSON.stringify(e.canonical)}`);
     process.exit(1);
   }
 }

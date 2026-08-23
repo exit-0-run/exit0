@@ -1,0 +1,1 @@
+smoke run 2: cost_usd=0.9

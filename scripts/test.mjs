@@ -13,7 +13,7 @@
 
 import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, cpSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, statSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, cpSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, statSync, unlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -88,6 +88,20 @@ const gitLicznik = (dir) => {
     ile: () => (existsSync(log) ? String(readFileSync(log, "utf8")).split("\n").filter(Boolean).length : 0),
   };
 };
+// Testy o awarii nosnika udaja ja przez chmod 555. Root pisze mimo tego, wiec
+// zamiast czerwonego testu bylby test o niczym — sprawdzamy wprost, czy chmod
+// naprawde zablokowal zapis, i tylko wtedy cokolwiek asertujemy.
+const chmodBlokuje = (dir) => {
+  const p = join(dir, `.probe-praw.${process.pid}`);
+  try {
+    writeFileSync(p, "");
+    unlinkSync(p);
+    return false;
+  } catch {
+    return true;
+  }
+};
+
 const commits = (dir) => Number(git(dir, "rev-list", "--count", "HEAD"));
 const dirty = (dir) => git(dir, "status", "--porcelain", "--", "problems", "README.md", "index.json");
 const problemName = (dir, id) => readdirSync(join(dir, "problems")).find((f) => f.startsWith(`${id}-`) && f.endsWith(".json"));
@@ -313,6 +327,9 @@ if (gate.sign)
         "PREFIX", "MAXLEN", "bad", "keyId", "fp32", "fingerprint", "numToken", "canonUrl", "canonText",
         "canonLine", "assertCanon", "evidenceBytes", "payload", "problemFields", "solutionId",
         "verificationId", "evidencePath", "checkVerification", "fieldBlock", "cell", "solCmp", "check", "pubToB64",
+        // replaces jest czescia sid, wiec token musi byc dostepny tak samo jak
+        // reszta gramatyki — inaczej reimplementacja policzy inny sid
+        "replacesT",
       ];
       for (const n of wanted) assert.notEqual(sg[n], undefined, `sign.mjs nie eksportuje ${n}`);
       assert.equal(sg.verifyEntry, undefined, "verifyEntry mial zniknac (A1/finding 14): zadna otoczka nie odtwarza payloadu");
@@ -364,7 +381,7 @@ if (gate.sign)
 
     // D1: bez tego tokenu kazde podpisane body jest wazne w nieskonczonosc,
     // a key i sig sa jawne w gicie.
-    test("replaces jest czescia podpisu, ale NIE czescia sid", () => {
+    test("replaces jest czescia podpisu I czescia sid — sid jest ogniwem lancucha", () => {
       const B = { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "?", note: "" };
       const nowe = sg.payload("solution", { ...B, replaces: "-" });
       assert.notEqual(sg.payload("solution", { ...B, replaces: "a".repeat(16) }), nowe, "podmiana i nowe zgloszenie maja ten sam payload");
@@ -372,10 +389,18 @@ if (gate.sign)
       assert.equal(sg.payload("solution", { ...B, replaces: null }), nowe);
       for (const zly of ["ZLE", "a".repeat(15), "A".repeat(16), 7, "0x" + "a".repeat(14)])
         assert.throws(() => sg.payload("solution", { ...B, replaces: zly }), (e) => e.code === 400, `replaces=${String(zly)} powinno byc 400`);
-      // sid adresuje TRESC. Wciagniecie replaces do sid zerwaloby 409 na powtorce
-      // bajt w bajt i zmienialoby adres rozwiazania przy kazdej korekcie.
+
+      // Runda 3, D8: sid liczony bez replaces WRACAL do tej samej wartosci, gdy
+      // autor wracal do wczesniejszego wyniku — a razem z nim ozywalo kazde
+      // historyczne body wskazujace ten stan. Ogniwo to zamyka: identyczna tresc
+      // po innym stanie ma inny sid, wiec zaden stan nie moze sie powtorzyc.
       const k = mkKey();
-      assert.equal(sg.solutionId("0001", B.repo, B.score, k.pub), sg.solutionId("0001", B.repo, B.score, k.pub));
+      const sid = (replaces) => sg.solutionId("0001", B.repo, B.score, k.pub, replaces);
+      assert.equal(sid("-"), sid("-"), "sid musi byc deterministyczny");
+      assert.notEqual(sid("a".repeat(16)), sid("-"), "ta sama tresc po innym stanie MUSI dac inny sid (D8)");
+      assert.notEqual(sid("b".repeat(16)), sid("a".repeat(16)));
+      assert.equal(sid(undefined), sid("-"), "brak replaces to to samo co '-'");
+      assert.throws(() => sid("ZLE"), (e) => e.code === 400, "sid nie przyjmuje replaces spoza gramatyki");
     });
 
     test("ramkowanie jest injektywne — konfuzja delimitera niemozliwa", () => {
@@ -538,11 +563,12 @@ if (gate.sign)
     test("sid/vid/evidencePath sa wyprowadzane z tresci", () => {
       const a = mkKey();
       const b = mkKey();
-      const s1 = sg.solutionId("0001", "https://example.com/r", 0.42, a.pub);
+      const s1 = sg.solutionId("0001", "https://example.com/r", 0.42, a.pub, "-");
       assert.match(s1, /^[0-9a-f]{16}$/);
-      assert.equal(sg.solutionId("0001", "https://EXAMPLE.com:443/r/", 0.42, b64alts(a.pub)[0] ?? a.pub), s1);
-      assert.notEqual(sg.solutionId("0001", "https://example.com/r", 0.43, a.pub), s1);
-      assert.notEqual(sg.solutionId("0001", "https://example.com/r", 0.42, b.pub), s1);
+      assert.equal(sg.solutionId("0001", "https://EXAMPLE.com:443/r/", 0.42, b64alts(a.pub)[0] ?? a.pub, "-"), s1);
+      assert.notEqual(sg.solutionId("0001", "https://example.com/r", 0.43, a.pub, "-"), s1);
+      assert.notEqual(sg.solutionId("0001", "https://example.com/r", 0.42, b.pub, "-"), s1);
+      assert.notEqual(sg.solutionId("0001", "https://example.com/r", 0.42, a.pub, s1), s1, "sid musi zalezec od stanu, ktory zastepuje (D8)");
 
       const sha = sha256("x");
       const v1 = sg.verificationId(s1, b.pub, sha, "ok", 0.42);
@@ -696,7 +722,7 @@ if (gate.server)
       const r = await post(SRV, "solution", solBody(kA, { problem: "0001", repo, score: 0.42, model: "opus-5" }));
       is(r, 201, "zgloszenie rozwiazania");
       assert.match(r.json?.sid ?? "", /^[0-9a-f]{16}$/, "201 musi zwrocic sid — inaczej nie da sie zaadresowac weryfikacji");
-      assert.equal(r.json.sid, sg.solutionId("0001", repo, 0.42, kA.pub));
+      assert.equal(r.json.sid, sg.solutionId("0001", repo, 0.42, kA.pub, "-"));
       state.sid = r.json.sid;
       assert.equal(commits(TREE), c0 + 1, "przyjety zapis to commit");
       const s = problemAt(TREE, "0001").solutions.find((x) => x.sid === state.sid);
@@ -969,7 +995,68 @@ if (gate.server)
       assert.equal(mine[0].score, 0.43);
       assert.deepEqual(mine[0].verifications, [], "stare weryfikacje potwierdzaly inna liczbe");
       assert.equal(mine[0].verified, false);
-      is(await post(SRV, "solution", body2), 409, "bajt w bajt to samo zgloszenie");
+      const powtorka = await post(SRV, "solution", body2);
+      is(powtorka, 409, "bajt w bajt to samo zgloszenie");
+      // Agent, ktoremu zerwalo polaczenie po udanym zapisie, musi z tego 409
+      // wyczytac "juz wszedl", a nie "podpisz z replaces X" — inaczej podpisze
+      // drugi wpis o tej samej tresci i zaplaci za niego limitem.
+      assert.match(String(powtorka.json?.error), /juz tu jest/, "powtorka bajt w bajt ma byc rozpoznana jako ta sama tresc");
+      assert.equal(powtorka.json?.sid, s2.json.sid, "409 ma nazwac sid, ktory tam lezy");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    // Runda 3, D8: sam token `replaces` chronil tylko o JEDEN krok. sid liczony
+    // bez niego wracal do wczesniejszej wartosci, gdy autor wracal do
+    // wczesniejszego wyniku, a wtedy historyczne body znowu opisywalo stan
+    // biezacy i wchodzilo drugi raz. Zmierzone przed naprawa: 0.42 -> 0.39 ->
+    // 0.42 dawalo sid_3 == sid_1, a powtorka body #2 cofala autora na 0.39
+    // i kasowala weryfikacje zebrana przez kogos obcego.
+    test("powrot do wczesniejszego wyniku nie ozywia starego body (D8)", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod lancuch sid" });
+      const kA = mkKey();
+      const repo = "https://example.com/lancuch";
+      const b1 = solBody(kA, { problem: P.id, repo, score: 0.42 });
+      const s1 = await post(SRV, "solution", b1);
+      is(s1, 201, "zgloszenie 0.42");
+      const b2 = solBody(kA, { problem: P.id, repo, score: 0.39, replaces: s1.json.sid });
+      const s2 = await post(SRV, "solution", b2);
+      is(s2, 200, "poprawka na 0.39");
+      const s3 = await post(SRV, "solution", solBody(kA, { problem: P.id, repo, score: 0.42, replaces: s2.json.sid }));
+      is(s3, 200, "powrot do 0.42");
+      assert.notEqual(s3.json.sid, s1.json.sid, "stan wrocil do poprzedniego sid — kazde historyczne body znowu jest wazne (D8)");
+
+      is(
+        await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s3.json.sid, score: 0.42, verdict: "ok", output: "lancuch-ok\n" })),
+        201,
+        "obcy weryfikuje biezacy stan"
+      );
+      const c0 = commits(TREE);
+      for (const [label, body] of [["#1", b1], ["#2", b2]]) is(await post(SRV, "solution", body), 409, `powtorka historycznego body ${label}`);
+
+      const mine = problemAt(TREE, P.id).solutions.filter((x) => x.repo === repo);
+      assert.equal(mine.length, 1);
+      assert.equal(mine[0].sid, s3.json.sid, "powtorka cofnela autora");
+      assert.equal(mine[0].score, 0.42);
+      assert.equal(mine[0].verifications.length, 1, "powtorka skasowala cudza weryfikacje");
+      assert.equal(commits(TREE), c0, "odrzucona powtorka zostawila commit");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    // Efekt uboczny lancucha, ale wart testu: korekta samego opisu przy tym
+    // samym wyniku byla przedtem NIEMOZLIWA — sid wychodzil identyczny i
+    // konczylo sie 409, wiec literowki w podpisanym polu nie dalo sie poprawic.
+    test("mozna poprawic sam opis bez zmiany wyniku", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod korekte opisu" });
+      const kA = mkKey();
+      const repo = "https://example.com/korekta-opisu";
+      const s1 = await post(SRV, "solution", solBody(kA, { problem: P.id, repo, score: 0.42, note: "literowak" }));
+      is(s1, 201, "zgloszenie z literowka w notatce");
+      const s2 = await post(SRV, "solution", solBody(kA, { problem: P.id, repo, score: 0.42, note: "literowka poprawiona", replaces: s1.json.sid }));
+      is(s2, 200, "korekta notatki przy tym samym wyniku");
+      assert.notEqual(s2.json.sid, s1.json.sid);
+      const mine = problemAt(TREE, P.id).solutions.filter((x) => x.repo === repo);
+      assert.equal(mine.length, 1);
+      assert.equal(mine[0].note, "literowka poprawiona");
       assert.equal(build(TREE, "--check").code, 0);
     });
 
@@ -991,12 +1078,16 @@ if (gate.server)
       is(s2, 200, "autor poprawia wynik");
       const c0 = commits(TREE);
 
-      // to samo cialo, ktore serwer przyjal minute temu, wyslane przez kogos innego
-      for (const [label, body] of [["v1", v1], ["v2", v2]]) {
-        const r = await post(SRV, "solution", body);
-        is(r, 409, `powtorka ciala ${label}`);
-        assert.equal(r.json.replaces, s2.json.sid, "409 ma podac stan, ktorego oczekuje serwer");
-      }
+      // to samo cialo, ktore serwer przyjal minute temu, wyslane przez kogos innego.
+      // Oba konczy 409, ale kazde z innego powodu i kazde ma to powiedziec:
+      // v1 opisuje stan, ktory juz minal; v2 JEST stanem biezacym.
+      const p1 = await post(SRV, "solution", v1);
+      is(p1, 409, "powtorka ciala v1");
+      assert.equal(p1.json.replaces, s2.json.sid, "409 ma podac stan, ktorego oczekuje serwer");
+      const p2 = await post(SRV, "solution", v2);
+      is(p2, 409, "powtorka ciala v2");
+      assert.equal(p2.json.sid, s2.json.sid, "409 ma nazwac sid, ktory tam lezy");
+      assert.match(String(p2.json.error), /juz tu jest/, "powtorka wpisu biezacego to ta sama tresc, nie zly stan");
 
       const mine = problemAt(TREE, P.id).solutions.filter((x) => x.repo === repo);
       assert.equal(mine.length, 1);
@@ -1091,7 +1182,14 @@ if (gate.server)
       assert.ok(srv.port, srv.why);
       for (let i = 0; i < 3; i++) is(await post(srv, "solution", { problem: "0001" }), 401, `niepodpisany ${i + 1}`);
       is(await post(srv, "solution", { problem: "0001" }), 429, "czwarte zadanie z tego adresu");
-      const stan = readdirSync(join(dir, ".state")).map((f) => readFileSync(join(dir, ".state", f), "utf8")).join("\n");
+      // czytamy liczniki PO NAZWIE, nie przez readdir: w .state pojawiaja sie
+      // tez pliki ulotne (probka praw zapisu, pliki tymczasowe writeAtomic),
+      // wiec listowanie katalogu potrafi zlapac nazwe, ktorej juz nie ma
+      const stan = ["ip.json", "limits.json"]
+        .map((f) => join(dir, ".state", f))
+        .filter((f) => existsSync(f))
+        .map((f) => readFileSync(f, "utf8"))
+        .join("\n");
       assert.ok(stan.includes("127.0.0.1"), ".state nie zna adresu klienta — licznik IP nie dziala");
       assert.ok(!stan.includes("::ffff:"), "adres v4-mapped tworzy osobny kubelek, wiec cap jest darmowy (finding 26)");
       await stop(srv, "SIGKILL");
@@ -1116,6 +1214,22 @@ if (gate.server)
       is(stop429, 429, "poprawny zapis po wyczerpaniu limitu adresu");
       assert.equal(stop429.json?.limit, "per_address", "429 nie mowi, KTORY limit padl (klucza czy adresu)");
       assert.equal(commits(dir), 1, "odrzucone proby zostawily commit");
+      await stop(srv, "SIGKILL");
+    });
+
+    // Runda 3, D9: limit adresu ma trzymac CALE /64, bo tyle dostaje jeden
+    // klient IPv6. Ciecie napisu po ":" bralo cztery pierwsze pola NAPISU, a nie
+    // cztery pierwsze grupy adresu, wiec w postaci skroconej "2001:db8::1"
+    // i "2001:db8::2" ladowaly w dwoch kubelkach (a tak samo dwa zapisy TEGO
+    // SAMEGO adresu). Limit stawal sie darmowy dla kazdego klienta IPv6.
+    test("limit adresu obejmuje cale /64, takze w postaci skroconej (D9)", async () => {
+      const srv = await startServer(newTree("ip64"), { IP_CAP: "3", TRUST_PROXY: "1" });
+      assert.ok(srv.port, srv.why);
+      const zXff = (adres) => post(srv, "solution", { problem: "0001" }, { "x-forwarded-for": adres });
+      // trzy ROZNE adresy z jednego /64, w mieszanym zapisie
+      for (const a of ["2001:db8::1", "2001:db8::2", "2001:db8:0:0:0:0:0:3"]) is(await zXff(a), 401, `proba z ${a}`);
+      is(await zXff("2001:db8::dead"), 429, "czwarty adres z tego samego /64 — limit ma juz byc wyczerpany (D9)");
+      is(await zXff("2001:db9::1"), 401, "inny /64 ma wlasny licznik");
       await stop(srv, "SIGKILL");
     });
 
@@ -1489,6 +1603,111 @@ if (gate.server)
       unlinkSync(join(dir, ".state", "limits.json"));
       assert.equal((await azDo("ok")).writes, "ok", "puls trzyma readonly po naprawie licznika");
       is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/po-naprawie", score: 0.42 })), 201, "zapis po naprawie");
+      await stop(srv, "SIGKILL");
+    });
+
+    // Runda 3, D3: zalegly .git/index.lock zatrzymuje 100% zapisow (bierze go
+    // i commit, i sprzatanie po nim), a nie rusza ani HEAD, ani brudu w drzewie,
+    // ani licznikow — czyli zadnej z pozostalych probek. Zmierzone przed
+    // naprawa: przez cala awarie puls mowil ok, a KAZDY POST konczyl sie 503.
+    test("puls widzi zalegly .git/index.lock (D3)", async () => {
+      const dir = newTree("index-lock");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const puls = async () => (await hit(srv, { path: "/api/pulse" })).json ?? {};
+      const azDo = async (writes, ile = 4000) => {
+        const koniec = Date.now() + ile;
+        let p = await puls();
+        while (p.writes !== writes && Date.now() < koniec) { await sleep(150); p = await puls(); }
+        return p;
+      };
+      assert.equal((await puls()).writes, "ok", "zdrowe repo przed testem");
+
+      writeFileSync(join(dir, ".git", "index.lock"), "");
+      const zajety = await azDo("readonly");
+      assert.equal(zajety.writes, "readonly", "puls mowi ok, a zamek gita zatrzymuje kazdy zapis (D3)");
+      assert.match(String(zajety.reason), /index\.lock/);
+      assert.match(String(zajety.fix), /index\.lock/, "puls bez pola fix zostawia operatora bez wyjscia");
+      assert.match((await hit(srv, { path: "/" })).text, /UWAGA/, "widok tekstowy tez ma ostrzec");
+
+      const odm = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/zamek", score: 0.42 }));
+      is(odm, 503, "zapis przy zajetym indeksie");
+      assert.match(String(odm.json?.error ?? ""), /index\.lock/);
+
+      unlinkSync(join(dir, ".git", "index.lock"));
+      assert.equal((await azDo("ok")).writes, "ok", "puls trzyma readonly po zdjeciu zamka");
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/po-zamku", score: 0.42 })), 201, "zapis po zdjeciu zamka");
+      await stop(srv, "SIGKILL");
+    });
+
+    // Runda 3, D4: blad I/O w plan.apply() (pelny dysk, RO-mount, rozjazd praw)
+    // omijal rollback. Weryfikacja zdazyla zapisac dowod, nie zdazyla zapisac
+    // problemu — i nieszledzony blob zostawal w problems/evidence/, wpychajac
+    // caly rejestr w tryb tylko do odczytu az do reki operatora. Niezmiennik 2
+    // mowi wprost: odrzucony zapis nie zostawia smiecia, takze nieszledzonego.
+    test("blad zapisu w trakcie apply nie zostawia smiecia (D4)", async () => {
+      const dir = newTree("apply-io");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const s = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/apply-io", score: 0.42 }));
+      is(s, 201, "rozwiazanie do zweryfikowania");
+      const c0 = commits(dir);
+
+      const problems = join(dir, "problems");
+      chmodSync(problems, 0o555);
+      if (!chmodBlokuje(problems)) {
+        chmodSync(problems, 0o755);
+        say("pominiete: chmod nie blokuje zapisu (root?) — test D4 wymaga zwyklego uzytkownika");
+        await stop(srv, "SIGKILL");
+        return;
+      }
+      const r = await post(srv, "verification", verBody(mkKey(), { problem: "0001", solution: s.json.sid, score: 0.4207, verdict: "ok", output: "apply-io\n" }));
+      chmodSync(problems, 0o755);
+
+      assert.ok(r.status === 503 || r.status === 500, `nieudany apply ma byc bledem serwera, jest ${r.status}`);
+      assert.equal(r.status, 503, "awaria nosnika to 503 z powodem, nie 500 z samym ref (agent nie wie, czy powtarzac)");
+      assert.match(String(r.json?.fix ?? ""), /problems/, "503 bez pola fix zostawia operatora bez wyjscia");
+      assert.equal(dirty(dir), "", "po nieudanym apply zostal smiec (niezmiennik 2) — najczesciej dowod w problems/evidence/");
+      assert.equal(commits(dir), c0, "nieudany apply zacommitowal");
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/po-apply-io", score: 0.5 })), 201, "rejestr zostal zablokowany po nieudanym apply");
+      assert.equal(build(dir, "--check").code, 0);
+      await stop(srv, "SIGKILL");
+    });
+
+    // Runda 3, D5: .state lezy poza gitem, ale przechodzi przez nie kazdy zapis
+    // (blokada + oba liczniki). Katalog bez prawa zapisu dawal goly 500 z samym
+    // ref, a puls mowil ok — czyli awaria bez powodu, bez komendy naprawczej
+    // i bez sladu poza journalctl.
+    test("nieprzyjmujacy zapisu .state: 503 z powodem, nie 500 (D5)", async () => {
+      const dir = newTree("state-ro");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const state = join(dir, ".state");
+      mkdirSync(state, { recursive: true });
+      chmodSync(state, 0o555);
+      if (!chmodBlokuje(state)) {
+        chmodSync(state, 0o755);
+        say("pominiete: chmod nie blokuje zapisu (root?) — test D5 wymaga zwyklego uzytkownika");
+        await stop(srv, "SIGKILL");
+        return;
+      }
+      const r = await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/state-ro", score: 0.42 }));
+      assert.equal(r.status, 503, `zapis przy .state bez prawa zapisu: ${r.status} ${r.text.slice(0, 200)}`);
+      assert.match(String(r.json?.error ?? ""), /\.state/, "tresc bledu ma nazwac przyczyne");
+      assert.match(String(r.json?.fix ?? ""), /\.state/, "503 bez pola fix zostawia operatora bez wyjscia");
+
+      const koniec = Date.now() + 4000;
+      let p = (await hit(srv, { path: "/api/pulse" })).json ?? {};
+      while (p.writes !== "readonly" && Date.now() < koniec) { await sleep(150); p = (await hit(srv, { path: "/api/pulse" })).json ?? {}; }
+      assert.equal(p.writes, "readonly", "puls mowi ok, a zaden zapis nie przechodzi (D5, niezmiennik 10)");
+      assert.match(String(p.reason), /\.state/);
+
+      chmodSync(state, 0o755);
+      const wraca = Date.now() + 4000;
+      let q = (await hit(srv, { path: "/api/pulse" })).json ?? {};
+      while (q.writes !== "ok" && Date.now() < wraca) { await sleep(150); q = (await hit(srv, { path: "/api/pulse" })).json ?? {}; }
+      assert.equal(q.writes, "ok", "puls trzyma readonly po naprawie praw");
+      is(await post(srv, "solution", solBody(mkKey(), { problem: "0001", repo: "https://example.com/state-ok", score: 0.42 })), 201, "zapis po naprawie praw");
       await stop(srv, "SIGKILL");
     });
 
@@ -1884,7 +2103,27 @@ if (gate.server)
       // 503 jest dopuszczalne (llms.txt: "powtorz pozniej"), byle nic nie zostalo
       assert.equal(dirty(dir), "", "po kolizji z cudzym gitem zostal niezacommitowany zapis (D8/D9)");
       assert.equal(build(dir, "--check").code, 0, "rejestr niespojny po kolizji z cudzym gitem");
-      const p = (await hit(srv, { path: "/api/pulse" })).json;
+
+      // Werdykt zdrowia ma sufit raz na sekunde (niezmiennik 10), a przez caly
+      // ten test cudzy git co chwile trzymal .git/index.lock — swiezo po
+      // ubiciu petli puls moze wiec jeszcze niesc tamten stan. Czekamy na
+      // odswiezenie; gdyby zamek naprawde zostal, to nie jest awaria rejestru,
+      // tylko stan, o ktorym puls MA mowic (D3, runda 3) i ktory znika po
+      // komendzie z pola fix — bez restartu.
+      const zamekPo = join(dir, ".git", "index.lock");
+      const azDoOk = async () => {
+        const koniec = Date.now() + 4000;
+        let p = (await hit(srv, { path: "/api/pulse" })).json;
+        while (p.writes !== "ok" && Date.now() < koniec) { await sleep(150); p = (await hit(srv, { path: "/api/pulse" })).json; }
+        return p;
+      };
+      let p = await azDoOk();
+      if (p.writes !== "ok" && existsSync(zamekPo)) {
+        assert.match(String(p.reason), /index\.lock/, `inny powod niz zalegly zamek: ${p.reason}`);
+        assert.match(String(p.fix), /index\.lock/, "puls ma podac komende naprawcza");
+        unlinkSync(zamekPo);
+        p = await azDoOk();
+      }
       assert.equal(p.writes, "ok", `rejestr zostal w trybie tylko do odczytu: ${p.reason}`);
       await stop(srv, "SIGKILL");
     });

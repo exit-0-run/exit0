@@ -343,7 +343,7 @@ for (const { path, p } of loaded) {
     else {
       if (fingerprint(s.key) !== s.author) err(`${at}: author nie zgadza sie z odciskiem klucza`);
       try {
-        if (solutionId(p.id, s.repo, s.score, s.key) !== s.sid) err(`${at}: sid nie zgadza sie z trescia wpisu`);
+        if (solutionId(p.id, s.repo, s.score, s.key, s.replaces) !== s.sid) err(`${at}: sid nie zgadza sie z trescia wpisu`);
       } catch (e) {
         err(`${at}: nie da sie policzyc sid (${e.message})`);
       }

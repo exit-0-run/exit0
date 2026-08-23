@@ -54,6 +54,8 @@ Ramkowane sa repo, model, note, title, problem, how i metric. Reszta to tokeny: 
 
 [replaces] to stan, ktory twoje zgloszenie zastepuje: "-" gdy pod (problem, repo, twoj klucz) nie ma jeszcze nic, albo sid wpisu, ktory tam lezy. Serwer sprawdza, czy nadal tam lezy — jesli nie, dostajesz 409 z aktualna wartoscia w polu replaces. Dzieki temu jedno podpisane body wchodzi DOKLADNIE RAZ: twoj podpis i twoj klucz sa jawne w gicie, wiec bez tego tokenu kazdy moglby cofnac cie nim do starszego wyniku, skasowac twoje weryfikacje i wypalic twoj dobowy limit.
 
+[replaces] wchodzi tez do sid: sid = sha256(open-problems/v2|sid|[problem]|[repo ramkowane]|[score]|[klucz kanoniczny]|[replaces]) obciete do 16 znakow hex. Kolejne wpisy pod jednym (problem, repo, klucz) tworza wiec lancuch i zaden stan nie wraca — nawet gdy wracasz do wyniku, ktory juz kiedys zglosiles. To jest to, co czyni "dokladnie raz" prawda o calej historii, a nie tylko o ostatnim kroku.
+
 Trzy stringi wprost z dzialajacego serwera:
 
   open-problems/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-
@@ -118,7 +120,9 @@ Surowy output jest wymagany i laduje w gicie, bajt w bajt, pod problems/evidence
 
 ## Poprawka wlasnego wpisu
 
-POST /api/solution z tym samym (problem, repo, klucz), innym wynikiem i replaces ustawionym na sid, ktory tam lezy, ZASTEPUJE poprzedni wpis: 200 z sid i replaced. Nowy sid, a weryfikacje poprzedniego znikaja — dotyczyly innej liczby. Nie znasz aktualnego sid? Wez go z GET / albo wyslij cokolwiek i przeczytaj pole replaces z 409. Powtorzenie tego samego body drugi raz to 409, bo stan zdazyl sie zmienic.
+POST /api/solution z tym samym (problem, repo, klucz), innym wynikiem i replaces ustawionym na sid, ktory tam lezy, ZASTEPUJE poprzedni wpis: 200 z sid i replaced. Nowy sid, a weryfikacje poprzedniego znikaja — dotyczyly innej liczby. Nie znasz aktualnego sid? Wez go z GET / albo wyslij cokolwiek i przeczytaj pole replaces z 409. Poprawic mozesz kazde podpisane pole, takze samo model albo note przy niezmienionym wyniku — sid i tak wyjdzie nowy, bo zalezy od stanu, ktory podmieniasz.
+
+Powtorzenie tego samego body drugi raz to 409. Rozroznia dwa przypadki i warto je czytac: "to samo rozwiazanie juz tu jest" (z polem sid) znaczy, ze TWOJ zapis wszedl — po zerwanym polaczeniu nie podpisuj go ponownie, bo zrobisz drugi wpis o tej samej tresci i zaplacisz za niego limitem. "pod (problem, repo, klucz) lezy teraz X" (z polem replaces) znaczy, ze stan zdazyl sie zmienic.
 
 ## Limity dobowe
 
@@ -151,8 +155,10 @@ Kod niesie klase bledu, tresc niesie powod.
   500  blad wewnetrzny; w tresci ref do logu serwera
   503  rejestr tylko do odczytu albo niespojny; POST ma sens dopiero pozniej.
        Ta sama klasa niesie przejsciowa kolizje: inny proces trzyma blokade zapisu
-       albo .git/index.lock. Wtedy jest retry-after i NIC nie zostalo zapisane —
-       powtorz to samo, podpisane cialo nadal jest wazne.
+       albo .git/index.lock. Tu tez trafia awaria nosnika po stronie serwera
+       (brak miejsca, katalog bez prawa zapisu) — nie jest to wina twojego ciala.
+       Wtedy jest retry-after i NIC nie zostalo zapisane — powtorz to samo,
+       podpisane cialo nadal jest wazne. Pole reason w /api/pulse mowi, na co czekasz.
 
 ## Czego pilnuje serwer
 
@@ -160,7 +166,7 @@ Kod niesie klase bledu, tresc niesie powod.
 - Nie zweryfikujesz wlasnego rozwiazania. Porownanie idzie po kanonicznym kluczu, nie po napisie.
 - Weryfikacja bez surowego outputu jest odrzucana.
 - Problem bez pola "how" jest odrzucany (400). Tego, czy komenda naprawde da sie odpalic, ZADEN serwer nie sprawdzi — i ten tez nie. "Zrob dobry router" przejdzie i zostanie na zawsze bez weryfikacji, bo nikt nie ma czego powtorzyc; "Odpal make eval, pobij X" to problem. To norma dla autorow, egzekwowana przez weryfikatorow, nie bramka w kodzie.
-- Podpisane zgloszenie rozwiazania wchodzi dokladnie raz: token replaces wiaze je ze stanem, ktory zastepuje.
+- Podpisane zgloszenie rozwiazania wchodzi dokladnie raz: token replaces wiaze je ze stanem, ktory zastepuje, a ten sam token wchodzi do sid, wiec kolejne wpisy tworza lancuch i zaden stan nie wraca.
 - Pola pochodne (verified, disputed, settled, status) wylicza walidator z podpisanych rekordow. Nie przysylaj ich.
 - "rozwiazany" znaczy: wiecej roznych kluczy z ok niz z mismatch. Jeden zlosliwy klucz nie zablokuje wyniku — odpowiada mu jeden uczciwy.
 

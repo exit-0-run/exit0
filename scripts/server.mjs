@@ -18,7 +18,7 @@
 import { createServer } from "node:http";
 import {
   readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync,
-  existsSync, mkdirSync, openSync, writeSync, closeSync,
+  existsSync, mkdirSync, openSync, writeSync, closeSync, accessSync, constants,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -63,6 +63,10 @@ const LINK = '</llms.txt>; rel="llms"';
 // Rzadkosc. To jedyny powod, dla ktorego ten serwer w ogole istnieje —
 // git tego nie policzy. Limity sa na dobe UTC, na klucz.
 const LIMITS = { problem: 1, solution: 5, verification: 20 };
+
+// Awarie nosnika, nie tresci zadania: nalezy im sie 503 z powodem i komenda
+// naprawcza, nigdy 500 z samym ref (agent nie ma wtedy czego powtorzyc).
+const IO_ERR = new Set(["EACCES", "EPERM", "EROFS", "ENOSPC", "EDQUOT", "EIO", "EMFILE", "ENFILE", "ENOTDIR"]);
 
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const sha16 = (b) => sha(b).slice(0, 16);
@@ -130,11 +134,26 @@ const readCounter = (file) => {
   return { day: db.day, used: Object.assign(Object.create(null), db.used) };
 };
 
+// Kazdy zapis do .state przechodzi tedy. Katalog bez prawa zapisu (prawa,
+// RO-mount) albo pelny dysk zatrzymuje 100% zapisow i NIE jest wina piszacego,
+// wiec nalezy mu sie 503 z powodem i komenda naprawcza — zmierzone: przedtem
+// wychodzil z tego goly 500 z samym ref, a operator musial isc do journalctl.
+const writeState = (path, data) => {
+  try {
+    writeAtomic(path, data);
+  } catch (e) {
+    throw bad(503, `nie moge pisac do ${STATE}/`, {
+      info: { fix: `sprawdz prawa i miejsce na dysku dla ${STATE}/ (leza tam blokada zapisu i liczniki dobowe)`, detail: detailOf(e).slice(0, 200) },
+      headers: { "retry-after": "5" },
+    });
+  }
+};
+
 const chargeIp = (ip) => {
   const db = readCounter(IP_FILE);
   const used = cnt(db.used[ip]) + 1;
   db.used[ip] = used;
-  writeAtomic(IP_FILE, JSON.stringify(db));
+  writeState(IP_FILE, JSON.stringify(db));
   return { ok: used <= IP_CAP, used, cap: IP_CAP };
 };
 
@@ -150,7 +169,7 @@ const chargeQuota = (key, action) => {
   const k = quotaKey(key, action);
   const used = cnt(db.used[k]) + 1;
   db.used[k] = used;
-  writeAtomic(LIMITS_FILE, JSON.stringify(db));
+  writeState(LIMITS_FILE, JSON.stringify(db));
   return { used, cap: LIMITS[action] };
 };
 
@@ -212,7 +231,18 @@ const releaseFileLock = () => {
 
 const withWriteLock = (fn) => {
   const run = async () => {
-    if (!takeFileLock())
+    let mam;
+    try {
+      mam = takeFileLock();
+    } catch (e) {
+      // Blokada lezy w .state: nie da sie jej zalozyc = nie da sie pisac,
+      // i nie jest to wina piszacego. 503 z powodem, nie 500 z samym ref.
+      throw bad(503, `nie moge pisac do ${STATE}/`, {
+        info: { fix: `sprawdz prawa i miejsce na dysku dla ${STATE}/ (leza tam blokada zapisu i liczniki dobowe)`, detail: detailOf(e).slice(0, 200) },
+        headers: { "retry-after": "5" },
+      });
+    }
+    if (!mam)
       throw bad(503, "inny proces pisze do tego katalogu", {
         info: { fix: `sprawdz pid w ${LOCK}; jesli proces nie zyje albo nie jest tym serwerem: rm ${LOCK}`, lock: LOCK },
         headers: { "retry-after": "1" },
@@ -372,6 +402,57 @@ const lockHealth = () => {
   };
 };
 
+// Zalegly .git/index.lock zatrzymuje 100% zapisow — bierze go i commit, i
+// sprzatanie po nim — a zadna z pozostalych probek go nie widzi: dirty()
+// i build --check czytaja z --no-optional-locks, wiec dzialaja jak zwykle.
+// Zmierzone: przez cala awarie /api/pulse mowil writes:"ok", a KAZDY POST
+// konczyl sie 503. Dokladnie to, czemu ma zapobiegac niezmiennik 10.
+// transient znaczy: sciezka ZAPISU nie odmawia od razu (kolizja bywa cudza
+// i mija w ulamku sekundy — czeka na nia gitReady), ale ODCZYT ma o niej
+// powiedziec od razu, bo agent inaczej pali probe na 503.
+const indexLockHealth = () =>
+  existsSync(INDEX_LOCK)
+    ? {
+        reason: "git w tym katalogu jest zajety (.git/index.lock)",
+        fix: `sprawdz, czy nie trwa inny git w tym katalogu; jesli zaden: rm ${INDEX_LOCK}`,
+        lock: INDEX_LOCK,
+        transient: true,
+      }
+    : null;
+
+// .state jest poza gitem, ale przechodzi przez nie kazdy zapis: lezy tam
+// blokada i oba liczniki dobowe. Katalog bez prawa zapisu albo pelny dysk
+// zatrzymuje 100% zapisow, a przedtem nie widzial tego ani puls, ani tresc
+// bledu. Probka jest prawdziwym zapisem (nie samym accessSync), bo pelny dysk
+// przechodzi kontrole praw i odpada dopiero przy allokacji.
+const stateHealth = () => {
+  const probka = join(STATE, `.probe.${process.pid}`);
+  try {
+    ensureState();
+    writeFileSync(probka, "");
+    unlinkSync(probka);
+    return null;
+  } catch (e) {
+    return {
+      reason: `nie moge pisac do ${STATE}/`,
+      fix: `sprawdz prawa i miejsce na dysku dla ${STATE}/ (leza tam blokada zapisu i liczniki dobowe)`,
+      detail: detailOf(e).slice(0, 200),
+    };
+  }
+};
+
+// Tania sygnatura dla probe(): sam stat, bez zapisu. Pelny werdykt daje
+// stateHealth() wyzej — tu chodzi tylko o to, zeby zmiana praw byla widoczna
+// w nastepnym odczycie po sekundzie, a nie dopiero po HEALTH_TTL.
+const stateWritable = () => {
+  try {
+    accessSync(STATE, constants.W_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const counterHealth = () => {
   for (const f of [LIMITS_FILE, IP_FILE]) {
     try {
@@ -415,6 +496,10 @@ const health = () => {
     } catch {
       tainted = true;
     }
+    // Komenda naprawcza ma pasowac do tego, co NAPRAWDE lezy w drzewie:
+    // "cofnij albo zacommituj" nic nie mowi o pliku niesledzonym, a to
+    // wlasnie jego zostawia przerwany zapis (dowod weryfikacji, ghost).
+    const niesledzone = d.split("\n").some((l) => l.startsWith("??"));
     return rollbackFailed
       ? {
           reason: "sprzatanie po nieudanym zapisie nie doszlo do skutku",
@@ -424,7 +509,9 @@ const health = () => {
         }
       : {
           reason: "drzewo robocze jest brudne",
-          fix: "cofnij albo zacommituj zmiany w problems/, README.md, index.json, scripts/",
+          fix:
+            "cofnij albo zacommituj zmiany w problems/, README.md, index.json, scripts/" +
+            (niesledzone ? "; pliki niesledzone: git clean -fd -- problems" : ""),
           dirty: d.split("\n").slice(0, 20),
           tainted,
         };
@@ -437,7 +524,9 @@ const health = () => {
     const file = (detail.match(/problems\/[^\s:]+\.json/) ?? [])[0];
     return { reason: "rejestr jest niespojny", fix: "node scripts/build.mjs", detail, ...(file ? { file } : {}) };
   }
-  return lockHealth() ?? counterHealth();
+  // .state idzie przed blokada: gdy katalog nie przyjmuje zapisu, werdykt
+  // o samej blokadzie jest mylacy, bo jej i tak nie da sie zalozyc.
+  return stateHealth() ?? lockHealth() ?? indexLockHealth() ?? counterHealth();
 };
 
 // Puls i widok tekstowy MUSZA mowic o stanie TERAZ, a nie o ostatniej probie
@@ -473,7 +562,14 @@ const probe = () => {
   try {
     const s = lockOwner();
     const c = counterHealth();
-    return `${String(gitRead("rev-parse", "HEAD")).trim()} ${dirty(...PATHS, "scripts")} ${s ? `${s.pid}/${s.nonce}` : "-"} ${c ? c.detail : "-"}`;
+    return [
+      String(gitRead("rev-parse", "HEAD")).trim(),
+      dirty(...PATHS, "scripts"),
+      s ? `${s.pid}/${s.nonce}` : "-",
+      c ? c.detail : "-",
+      existsSync(INDEX_LOCK) ? "zamek" : "-",
+      stateWritable() ? "rw" : "ro",
+    ].join(" ");
   } catch {
     return null;
   }
@@ -499,8 +595,14 @@ const freshHealth = (force) => {
   return recheck();
 };
 
+// Powod oznaczony transient (zajety .git/index.lock) NIE odmawia tutaj:
+// kolizja bywa cudza i mija w ulamku sekundy, wiec zapis idzie dalej do
+// gitReady(), ktore na nia czeka i dopiero potem odsyla 503 z retry-after.
+// Odczyt widzi ja natychmiast — o to chodzi w niezmienniku 10.
 const guard = () => {
-  if (freshHealth(true)) throw bad(503, `zapisy wstrzymane: ${readonly.reason}`, { info: { ...readonly }, headers: { "retry-after": "1" } });
+  const stan = freshHealth(true);
+  if (stan && !stan.transient)
+    throw bad(503, `zapisy wstrzymane: ${stan.reason}`, { info: { ...stan }, headers: { "retry-after": "1" } });
 };
 
 // --- stan rejestru ---
@@ -603,7 +705,7 @@ const solution = (b) => {
   verifySig(b, msg, f);
 
   const author = fingerprint(b.key);
-  const sid = solutionId(p.id, f.repo, f.score, b.key);
+  const sid = solutionId(p.id, f.repo, f.score, b.key, f.replaces);
   const sols = Array.isArray(p.solutions) ? p.solutions : [];
   const mine = sols.findIndex((s) => s.repo === f.repo && keyId(s.key) === keyId(b.key));
 
@@ -614,11 +716,18 @@ const solution = (b) => {
   entry.verifications = [];
 
   const old = mine >= 0 ? sols[mine] : null;
-  // Podpis obejmuje stan, ktory to zgloszenie zastepuje, wiec kazde body wchodzi
-  // DOKLADNIE RAZ. Powtorka cudzego (albo wlasnego) starszego body ma tu inny
-  // stan i konczy sie 409 — przed podgladem limitu, wiec limit autora zostaje
-  // nietkniety, a jego weryfikacje na miejscu.
+  // Podpis obejmuje stan, ktory to zgloszenie zastepuje, a sid jest ogniwem
+  // lancucha (patrz solutionId), wiec kazde body wchodzi DOKLADNIE RAZ.
+  // Powtorka cudzego (albo wlasnego) starszego body opisuje stan, ktory juz
+  // przeszedl i nigdy nie wroci, wiec konczy sie 409 — przed podgladem limitu,
+  // wiec limit autora zostaje nietkniety, a jego weryfikacje na miejscu.
   const stan = old ? old.sid : "-";
+  // Kolejnosc jest istotna: body, ktore JUZ weszlo, opisuje stan POPRZEDNI,
+  // wiec test na replaces odrzucilby je z mylacym komunikatem "podpisz z
+  // replaces X". Rownosc sid znaczy dokladnie "to zgloszenie tu lezy" — sid
+  // liczy sie z tresci I ze stanu, ktory zastapila. Agent, ktoremu zerwalo
+  // polaczenie po udanym zapisie, ma z tego jednoznaczne "nie powtarzaj".
+  if (old && old.sid === sid) throw bad(409, "to samo rozwiazanie juz tu jest", { info: { sid } });
   if (f.replaces !== stan)
     throw bad(
       409,
@@ -627,7 +736,6 @@ const solution = (b) => {
         : 'nie ma czego podmieniac — podpisz zgloszenie z "replaces":"-"',
       { info: { replaces: stan, ...(old ? { sid: old.sid, score: old.score } : {}) } }
     );
-  if (old && old.sid === sid) throw bad(409, "to samo rozwiazanie juz tu jest", { info: { sid } });
   if (old) sols[mine] = entry; else sols.push(entry);
   p.solutions = sols;
 
@@ -908,10 +1016,35 @@ const readBody = (req) =>
   });
 
 // Bez normalizacji limit na adres jest darmowy: ::ffff:127.0.0.1 i 127.0.0.1
-// to ten sam host, a w IPv6 kazdy ma do dyspozycji cale /64.
+// to ten sam host, a w IPv6 kazdy klient ma do dyspozycji cale /64.
+//
+// Samo split(":") NIE wystarcza, bo w postaci skroconej cztery pierwsze pola
+// napisu nie sa czterema pierwszymi grupami adresu. Zmierzone na poprzedniej
+// wersji: "2001:db8::1" -> "2001:db8::1::/64" i "2001:db8::2" -> inny kubelek,
+// choc to jeden prefiks, a "2001:db8::1" i "2001:db8:0:0:0:0:0:1" (TEN SAM
+// adres) tez rozjezdzaly sie na dwa. Limit adresowy stawal sie darmowy dla
+// kazdego klienta IPv6. Dlatego "::" najpierw rozwijamy do osmiu grup.
+//
+// Adres, ktorego nie umiemy rozwinac, liczy sie po calym napisie: to jest
+// strona ostrozna (kubelek na adres, nie na prefiks), nigdy przepustka.
+const v4in6 = (g) => {
+  const o = g.split(".");
+  if (o.length !== 4 || o.some((x) => !/^\d{1,3}$/.test(x) || Number(x) > 255)) return [g];
+  return [((Number(o[0]) << 8) | Number(o[1])).toString(16), ((Number(o[2]) << 8) | Number(o[3])).toString(16)];
+};
+
 const ipKey = (raw) => {
-  const s = String(raw ?? "?").replace(/^::ffff:/i, "");
-  return s.includes(":") ? `${s.split(":").slice(0, 4).join(":")}::/64` : s;
+  const s = String(raw ?? "?").replace(/^::ffff:/i, "").split("%")[0];
+  if (!s.includes(":")) return s;
+  const half = s.split("::");
+  if (half.length > 2) return s;
+  const groups = (part) => (part ? part.split(":").flatMap(v4in6) : []);
+  const head = groups(half[0]);
+  const tail = half.length === 2 ? groups(half[1]) : [];
+  const pad = half.length === 2 ? Math.max(0, 8 - head.length - tail.length) : 0;
+  const full = [...head, ...Array(pad).fill("0"), ...tail];
+  if (full.length !== 8) return s;
+  return `${full.slice(0, 4).map((g) => (/^[0-9a-f]{1,4}$/i.test(g) ? parseInt(g, 16).toString(16) : g)).join(":")}::/64`;
 };
 
 const clientIp = (req) => {
@@ -948,7 +1081,24 @@ const doWrite = (req, action, raw) => {
 
   guard();
   gitReady();
-  plan.apply();
+  // apply() to jedyne miejsce, gdzie zadanie dotyka dysku PRZED commitem, wiec
+  // jego blad musi sprzatac tak samo jak blad commita. Bez tego weryfikacja,
+  // ktorej udalo sie zapisac dowod, a nie udalo sie zapisac problemu (ENOSPC,
+  // RO-mount, rozjazd praw), zostawiala niesledzony blob w problems/evidence/
+  // — zapis odrzucony 500, a rejestr zablokowany w trybie tylko do odczytu
+  // az do reki operatora. To jest wprost zlamanie niezmiennika 2.
+  try {
+    plan.apply();
+  } catch (e) {
+    const swept = rollback();
+    const ref = logRef(e);
+    if (IO_ERR.has(e?.code))
+      throw bad(503, `nie moge zapisac do ${DIR}/ — zapisy wstrzymane`, {
+        info: { ref, rolled_back: swept, fix: `sprawdz prawa i miejsce na dysku dla ${DIR}/`, detail: detailOf(e).slice(0, 200) },
+        headers: { "retry-after": "5" },
+      });
+    throw bad(500, "blad wewnetrzny", { info: { ref } });
+  }
   commit(plan.msg);
   const used = chargeQuota(b.key, action);
 

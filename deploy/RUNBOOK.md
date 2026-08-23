@@ -117,6 +117,8 @@ w polu `fix` — zarówno w ciele 503, jak i w `/api/pulse`. Powody:
 | `plik blokady zapisu jest uszkodzony` | `cat /srv/open-problems/.state/write.lock` | `rm /srv/open-problems/.state/write.lock` |
 | `licznik limitow jest nieczytelny` | `cat /srv/open-problems/.state/limits.json /srv/open-problems/.state/ip.json` | skasuj wskazany plik — limity dobowe startują wtedy od zera |
 | `git moze przepisac bajty dowodow` | `git -C /srv/open-problems check-attr text -- problems/evidence/0000-probe.txt` | przywróć `.gitattributes` z linią `problems/evidence/** -text` i zacommituj |
+| `git w tym katalogu jest zajety (.git/index.lock)` | `ls -l /srv/open-problems/.git/index.lock`, potem `ps aux \| grep '[g]it'` | jeśli żaden git nie pracuje: `sudo rm /srv/open-problems/.git/index.lock` — patrz `Awarie` |
+| `nie moge pisac do .state/` | `sudo -u openproblems touch /srv/open-problems/.state/probe`, `df -h /srv`, `ls -ld /srv/open-problems/.state` | przywróć prawa (`chown -R openproblems /srv/open-problems/.state`) albo zwolnij miejsce na dysku |
 
 Serwer sprawdza stan przy każdym **odczycie** (tania próbka: `HEAD`, brud w drzewie,
 blokada, liczniki — z sufitem raz na sekundę) i wymusza pełne sprawdzenie przy każdej
@@ -170,7 +172,26 @@ zapisu**, dopóki zamka nie ma, więc drzewo zostaje czyste, a autor dostaje 503
     ps aux | grep '[g]it'
     sudo rm /srv/open-problems/.git/index.lock
 
-Zapisy wracają od następnego żądania — bez restartu.
+Zapisy wracają od następnego żądania — bez restartu. Nie musisz zgadywać, czy to
+ten przypadek: `/api/pulse` mówi wtedy `"writes": "readonly"` z `reason` nazywającym
+`.git/index.lock`. Serwer sam tego zamka **nie usuwa** — cudzy, żywy `git` ma prawo go
+trzymać, a odebranie mu zamka rozjechałoby indeks. Ścieżka zapisu daje mu sekundę
+(kolizja bywa przelotna) i dopiero potem odsyła 503 z `retry-after`.
+
+**Zapisy zwracają 503 „nie moge pisac do .state/" albo „nie moge zapisac do
+problems/".** To jest awaria nośnika, nie treści żądania: pełny dysk, wolumen
+przemontowany tylko do odczytu albo rozjazd praw po ręcznej edycji. Rejestr sam z tego
+wychodzi, gdy przyczyna zniknie — nie trzeba restartu:
+
+    df -h /srv
+    ls -ld /srv/open-problems/.state /srv/open-problems/problems
+    sudo -u openproblems touch /srv/open-problems/.state/probe && sudo -u openproblems rm /srv/open-problems/.state/probe
+    sudo chown -R openproblems:openproblems /srv/open-problems
+
+Odrzucony w ten sposób zapis niczego nie zostawia — serwer sprząta po sobie tak samo
+jak po odrzuceniu przez walidator. Jeśli mimo to `git status --porcelain` pokazuje
+nieśledzony plik w `problems/evidence/`, to jest ślad po awarii sprzed tej naprawy:
+`git clean -fd -- problems`.
 
 **Każdy zapis pada, odczyty działają.** Najczęściej `node` nie jest w `PATH`
 jednostki — serwer woła `node scripts/build.mjs` po nazwie. Sprawdź, co instalator

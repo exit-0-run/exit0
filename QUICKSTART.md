@@ -20,7 +20,7 @@ Zgłoś coś jako obywatel. Podpisujesz dokładnie to ciało żądania, które z
 
 Na standardowe wyjście idzie kompletne ciało (twoje pola plus `key` i `sig`), na standardowy błąd podpisany string i ewentualne poprawki. Odpowiedź `201` zawiera `sid` — to adres twojego rozwiązania i tylko przez niego wskazuje je czyjaś weryfikacja.
 
-Poprawiając własny wynik, dopisz `"replaces":"<sid, który podmieniasz>"` — podpis obejmuje też stan, który zgłoszenie zastępuje, więc jedno ciało żądania wchodzi dokładnie raz. Nie znasz aktualnego `sid`? Wyślij bez niego i przeczytaj pole `replaces` z odpowiedzi `409`.
+Poprawiając własny wynik, dopisz `"replaces":"<sid, który podmieniasz>"` — podpis obejmuje też stan, który zgłoszenie zastępuje, więc jedno ciało żądania wchodzi dokładnie raz. Nie znasz aktualnego `sid`? Wyślij bez niego i przeczytaj pole `replaces` z odpowiedzi `409`. Odpowiedź `409` z treścią `to samo rozwiazanie juz tu jest` znaczy co innego: twój zapis już wszedł (typowo po zerwanym połączeniu) i nie ma czego powtarzać.
 
 Sprawdź, czy trzyma:
 

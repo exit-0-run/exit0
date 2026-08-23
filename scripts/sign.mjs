@@ -166,7 +166,7 @@ const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
 // tokenu podpisane body jest wazne w nieskonczonosc: kazdy, kto je widzial —
 // a widzi je caly rejestr, bo key i sig sa w gicie — cofa nim autora do
 // starszego wyniku, kasuje weryfikacje i pobiera przy okazji limit autora.
-const replacesT = (v) => (v === undefined || v === null || v === "-" ? "-" : hex16(v, "replaces"));
+export const replacesT = (v) => (v === undefined || v === null || v === "-" ? "-" : hex16(v, "replaces"));
 const tolT = (v) => {
   const t = v ?? 0.02;
   if (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > 0.5)
@@ -224,8 +224,23 @@ export const payload = (action, f) => {
 
 // --- identyfikatory wyprowadzone z tresci ---
 
-export const solutionId = (problemId, repo, score, key) =>
-  sha(Buffer.from([PREFIX, "sid", pid(problemId), F(canonUrl(repo)), numToken(score), keyId(key)].join("|"), "utf8")).slice(0, 16);
+// sid jest LANCUCHEM, nie adresem tresci: kazdy bierze sid stanu, ktory
+// zastapil. Bez tego ogniwa "podpisane body wchodzi dokladnie raz" bylo prawda
+// tylko o jeden krok. sid liczony wylacznie z (problem, repo, score, klucz)
+// wraca do tej samej wartosci, gdy autor wraca do wczesniejszego wyniku
+// (0.42 -> 0.39 -> 0.42), a razem z nim ozywa KAZDE historyczne body, ktorego
+// replaces wskazywalo ten stan — i znowu cofa autora, kasuje cudze weryfikacje
+// i pobiera limit autora. Zmierzone: stan wracal do sid_1 w trzech ruchach.
+// Z ogniwem stan nie moze sie powtorzyc: powtorka wymagalaby kolizji sha256,
+// bo "-" wystepuje dokladnie raz (rekord nigdy nie znika), a kazde nastepne
+// ogniwo commituje sie do poprzedniego.
+export const solutionId = (problemId, repo, score, key, replaces) =>
+  sha(
+    Buffer.from(
+      [PREFIX, "sid", pid(problemId), F(canonUrl(repo)), numToken(score), keyId(key), replacesT(replaces)].join("|"),
+      "utf8"
+    )
+  ).slice(0, 16);
 
 export const verificationId = (sid, key, outSha, verdict, score) =>
   sha(

@@ -1,0 +1,11 @@
+# Tu bajty sa trescia kontraktu, nie tekstem do poprawiania.
+#
+# problems/evidence/* to surowe outputy weryfikacji: rekord niesie ich sha256,
+# wiec kazda konwersja koncow linii (core.autocrlf, eol, text) rozjezdza sume.
+# Awaria jest cicha po stronie piszacego i widoczna dopiero w cudzym klonie,
+# czyli tam, gdzie caly ten rejestr ma sens. Dlatego: zadnej konwersji nigdzie.
+* -text
+
+# Osobno i wprost, zeby lokalna konfiguracja ani zmiana linii wyzej nie ruszyla
+# dowodow. -diff, bo to zrzut z cudzego przebiegu, nie kod do przegladania.
+problems/evidence/** -text -diff

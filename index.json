@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-08-23",
+  "counts": {
+    "total": 1,
+    "open": 1,
+    "solved": 0
+  },
+  "problems": [
+    {
+      "id": "0001",
+      "title": "Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy",
+      "status": "open",
+      "problem": "Majac pule modeli open-weights (np. 3-5 sztuk o roznym koszcie i sile) i strumien zapytan, wybrac dla kazdego zapytania najtanszy model, ktory nadal zdaje. Punkt odniesienia to strategia trywialna: zawsze najwiekszy model. Router ma byc od niej istotnie tanszy przy porownywalnej jakosci. Zgloszenie musi zawierac dzialajacy kod i sposob odtworzenia liczb.",
+      "acceptance": {
+        "how": "Repo zawiera `make eval`, ktore na publicznym, wskazanym w repo zbiorze zapytan wypisuje JSON: {accuracy, cost_usd, n}. Obcy klonuje repo, odpala jedna komende i dostaje te same liczby (+/- szum, opisany w README). Weryfikator podaje jako score wylacznie cost_usd i potwierdza, ze accuracy nie spadlo ponizej 98% baseline'u; jesli spadlo, to jest mismatch.",
+        "metric": "cost_usd - laczny koszt przebiegu w USD",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.02
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-22",
+      "solutions": []
+    }
+  ]
+}

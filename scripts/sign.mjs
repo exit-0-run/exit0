@@ -161,6 +161,12 @@ const boolT = (v, l) => {
   return v ? "1" : "0";
 };
 const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
+// Stan, ktory to zgloszenie zastepuje: "-" gdy pod (problem, repo, klucz) nie
+// ma jeszcze nic, albo sid wpisu, ktory tam lezal w chwili podpisu. Bez tego
+// tokenu podpisane body jest wazne w nieskonczonosc: kazdy, kto je widzial —
+// a widzi je caly rejestr, bo key i sig sa w gicie — cofa nim autora do
+// starszego wyniku, kasuje weryfikacje i pobiera przy okazji limit autora.
+const replacesT = (v) => (v === undefined || v === null || v === "-" ? "-" : hex16(v, "replaces"));
 const tolT = (v) => {
   const t = v ?? 0.02;
   if (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > 0.5)
@@ -189,6 +195,7 @@ export const payload = (action, f) => {
       numToken(f.score),
       F(assertCanon(canonLine, f.model ?? "?", "model", MAXLEN.model)),
       F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
+      replacesT(f.replaces),
     ].join("|");
   if (action === "verification")
     return [
@@ -274,8 +281,14 @@ export const checkVerification = (p, sol, v) => {
 
 // --- render, wspoldzielony przez serwer i build.mjs ---
 
+// Kontynuacja pola wielolinijkowego dostaje znacznik, ktorego kanonikalizacja
+// NIE wyprodukuje: po canonText zadna linia tresci nie zaczyna sie od spacji,
+// wiec "<wciecie>| " jest dla obcego tekstu nieosiagalne. Samo wciecie nie
+// wystarczylo — linie rekordu ("metryka:", "rozwiazania:") stoja w tej samej
+// kolumnie co kontynuacja, wiec wielolinijkowe `how` podszywalo sie pod nie.
+const CONT = "| ";
 export const fieldBlock = (label, value, indent = 6) =>
-  value.split("\n").map((l, i) => " ".repeat(indent) + (i ? "" : label + ": ") + l).join("\n");
+  value.split("\n").map((l, i) => " ".repeat(indent) + (i ? CONT : label + ": ") + l).join("\n");
 
 export const cell = (s) => String(s).replace(/\|/g, "\\|");
 
@@ -320,6 +333,9 @@ const canonBody = (action, b, changed) => {
     };
     const note = fix("note", b.note, canonText(b.note ?? "", "note", MAXLEN.note));
     if (note) out.note = note;
+    // "-" = pod (problem, repo, klucz) nie ma jeszcze nic. Poprawiajac wlasny
+    // wpis, podaj sid, ktory tam lezy; serwer sprawdzi, czy nadal lezy.
+    out.replaces = replacesT(b.replaces);
     return out;
   }
   if (action === "verification") {

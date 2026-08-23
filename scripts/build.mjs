@@ -179,6 +179,34 @@ const fromHead = (path) => {
   }
 };
 
+// Identyfikator bloba, ktory git nada TYM bajtom. Liczymy go sami, zeby jednym
+// wywolaniem gita porownac cala partie dowodow: sha256 pliku w drzewie roboczym
+// sprawdzamy nizej, a to sprawdza, czy git zacommitowal DOKLADNIE te bajty.
+// Bez tego konwersja koncow linii przy `git add` przechodzi niezauwazona u
+// piszacego i wychodzi dopiero w cudzym klonie, czyli tam, gdzie nie ma juz kogo pytac.
+const NUL = String.fromCharCode(0);
+const gitOid = (buf) => createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${buf.length}${NUL}`, "utf8"), buf])).digest("hex");
+
+const headOids = (paths) => {
+  const out = new Map();
+  if (!paths.length) return out;
+  let lines;
+  try {
+    lines = execFileSync("git", ["cat-file", "--batch-check"], {
+      input: paths.map((p) => `HEAD:${p}`).join("\n") + "\n",
+      stdio: ["pipe", "pipe", "ignore"],
+      maxBuffer: 1 << 24,
+    }).toString("utf8").trim().split("\n");
+  } catch {
+    return out; // brak HEAD (pierwszy commit) albo brak gita: sprawdzamy tylko drzewo robocze
+  }
+  paths.forEach((p, i) => {
+    const [oid, type] = String(lines[i] ?? "").split(" ");
+    if (type === "blob") out.set(p, oid);
+  });
+  return out;
+};
+
 for (const { path, file, p } of loaded) {
   if (!clean.has(path)) continue;
   const err = (m) => errors.push(`${path}: ${m}`);
@@ -248,6 +276,19 @@ const canonicalKey = (k) => {
   }
 };
 
+// Jedno wywolanie gita na caly przebieg, nie jedno na dowod.
+const wanted = [];
+for (const { path, p } of loaded) {
+  if (!clean.has(path)) continue;
+  for (const s of p.solutions)
+    for (const v of s.verifications) {
+      try {
+        wanted.push(evidencePath(p.id, v.output_sha256));
+      } catch {}
+    }
+}
+const committed = headOids(wanted);
+
 for (const { path, p } of loaded) {
   if (!clean.has(path)) continue;
   const err = (m) => errors.push(`${path}: ${m}`);
@@ -293,7 +334,7 @@ for (const { path, p } of loaded) {
     }
     let smsg = null;
     try {
-      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note });
+      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note, replaces: s.replaces });
     } catch (e) {
       err(`${at}: ${e.message}`);
     }
@@ -337,7 +378,12 @@ for (const { path, p } of loaded) {
         } catch {
           err(`${vat}: brak pliku dowodu ${want} — flaga bez dowodu nie jest flaga`);
         }
-        if (blob !== null && sha(blob) !== v.output_sha256) err(`${vat}: sha256 pliku dowodu nie zgadza sie z output_sha256`);
+        if (blob !== null && sha(blob) !== v.output_sha256)
+          err(`${vat}: sha256 pliku dowodu nie zgadza sie z output_sha256 (w swiezym klonie znaczy to, ze git przepisal bajty — sprawdz .gitattributes i core.autocrlf)`);
+        // Dowod ma byc taki sam W GICIE, nie tylko na dysku piszacego.
+        const oid = committed.get(want);
+        if (blob !== null && oid !== undefined && oid !== gitOid(blob))
+          err(`${vat}: zacommitowany dowod ma inne bajty niz plik w drzewie roboczym — git konwertuje konce linii, wiec klon nie odtworzy sumy (problems/evidence/** -text w .gitattributes)`);
       }
     });
   });
@@ -356,7 +402,7 @@ const shape = (p) => {
   const out = ordered(p, ["id", "title", "status", "problem", "acceptance", "opened_by", "opened_at", "key", "sig", "solutions"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
-    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
+    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
     sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "evidence", "at"]));
     return sol;
   });

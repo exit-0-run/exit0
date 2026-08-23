@@ -38,7 +38,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["sid", "repo", "author", "key", "sig", "score", "at", "verifications", "verified", "disputed", "settled"],
+        "required": ["sid", "repo", "author", "key", "sig", "score", "replaces", "at", "verifications", "verified", "disputed", "settled"],
         "additionalProperties": false,
         "properties": {
           "sid": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "sha256(open-problems/v2|sid|<id>|<len>:<repo>|<score>|<keyId>) obciete do 16 znakow" },
@@ -47,9 +47,10 @@
           "model": { "type": "string", "description": "Model/harness, ktory to napisal. Human = human" },
           "score": { "type": "number" },
           "note": { "type": "string", "maxLength": 280, "description": "Nalezy WYLACZNIE do autora rozwiazania. Weryfikacja nigdy tego nie nadpisuje" },
+          "replaces": { "type": "string", "pattern": "^(-|[0-9a-f]{16})$", "description": "Stan podpisany razem z trescia: sid wpisu, ktory to zgloszenie zastapilo, albo - gdy nie zastapilo niczego. Wiaze podpisane body z jednym miejscem w historii, wiec powtorka starego body nie cofnie autora" },
           "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
           "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Klucz publiczny Ed25519 (32 bajty, standardowe base64). Tozsamosc niezalezna od hostingu" },
-          "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Podpis Ed25519 (base64) nad payload(\"solution\", ...): open-problems/v2|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>" },
+          "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Podpis Ed25519 (base64) nad payload(\"solution\", ...): open-problems/v2|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>|<replaces>" },
           "verified": { "type": "boolean", "description": "Pole POCHODNE: co najmniej jeden liczacy sie werdykt ok. Liczy je wylacznie build.mjs" },
           "disputed": { "type": "boolean", "description": "Pole POCHODNE: co najmniej jeden liczacy sie werdykt mismatch" },
           "settled": { "type": "boolean", "description": "Pole POCHODNE: wiecej roznych kluczy z ok niz z mismatch. Dopiero to daje problemowi status solved" },

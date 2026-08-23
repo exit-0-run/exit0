@@ -25,7 +25,7 @@ NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
 [ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null || die "node $("$NODE" -v) — wymagane 20+"
 
 # --- 2. komplet zrodla; kopia bez ktoregos z tych plikow to martwa usluga ---
-for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore \
+for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore .gitattributes \
          problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md; do
   [ -e "$SRC/$f" ] || die "brak $f w $SRC"
 done
@@ -61,8 +61,10 @@ fi
 
 # --- 6. kod i dokumenty: zawsze swieze ---
 # rm przed cp, zeby po starszej wersji nie zostal plik, ktorego juz nie ma w zrodle.
+# .gitattributes jest tu kodem, nie preferencja: bez niego git przepisuje konce
+# linii w dowodach i zacommitowany blob przestaje odpowiadac swojej sumie sha256.
 rm -rf "$DIR/scripts" "$DIR/deploy"
-cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/llms.txt" "$SRC/.gitignore" "$DIR/"
+cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/llms.txt" "$SRC/.gitignore" "$SRC/.gitattributes" "$DIR/"
 for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md; do
   if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$DIR/"; else echo "install: pomijam brakujacy dokument $f" >&2; fi
 done

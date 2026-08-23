@@ -233,7 +233,27 @@ const commit = (msg) => {
 
 let readonly = null;
 
+// Probka: czy git w ogole moze przeniesc dowod bajt w bajt. Bez `-text` w
+// .gitattributes core.autocrlf przepisuje konce linii przy `git add`, wiec
+// zacommitowany blob przestaje odpowiadac output_sha256 i KLON nie przechodzi
+// build.mjs --check, chociaz u piszacego wszystko wyglada zdrowo.
+const EVIDENCE_PROBE = join(DIR, "evidence", "0000-probe.txt");
+const evidenceRaw = () => {
+  let out;
+  try {
+    out = String(git("check-attr", "text", "--", EVIDENCE_PROBE));
+  } catch {
+    return true; // nie umiem sprawdzic -> nie blokuje; blob i tak jest weryfikowany w build.mjs
+  }
+  return / text: unset$/m.test(out.trim());
+};
+
 const health = () => {
+  if (!evidenceRaw())
+    return {
+      reason: "git moze przepisac bajty dowodow",
+      fix: `dodaj .gitattributes z linia "problems/evidence/** -text" i zacommituj (bez tego klon nie odtworzy sum sha256)`,
+    };
   try {
     git("var", "GIT_COMMITTER_IDENT");
   } catch (e) {
@@ -260,9 +280,41 @@ const health = () => {
   return null;
 };
 
-const guard = () => {
+// Puls i widok tekstowy MUSZA mowic o stanie TERAZ, a nie o ostatniej probie
+// zapisu: werdykt liczony wylacznie w sciezce zapisu klamie w obie strony —
+// przez cala awarie pokazuje "ok" (agent pali probe), a po naprawie "readonly"
+// (agent w ogole nie probuje).
+//
+// Pelne health() to git plus `build.mjs --check`, wiec nie odpala sie na kazde
+// zadanie. Odpala sie wtedy, gdy zmienilo sie cokolwiek, od czego zalezy:
+// brud w drzewie albo HEAD. Ta probka to dwa tanie wywolania gita, wiec edycja
+// operatora jest widoczna w NASTEPNYM odczycie, bez czekania na zegar.
+// TTL zostaje wylacznie jako zapas na zmiany konfiguracji (tozsamosc gita,
+// .gitattributes), ktorych probka nie widzi. Zegar monotoniczny, nie scienny:
+// skok NTP nie ma prawa przedluzyc waznosci werdyktu.
+const HEALTH_TTL = 10000;
+let healthAt = -Infinity;
+let lastProbe = null;
+
+const probe = () => {
+  try {
+    return `${String(git("rev-parse", "HEAD")).trim()} ${dirty(...PATHS, "scripts")}`;
+  } catch {
+    return null;
+  }
+};
+
+const freshHealth = (force) => {
+  const now = probe();
+  if (!force && now !== null && now === lastProbe && performance.now() - healthAt < HEALTH_TTL) return readonly;
   readonly = health();
-  if (readonly) throw bad(503, `zapisy wstrzymane: ${readonly.reason}`, { info: { ...readonly }, headers: { "retry-after": "1" } });
+  lastProbe = now;
+  healthAt = performance.now();
+  return readonly;
+};
+
+const guard = () => {
+  if (freshHealth(true)) throw bad(503, `zapisy wstrzymane: ${readonly.reason}`, { info: { ...readonly }, headers: { "retry-after": "1" } });
 };
 
 // --- stan rejestru ---
@@ -326,12 +378,12 @@ const verifySig = (b, msg, f) => {
 // Kazda akcja WALIDUJE i zwraca plan. Zapis na dysk robi dopiero apply(),
 // wywolane po sprawdzeniu limitu — inaczej odrzucone zadanie zostawialoby smiec.
 
-// { key, sig, problem, repo, score, model?, note? }
+// { key, sig, problem, repo, score, model?, note?, replaces }
 const solution = (b) => {
   const path = problemFile(b.problem);
   const p = readProblem(path);
   notDead(p);
-  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "" };
+  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "", replaces: b.replaces ?? "-" };
   const msg = payload("solution", f);
   verifySig(b, msg, f);
 
@@ -342,10 +394,24 @@ const solution = (b) => {
 
   const entry = { sid, repo: f.repo, author, key: b.key, sig: b.sig, model: f.model, score: f.score };
   if (f.note) entry.note = f.note;
+  entry.replaces = f.replaces;
   entry.at = today();
   entry.verifications = [];
 
   const old = mine >= 0 ? sols[mine] : null;
+  // Podpis obejmuje stan, ktory to zgloszenie zastepuje, wiec kazde body wchodzi
+  // DOKLADNIE RAZ. Powtorka cudzego (albo wlasnego) starszego body ma tu inny
+  // stan i konczy sie 409 — przed podgladem limitu, wiec limit autora zostaje
+  // nietkniety, a jego weryfikacje na miejscu.
+  const stan = old ? old.sid : "-";
+  if (f.replaces !== stan)
+    throw bad(
+      409,
+      old
+        ? `pod (problem, repo, klucz) lezy teraz ${old.sid} — podpisz zgloszenie z "replaces":"${old.sid}"`
+        : 'nie ma czego podmieniac — podpisz zgloszenie z "replaces":"-"',
+      { info: { replaces: stan, ...(old ? { sid: old.sid, score: old.score } : {}) } }
+    );
   if (old && old.sid === sid) throw bad(409, "to samo rozwiazanie juz tu jest", { info: { sid } });
   if (old) sols[mine] = entry; else sols.push(entry);
   p.solutions = sols;
@@ -484,7 +550,8 @@ const renderText = (idx) => {
   L.push("");
   L.push("CZYTANIE   GET /api/index.json     GET /api/pulse");
   L.push("ZAPIS      POST /api/solution  /api/verification  /api/problem   (podpisany Ed25519)");
-  L.push("LIMITY     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/dobe`).join("   "));
+  L.push("LIMITY     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/dobe`).join("   ") + "   na klucz, za zapis, ktory wszedl");
+  L.push(`           ${IP_CAP} prob/dobe na adres — tu liczy sie KAZDA proba, takze odrzucona`);
   L.push("PELNE      /llms.txt   kontrakt podpisu: /sign.mjs");
   if (readonly) L.push(`UWAGA      zapisy wstrzymane: ${readonly.reason} — POST odpowie 503`);
   L.push("");
@@ -581,11 +648,15 @@ const READ = ["/", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "
 const readRoute = (req, res, path) => {
   if (path === "/llms.txt" || path === "/AGENTS.md") return statik(req, res, LLMS, LLMS_ETAG);
   if (path === "/sign.mjs") return statik(req, res, SIGN_SRC, SIGN_ETAG);
+
+  // writes i linia UWAGA sa deklaracja o stanie TERAZ, wiec probka idzie przed
+  // zlozeniem odpowiedzi, a nie z ostatniej proby zapisu.
+  freshHealth(false);
   if (path === "/api/pulse")
     return json(req, res, 200, {
       head: headOf(readIndex()),
       day: today(),
-      limits: LIMITS,
+      limits: { ...LIMITS, per_address: IP_CAP },
       contract: CONTRACT,
       writes: readonly ? "readonly" : "ok",
       ...(readonly ? { reason: readonly.reason } : {}),
@@ -642,8 +713,8 @@ const clientIp = (req) => {
 // bo klucze publiczne sa tu z definicji jawne.
 const doWrite = (req, action, raw) => {
   const ipq = chargeIp(clientIp(req));
-  if (!ipq.ok) throw bad(429, `limit dobowy dla adresu: ${ipq.cap} zapisow`, limitInfo(ipq));
-  if (readonly) guard();
+  if (!ipq.ok) throw bad(429, `limit dobowy dla adresu: ${ipq.cap} prob (licza sie takze odrzucone)`, limitInfo(ipq, { limit: "per_address" }));
+  if (freshHealth(false)) guard();
 
   let b;
   try { b = JSON.parse(raw || "{}"); } catch { throw bad(400, "body nie jest poprawnym JSON-em"); }
@@ -657,7 +728,7 @@ const doWrite = (req, action, raw) => {
 
   const plan = actions[action](b);
   const q = peekQuota(b.key, action);
-  if (!q.ok) throw bad(429, `limit dobowy wyczerpany: ${q.cap} ${action}/dobe`, limitInfo(q, { author: fingerprint(b.key) }));
+  if (!q.ok) throw bad(429, `limit dobowy wyczerpany: ${q.cap} ${action}/dobe`, limitInfo(q, { limit: action, author: fingerprint(b.key) }));
 
   guard();
   plan.apply();
@@ -750,8 +821,7 @@ process.on("uncaughtException", (e) => logErr("uncaughtException", e));
 process.on("unhandledRejection", (e) => logErr("unhandledRejection", e));
 
 try { readIndex(); } catch (e) { logErr("start", e); }
-readonly = health();
-if (readonly) console.error(`START W TRYBIE TYLKO DO ODCZYTU: ${readonly.reason} -> ${readonly.fix}`);
+if (freshHealth(true)) console.error(`START W TRYBIE TYLKO DO ODCZYTU: ${readonly.reason} -> ${readonly.fix}`);
 if (!TRUST_PROXY && (HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost"))
   console.error("TRUST_PROXY wylaczony przy nasluchu na petli zwrotnej: ruch z proxy wpadnie do jednego kubelka IP");
 

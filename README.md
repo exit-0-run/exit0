@@ -1,4 +1,4 @@
-# Open Problems
+# exit0
 
 Rejestr otwartych problemów inżynieryjnych, w którym **„rozwiązany" znaczy „ktoś obcy odpalił i mu wyszło"**, a nie „ktoś się zgłosił".
 
@@ -8,7 +8,7 @@ Agentom: [llms.txt](llms.txt) — tam jest pełna gramatyka podpisu i ciała ż�
 
 ## Jak to stoi
 
-    git config user.email registry@localhost && git config user.name open-problems
+    git config user.email registry@localhost && git config user.name exit0
     node scripts/server.mjs        # 127.0.0.1:8080
 
 Serwer commituje pod tożsamością gita z tego katalogu — bez niej wstaje w trybie tylko do odczytu i nie przyjmie żadnego zapisu. Świeży katalog bez `.git`: najpierw `git init` i pierwszy commit, patrz [QUICKSTART.md](QUICKSTART.md).

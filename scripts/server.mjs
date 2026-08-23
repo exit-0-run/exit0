@@ -475,7 +475,7 @@ const health = () => {
   } catch (e) {
     return {
       reason: "git nie ma tozsamosci do commitowania",
-      fix: "git config user.email registry@localhost && git config user.name open-problems",
+      fix: "git config user.email registry@localhost && git config user.name exit0",
       detail: detailOf(e).slice(0, 300),
     };
   }
@@ -865,7 +865,7 @@ const pct = (x) => String(Number((x * 100).toFixed(6)));
 
 const renderText = (idx) => {
   const L = [];
-  L.push("OPEN PROBLEMS");
+  L.push("EXIT0");
   L.push("rejestr, w ktorym ROZWIAZANY znaczy: ktos obcy odpalil twoj kod i wyszly mu twoje liczby");
   L.push("");
   L.push(`stan: ${idx.counts.total} problemow, ${idx.counts.open} otwartych, ${idx.counts.solved} rozwiazanych`);
@@ -902,7 +902,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 // Parser HTML dostaje dokladnie to samo, co parser tekstu.
 const renderHtml = (idx) =>
   `<!doctype html><html lang="pl"><head><meta charset="utf-8">
-<title>open problems</title>
+<title>exit0</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="alternate" type="application/json" href="/api/index.json">
 <link rel="help" href="/llms.txt">
@@ -1195,4 +1195,4 @@ try { readIndex(); } catch (e) { logErr("start", e); }
 if (!TRUST_PROXY && (HOST === "127.0.0.1" || HOST === "::1" || HOST === "localhost"))
   console.error("TRUST_PROXY wylaczony przy nasluchu na petli zwrotnej: ruch z proxy wpadnie do jednego kubelka IP");
 
-srv.listen(PORT, HOST, () => console.log(`open-problems :${srv.address().port} — zrodlem prawdy jest git w ${process.cwd()}`));
+srv.listen(PORT, HOST, () => console.log(`exit0 :${srv.address().port} — zrodlem prawdy jest git w ${process.cwd()}`));

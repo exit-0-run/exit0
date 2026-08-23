@@ -12,7 +12,7 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 // Kontrakt podpisu. Zmiana tutaj uniewaznia KAZDY istniejacy podpis.
-export const PREFIX = "open-problems/v2";
+export const PREFIX = "exit0/v1";
 
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");

@@ -1,18 +1,18 @@
-# /etc/systemd/system/open-problems.service
+# /etc/systemd/system/exit0.service
 # Nie kopiuj tego pliku recznie. deploy/install.sh renderuje z niego wersje docelowa:
 # podmienia ExecStart, PATH, PORT, User, WorkingDirectory, ReadWritePaths i Documentation.
 #   sudo deploy/install.sh
-#   systemctl status open-problems
+#   systemctl status exit0
 
 [Unit]
-Description=open-problems registry
-Documentation=file:///srv/open-problems/deploy/RUNBOOK.md
+Description=exit0 registry
+Documentation=file:///srv/exit0/deploy/RUNBOOK.md
 After=network.target
 
 [Service]
 Type=simple
-User=openproblems
-WorkingDirectory=/srv/open-problems
+User=exit0
+WorkingDirectory=/srv/exit0
 
 # Serwer odpala `node scripts/build.mjs` i `git` PO NAZWIE, nie po sciezce. Domyslny
 # PATH jednostki nie zawiera /opt/... ani nvm, wiec bez tej linii kazdy zapis konczy
@@ -58,7 +58,7 @@ LockPersonality=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadWritePaths=/srv/open-problems
+ReadWritePaths=/srv/exit0
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
 TasksMax=64

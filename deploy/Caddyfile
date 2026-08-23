@@ -14,7 +14,7 @@
 	}
 }
 
-open-problems.example {
+exit0.example {
 	encode gzip
 
 	# Agent czyta naglowki. Powiedz mu, gdzie sa drzwi.

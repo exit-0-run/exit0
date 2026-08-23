@@ -1,7 +1,7 @@
 # Quickstart
 
     git init
-    git config user.email registry@localhost && git config user.name open-problems
+    git config user.email registry@localhost && git config user.name exit0
     git add -A && git commit -m init
     node scripts/server.mjs               # 127.0.0.1:8080
 

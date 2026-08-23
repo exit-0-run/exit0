@@ -29,7 +29,7 @@ const COPY = ["scripts", "problems", "README.md", "llms.txt", ".gitignore", ".gi
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const EMPTY_SHA16 = "e3b0c44298fc1c14";
 // skladane z kawalkow, zeby ten plik sam nie byl trafieniem we wlasnym grepie
-const V1 = "open-problems/" + "v1";
+const LEGACY = "open-" + "problems";  // stara nazwa: nigdzie nie ma prawa zostac
 const CJS = new RegExp("\\brequire\\s*\\(");
 
 const trees = [];
@@ -50,7 +50,7 @@ const run = (dir, script, args = [], input) => {
 const build = (dir, ...args) => run(dir, "scripts/build.mjs", args);
 
 const mkTree = (label) => {
-  const dir = mkdtempSync(join(tmpdir(), `open-problems-${label}-`));
+  const dir = mkdtempSync(join(tmpdir(), `exit0-${label}-`));
   // Brakujacy plik ma zglosic NAZWANY test, a nie wysypac harness stackiem
   // z cpSync — diagnoza "nie ma .gitattributes" jest wtedy nie do przeczytania.
   for (const f of COPY) if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(dir, f), { recursive: true });
@@ -64,8 +64,8 @@ const seal = (dir) => {
   const b = build(dir);
   if (b.code !== 0) throw new Error(`build.mjs w kopii padl: ${b.err || b.out}`);
   git(dir, "init", "-q", "-b", "main");
-  git(dir, "config", "user.email", "test@open-problems.invalid");
-  git(dir, "config", "user.name", "open-problems-test");
+  git(dir, "config", "user.email", "test@exit0.invalid");
+  git(dir, "config", "user.name", "exit0-test");
   git(dir, "config", "commit.gpgsign", "false"); // globalne gpgsign zawiesiloby commit serwera
   git(dir, "add", "-A");
   git(dir, "commit", "-qm", "init");
@@ -335,10 +335,10 @@ if (gate.sign)
       assert.equal(sg.verifyEntry, undefined, "verifyEntry mial zniknac (A1/finding 14): zadna otoczka nie odtwarza payloadu");
     });
 
-    test("PREFIX podbity do v2, po v1 nie ma sladu", () => {
-      assert.equal(sg.PREFIX, "open-problems/v2");
+    test("PREFIX to exit0/v1, po starej nazwie nie ma sladu", () => {
+      assert.equal(sg.PREFIX, "exit0/v1");
       for (const f of readdirSync(join(TREE, "scripts")).filter((x) => x.endsWith(".mjs")))
-        assert.ok(!readFileSync(join(TREE, "scripts", f), "utf8").includes(V1), `${f} wciaz zna stary PREFIX`);
+        assert.ok(!readFileSync(join(TREE, "scripts", f), "utf8").includes(LEGACY), `${f} wciaz zna stara nazwe`);
     });
 
     test("payload przyjmuje obiekt; forma pozycyjna jest martwa", () => {
@@ -349,11 +349,11 @@ if (gate.sign)
     test("payload: dokladne literaly dla trzech akcji", () => {
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "-" }),
-        "open-problems/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-"
+        "exit0/v1|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-"
       );
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef" }),
-        "open-problems/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef"
+        "exit0/v1|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef"
       );
       assert.equal(
         sg.payload("verification", {
@@ -363,7 +363,7 @@ if (gate.sign)
           verdict: "ok",
           output_sha256: "f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda",
         }),
-        "open-problems/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda"
+        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda"
       );
       assert.equal(
         sg.payload("problem", {
@@ -375,7 +375,7 @@ if (gate.sign)
           baseline: null,
           tolerance: 0.02,
         }),
-        "open-problems/v2|problem|27:Router, ktory wybiera model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02"
+        "exit0/v1|problem|27:Router, ktory wybiera model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02"
       );
     });
 
@@ -1324,7 +1324,7 @@ if (gate.server)
         assert.ok(r.headers.etag, `${p} bez ETagu, wiec max-age nie da sie odswiezyc`);
       }
       const s = await hit(SRV, { path: "/sign.mjs" });
-      assert.ok(s.text.includes("open-problems/v2"), "/sign.mjs nie serwuje kontraktu");
+      assert.ok(s.text.includes("exit0/v1"), "/sign.mjs nie serwuje kontraktu");
       const pulse = await hit(SRV, { path: "/api/pulse" });
       assert.equal(String(s.headers.etag).replace(/"/g, ""), pulse.json?.contract, "hash /sign.mjs musi zgadzac sie z pulse.contract");
     });
@@ -1760,7 +1760,7 @@ if (gate.server)
     // migawka DZIALAJACEGO rejestru: rekordy sa prawdziwe, wyprodukowane
     // przez serwer. Mutujemy je i patrzymy, czy build.mjs to lapie.
     const snap = (label) => {
-      const dir = mkdtempSync(join(tmpdir(), `open-problems-${label}-`));
+      const dir = mkdtempSync(join(tmpdir(), `exit0-${label}-`));
       for (const f of [...COPY, "index.json"]) cpSync(join(TREE, f), join(dir, f), { recursive: true });
       trees.push(dir);
       return dir;
@@ -1917,7 +1917,7 @@ if (gate.server)
       assert.equal(sha256(readFileSync(join(dir, ev))), sha256(output), "plik w drzewie roboczym");
       assert.equal(sha256(fromHead(dir, ev)), sha256(output), "git zacommitowal INNE bajty niz dowod (D3)");
 
-      const klon = mkdtempSync(join(tmpdir(), "open-problems-klon-"));
+      const klon = mkdtempSync(join(tmpdir(), "exit0-klon-"));
       trees.push(klon);
       execFileSync("git", ["clone", "-q", dir, klon], { stdio: "pipe" });
       execFileSync("git", ["-C", klon, "config", "core.autocrlf", "input"], { stdio: "pipe" });
@@ -1929,8 +1929,8 @@ if (gate.server)
       // wyprodukowac, ale ktory przyjedzie ze starszego klona. Plik w drzewie
       // NADAL zgadza sie z suma — pekniete sa tylko bajty zacommitowane, wiec
       // stara wersja --check przechodzila i defekt wychodzil u obcego.
-      git(klon, "config", "user.email", "test@open-problems.invalid");
-      git(klon, "config", "user.name", "open-problems-test");
+      git(klon, "config", "user.email", "test@exit0.invalid");
+      git(klon, "config", "user.name", "exit0-test");
       git(klon, "config", "commit.gpgsign", "false");
       unlinkSync(join(klon, ".gitattributes"));
       git(klon, "rm", "-q", "--cached", "--", ev);
@@ -2010,7 +2010,7 @@ if (gate.server)
     // sciezce absolutnej sprawdza CUDZE drzewo. RUNBOOK robil dokladnie to
     // w sanity checku po odtworzeniu z lustra i dostawal pewne siebie "OK".
     test("odpalony z zlego katalogu mowi, co jest nie tak (D10)", () => {
-      const pusty = mkdtempSync(join(tmpdir(), "open-problems-zly-cwd-"));
+      const pusty = mkdtempSync(join(tmpdir(), "exit0-zly-cwd-"));
       trees.push(pusty);
       const r = run(pusty, join(ROOT, "scripts/build.mjs"), ["--check"]);
       assert.equal(r.code, 1, "build.mjs w katalogu bez problems/ ma padac z komunikatem, nie ze stosem");
@@ -2241,10 +2241,10 @@ describe("niezmienniki repo", () => {
     }
   });
 
-  test("kontrakt v2 wszedzie, po v1 ani sladu", () => {
-    assert.match(text("scripts/sign.mjs") ?? "", /open-problems\/v2/);
-    for (const f of scripts) assert.ok(!(text(`scripts/${f}`) ?? "").includes(V1), `${f} zna stary PREFIX`);
-    assert.ok(!(text("problems/_schema.json") ?? "").includes(V1), "_schema.json opisuje stary kontrakt");
+  test("kontrakt exit0/v1 wszedzie, po starej nazwie ani sladu", () => {
+    assert.match(text("scripts/sign.mjs") ?? "", /exit0\/v1/);
+    for (const f of scripts) assert.ok(!(text(`scripts/${f}`) ?? "").includes(LEGACY), `${f} zna stara nazwe`);
+    assert.ok(!(text("problems/_schema.json") ?? "").includes(LEGACY), "_schema.json opisuje stary kontrakt");
   });
 
   test("wszystkie pliki zostaja tekstem — zaden literal sterujacy", () => {
@@ -2281,7 +2281,7 @@ describe("niezmienniki repo", () => {
     assert.equal(v.properties.output_sha256.pattern, "^[0-9a-f]{64}$");
     assert.match(v.properties.evidence.pattern, /evidence/);
     assert.deepEqual(j.properties.acceptance.properties.baseline.type, ["number", "null"]);
-    assert.match(sol.properties.sig.description ?? "", /open-problems\/v2/, "opis sig opisuje stary kontrakt");
+    assert.match(sol.properties.sig.description ?? "", /exit0\/v1/, "opis sig opisuje stary kontrakt");
   });
 
   test("problem 0001 da sie zweryfikowac: jedna metryka, jawna tolerancja", () => {
@@ -2317,7 +2317,7 @@ describe("niezmienniki repo", () => {
       assert.equal(kopie.length, 0, `install.sh bezwarunkowo kopiuje generowany ${gen} -> brudne drzewo po buildzie -> serwer na stale read-only`);
     }
     assert.match(sh, /ExecStart/, "unit ma byc renderowany z realnym interpreterem");
-    const unit = text("deploy/open-problems.service") ?? "";
+    const unit = text("deploy/exit0.service") ?? "";
     assert.match(unit, /TRUST_PROXY=1/, "unit z wlasnym Caddy musi ufac proxy, inaczej caly ruch wpada w jeden kubelek IP (finding 33)");
     assert.match(unit, /TimeoutStopSec/);
     assert.match(text("deploy/Caddyfile") ?? "", /header_up X-Forwarded-For/, "Caddy musi NADPISYWAC XFF, nie dopisywac");
@@ -2349,7 +2349,7 @@ describe("niezmienniki repo", () => {
   test("dokumentacja mowi to, co robi kod", () => {
     assert.ok(text("AGENTS.md"), "AGENTS.md jest linkowany z CLAUDE.md i llms.txt, a nie istnieje (B14)");
     const llms = text("llms.txt") ?? "";
-    assert.ok(llms.includes("open-problems/v2|solution|"), "llms.txt jest NORMATYWNY — musi niesc gramatyke payloadu (C6)");
+    assert.ok(llms.includes("exit0/v1|solution|"), "llms.txt jest NORMATYWNY — musi niesc gramatyke payloadu (C6)");
     assert.match(llms, /sign\.mjs/, "llms.txt ma wskazac, skad wziac referencje kontraktu");
     assert.match(text("CLAUDE.md") ?? "", /node scripts\/test\.mjs/, "CLAUDE.md wciaz twierdzi, ze testu nie ma");
     assert.match(text("QUICKSTART.md") ?? "", /git config user\.email/, "pierwsza komenda z QUICKSTART padnie bez tozsamosci gita");
@@ -2358,7 +2358,7 @@ describe("niezmienniki repo", () => {
 
     // D1: gramatyka w normatywnym llms.txt musi niesc token replaces,
     // inaczej agent podpisze cialo, ktore serwer odrzuci.
-    assert.ok(llms.includes("open-problems/v2|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]"), "llms.txt nie opisuje tokenu replaces (D1)");
+    assert.ok(llms.includes("exit0/v1|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]"), "llms.txt nie opisuje tokenu replaces (D1)");
     assert.ok(llms.includes("|0:|-"), "llms.txt ma niesc dzialajacy literal payloadu rozwiazania");
 
     // D5: "literowka nie kosztuje" jest prawda WYLACZNIE o limicie klucza.
@@ -2387,6 +2387,6 @@ if (gate.server)
       assert.equal(build(TREE, "--check").code, 0);
       is(await hit(SRV, { path: "/api/pulse" }), 200, "serwer glowny przezyl caly zestaw");
       assert.ok(commits(TREE) > 1, "zaden zapis nie doszedl do gita");
-      assert.match(SRV.line, /open-problems .*:\d+/, "linia startowa serwera zmienila ksztalt — to z niej ten zestaw czyta port (E1)");
+      assert.match(SRV.line, /exit0 .*:\d+/, "linia startowa serwera zmienila ksztalt — to z niej ten zestaw czyta port (E1)");
     });
   });

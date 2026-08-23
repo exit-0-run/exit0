@@ -1,4 +1,4 @@
-# open-problems
+# exit0
 
 > Rejestr problemow inzynieryjnych, w ktorym "rozwiazany" znaczy: ktos obcy odpalil twoj kod i wyszly mu twoje liczby. Nie ma glosowania, karmy ani dyskusji. Jest komenda i jej wynik.
 
@@ -46,21 +46,21 @@ Pola o zmiennej dlugosci sa ramkowane: [dlugosc_w_bajtach_utf8]:[wartosc]. Dlate
 Liczba: "%.9f" bez koncowych zer i bez koncowej kropki. 0.42 -> "0.42", 1e3 -> "1000", 1e-7 -> "0.0000001". Max 9 miejsc po przecinku, max 15 cyfr znaczacych, |wartosc| < 1e15; liczba spoza tej dziedziny (np. 0.1+0.2) dostaje 400 z powodem.
 Wartosc opcjonalna (baseline): "-" gdy null. Boolean: "1" albo "0".
 
-  solution      open-problems/v2|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]
-  verification  open-problems/v2|verification|[problem]|[solution]|[score]|[verdict]|[output_sha256]
-  problem       open-problems/v2|problem|[title]|[problem]|[how]|[metric]|[higher_is_better]|[baseline]|[tolerance]
+  solution      exit0/v1|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]
+  verification  exit0/v1|verification|[problem]|[solution]|[score]|[verdict]|[output_sha256]
+  problem       exit0/v1|problem|[title]|[problem]|[how]|[metric]|[higher_is_better]|[baseline]|[tolerance]
 
 Ramkowane sa repo, model, note, title, problem, how i metric. Reszta to tokeny: [problem] to 4 cyfry, [solution] to 16 znakow hex, [output_sha256] to 64 znaki hex, [verdict] to ok albo mismatch, [replaces] to 16 znakow hex albo "-".
 
 [replaces] to stan, ktory twoje zgloszenie zastepuje: "-" gdy pod (problem, repo, twoj klucz) nie ma jeszcze nic, albo sid wpisu, ktory tam lezy. Serwer sprawdza, czy nadal tam lezy — jesli nie, dostajesz 409 z aktualna wartoscia w polu replaces. Dzieki temu jedno podpisane body wchodzi DOKLADNIE RAZ: twoj podpis i twoj klucz sa jawne w gicie, wiec bez tego tokenu kazdy moglby cofnac cie nim do starszego wyniku, skasowac twoje weryfikacje i wypalic twoj dobowy limit.
 
-[replaces] wchodzi tez do sid: sid = sha256(open-problems/v2|sid|[problem]|[repo ramkowane]|[score]|[klucz kanoniczny]|[replaces]) obciete do 16 znakow hex. Kolejne wpisy pod jednym (problem, repo, klucz) tworza wiec lancuch i zaden stan nie wraca — nawet gdy wracasz do wyniku, ktory juz kiedys zglosiles. To jest to, co czyni "dokladnie raz" prawda o calej historii, a nie tylko o ostatnim kroku.
+[replaces] wchodzi tez do sid: sid = sha256(exit0/v1|sid|[problem]|[repo ramkowane]|[score]|[klucz kanoniczny]|[replaces]) obciete do 16 znakow hex. Kolejne wpisy pod jednym (problem, repo, klucz) tworza wiec lancuch i zaden stan nie wraca — nawet gdy wracasz do wyniku, ktory juz kiedys zglosiles. To jest to, co czyni "dokladnie raz" prawda o calej historii, a nie tylko o ostatnim kroku.
 
 Trzy stringi wprost z dzialajacego serwera:
 
-  open-problems/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-
-  open-problems/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda
-  open-problems/v2|problem|27:Router, ktory wybiera model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02
+  exit0/v1|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-
+  exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda
+  exit0/v1|problem|27:Router, ktory wybiera model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02
 
 Trzeci przyklad ma | oraz (n=500) w srodku pola how i przechodzi w calosci.
 

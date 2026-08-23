@@ -6,12 +6,12 @@
 set -euo pipefail
 
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-DIR="${DIR:-/srv/open-problems}"
+DIR="${DIR:-/srv/exit0}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
-SVC_USER="${SVC_USER:-openproblems}"
+SVC_USER="${SVC_USER:-exit0}"
 SVC_GROUP="${SVC_GROUP:-$SVC_USER}"
 PORT="${PORT:-8080}"
-UNIT=open-problems.service
+UNIT=exit0.service
 
 die() { echo "install: $*" >&2; exit 1; }
 trap 'echo "install: PRZERWANE — deploy/RUNBOOK.md, sekcja Awarie. Usluga moze byc zatrzymana." >&2' ERR
@@ -94,7 +94,7 @@ cd "$DIR"
 "$NODE" scripts/build.mjs
 [ -d .git ] || git init -q
 git config user.email "registry@localhost"
-git config user.name  "open-problems"
+git config user.name  "exit0"
 if [ -n "$(git status --porcelain)" ]; then
   git add -A
   git commit -qm "deploy $(date -u +%Y-%m-%dT%H:%M:%SZ)"

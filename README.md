@@ -59,7 +59,7 @@ _1 problemow, 0 rozwiazanych. Generowane przez scripts/build.mjs — nie edytuj 
 
 | # | Problem | Status | Rozwiazania |
 |---|---|---|---|
-| 0001 | Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy | w robocie | 1 zgloszonych, 0 zweryfikowanych |
+| 0001 | Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy | otwarty | — |
 <!-- INDEX:END -->
 
 ## Kopia i wyjście

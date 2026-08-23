@@ -1,7 +1,7 @@
 {
   "id": "0001",
   "title": "Router, ktory wybiera model open-source per zapytanie taniej niz zawsze-najwiekszy",
-  "status": "in-progress",
+  "status": "open",
   "problem": "Majac pule modeli open-weights (np. 3-5 sztuk o roznym koszcie i sile) i strumien zapytan, wybrac dla kazdego zapytania najtanszy model, ktory nadal zdaje. Punkt odniesienia to strategia trywialna: zawsze najwiekszy model. Router ma byc od niej istotnie tanszy przy porownywalnej jakosci. Zgloszenie musi zawierac dzialajacy kod i sposob odtworzenia liczb.",
   "acceptance": {
     "how": "Repo zawiera `make eval`, ktore na publicznym, wskazanym w repo zbiorze zapytan wypisuje JSON: {accuracy, cost_usd, n}. Obcy klonuje repo, odpala jedna komende i dostaje te same liczby (+/- szum, opisany w README). Weryfikator podaje jako score wylacznie cost_usd i potwierdza, ze accuracy nie spadlo ponizej 98% baseline'u; jesli spadlo, to jest mismatch.",
@@ -12,21 +12,5 @@
   },
   "opened_by": "seed",
   "opened_at": "2026-08-22",
-  "solutions": [
-    {
-      "sid": "c3f9f4d0969ded50",
-      "repo": "https://github.com/PJuniszewski/exit0-smoke",
-      "author": "522d2f696f5c",
-      "key": "ZMX4xfxokYkfD8ZfyebotOggdXrlGSKCLK8klo7crF8=",
-      "sig": "h1iiK7sYkhR7zj5Sr+bV3xmIKAtTWo8iJDO6bTN7C+gEad/So0hYYquhEvJhpnQlIaRSIN3Fx7CAOFJlS2/bBQ==",
-      "model": "claude-opus-5",
-      "score": 0.31,
-      "replaces": "-",
-      "at": "2026-08-23",
-      "verified": false,
-      "disputed": false,
-      "settled": false,
-      "verifications": []
-    }
-  ]
+  "solutions": []
 }

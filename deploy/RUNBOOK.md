@@ -1,0 +1,177 @@
+# RUNBOOK
+
+Operacyjna instrukcja dla `/srv/open-problems`. Instalator: `deploy/install.sh`.
+Reguła nadrzędna: **źródłem prawdy jest git w katalogu usługi**, a nie proces. Jeśli
+masz kopię tego katalogu, masz cały rejestr.
+
+## Instalacja
+
+    git clone <repo> /opt/open-problems-src
+    cd /opt/open-problems-src
+    sudo deploy/install.sh
+
+Skrypt: sprawdza node 20+, zakłada użytkownika `openproblems`, kopiuje kod do
+`/srv/open-problems`, zasiewa `problems/` i `README.md` (tylko gdy ich tam nie ma),
+buduje, commituje, renderuje unit pod wykrytą ścieżkę node, startuje usługę i czeka na
+`/api/pulse`. Kończy się niezerowo, jeśli serwer nie odpowie — „gotowe” znaczy
+„odpowiada”.
+
+TLS:
+
+    cp /srv/open-problems/deploy/Caddyfile /etc/caddy/Caddyfile
+    # podmień `open-problems.example` na swoją domenę
+    systemctl reload caddy
+
+Zmienne, które instalator honoruje: `DIR`, `UNIT_DIR`, `SVC_USER`, `SVC_GROUP`, `PORT`.
+Zmiana portu to `sudo PORT=9090 deploy/install.sh` **plus** poprawiony `reverse_proxy`
+w Caddyfile.
+
+## Aktualizacja
+
+    cd /opt/open-problems-src
+    git pull
+    sudo deploy/install.sh
+
+To jest cała procedura. Instalator sam zatrzymuje usługę, podmienia **wyłącznie kod**
+(`scripts/`, `deploy/`, `llms.txt`, dokumenty, `problems/_schema.json`), przebudowuje,
+commituje efekt i startuje z powrotem.
+
+**Nigdy nie rób `git pull` w `/srv/open-problems`.** Historia tego katalogu to historia
+rejestru, a nie historia kodu — to dwa różne repozytoria, które nie mają wspólnego
+przodka.
+
+Instalator odmówi pracy, jeśli zastanie tam niezacommitowane zmiany. To celowe: takie
+zmiany to albo ręczna edycja w toku, albo przerwany zapis. Rozwiąż je (`Awarie`) i
+powtórz.
+
+## Kopia zapasowa
+
+Kopia to `git push --mirror`. Najpierw skonfiguruj zdalne repozytorium raz, ręcznie —
+instalator tego nie zgaduje:
+
+    # klucz wdrożeniowy roota musi mieć prawo zapisu do lustra
+    git -C /srv/open-problems remote add mirror git@twoj-host:ty/open-problems-backup.git
+    git -C /srv/open-problems push --mirror mirror     # pierwszy raz ręcznie, żeby zobaczyć błąd
+
+Potem cron:
+
+    # /etc/cron.d/open-problems-backup
+    17 * * * * root git -C /srv/open-problems push --mirror mirror || logger -t open-problems "kopia zapasowa nie poszla"
+
+Czego **nie** backupujemy: `.state/` (liczniki dobowe i lockfile — celowo ulotne,
+skasowanie ich zeruje limity) oraz `identity.pem`, którego serwer w ogóle nie ma.
+
+Nie trzymaj w `/srv/open-problems` niczego swojego: zrzutu bazy, archiwum, kluczy SSH.
+Katalog domowy użytkownika usługi wskazuje na to samo miejsce, więc `~/.ssh` też się tu
+liczy. Każdy nieśledzony plik to dla serwera brudne drzewo, czyli **zatrzymane zapisy**
+(`.gitignore` zwalnia z tego tylko `.state/`, `identity.pem` i `node_modules/`).
+
+Katalog `problems/evidence/` rośnie z ruchem i jako jedyny nie da się odtworzyć z
+niczego innego. Pilnuj rozmiaru: `du -sh /srv/open-problems/problems/evidence`.
+
+## Odtworzenie
+
+    git clone <lustro> /srv/open-problems
+    cd /opt/open-problems-src && sudo deploy/install.sh
+
+Klon przynosi dane i historię; instalator dokłada kod, tożsamość gita, unit i start.
+Ponieważ świeży klon jest czysty, kontrola „niezacommitowane zmiany” przechodzi.
+
+Sanity check po odtworzeniu:
+
+    node /srv/open-problems/scripts/build.mjs --check
+    curl -s localhost:8080/api/pulse
+
+## Zdrowie
+
+Trzy rzeczy, w tej kolejności:
+
+    git -C /srv/open-problems status --porcelain     # MUSI być pusto
+    curl -s localhost:8080/api/pulse                 # writes: "ok", head się zmienia po zapisie
+    systemctl status open-problems
+
+`writes: "readonly"` oznacza, że serwer przyjmuje odczyty i odrzuca zapisy z 503. To
+samo widać w widoku tekstowym: `curl -s localhost:8080/ | grep UWAGA` pokazuje wtedy
+linię `UWAGA zapisy wstrzymane`. Powód jest w polu `reason`, a gotowa komenda naprawcza
+w polu `fix` ciała 503. Powody są cztery:
+
+| `reason` | Sprawdzenie | Naprawa |
+|---|---|---|
+| `git nie ma tozsamosci do commitowania` | `sudo -u openproblems git -C /srv/open-problems var GIT_COMMITTER_IDENT` | `git -C /srv/open-problems config user.email registry@localhost` i `user.name open-problems` |
+| `to nie jest repozytorium git` | `ls -d /srv/open-problems/.git` | katalog nie pochodzi z instalatora — odtwórz z lustra (`Odtworzenie`) |
+| `drzewo robocze jest brudne` | `git -C /srv/open-problems status --short` | patrz `Awarie` |
+| `rejestr jest niespojny` | `node /srv/open-problems/scripts/build.mjs --check` | popraw wskazany plik i przebuduj albo cofnij commit |
+
+Serwer sprawdza stan przy starcie i przy każdej próbie zapisu, więc wychodzi z trybu
+read-only sam, gdy usuniesz przyczynę. Restart nie jest potrzebny i nie pomoże, jeśli
+przyczyna została.
+
+Dlatego `git status --porcelain` jest w tej tabeli pierwszy: `pulse` i widok tekstowy
+pokazują **ostatni znany** stan, a ten odświeża się dopiero przy próbie zapisu. Zaraz po
+tym, jak coś zabrudzi drzewo, `pulse` potrafi jeszcze przez chwilę mówić `writes: "ok"`.
+
+## Awarie
+
+**Brudne drzewo po przerwanym zapisie.** Serwer commituje tylko kompletne zapisy, więc
+niezacommitowana zmiana to śmieć po przerwanym żądaniu. Obejrzyj, potem cofnij:
+
+    git -C /srv/open-problems status --short
+    git -C /srv/open-problems diff
+    sudo systemctl stop open-problems
+    cd /srv/open-problems
+    sudo -u openproblems git reset -q -- problems README.md index.json
+    sudo -u openproblems git checkout HEAD -- problems README.md index.json
+    sudo -u openproblems git clean -fd -- problems
+    node scripts/build.mjs --check
+    sudo systemctl start open-problems
+
+To jest ta sama sekwencja, którą serwer wykonuje sam po odrzuconym zapisie (`reset`,
+`checkout HEAD`, `clean`). `reset` jest pierwszy nieprzypadkowo: bez niego plik dodany do
+indeksu przez przerwany zapis przeżyłby oba pozostałe kroki.
+
+**Zapisy zwracają 503 „inny proces pisze do tego katalogu”.** Blokada to
+`/srv/open-problems/.state/write.lock` z pid-em właściciela. Serwer sam przejmuje
+blokadę po martwym procesie i nigdy po żywym. Jeśli plik został po ubitym `-9`
+procesie, a `ps` nic nie pokazuje:
+
+    cat /srv/open-problems/.state/write.lock          # sprawdź pid
+    sudo systemctl stop open-problems
+    sudo rm /srv/open-problems/.state/write.lock
+    sudo systemctl start open-problems
+
+**Każdy zapis pada, odczyty działają.** Najczęściej `node` nie jest w `PATH`
+jednostki — serwer woła `node scripts/build.mjs` po nazwie. Sprawdź, co instalator
+wyrenderował, i porównaj z prawdą:
+
+    grep -E "^(ExecStart|Environment=PATH)" /etc/systemd/system/open-problems.service
+    command -v node
+
+Rozjazd naprawia ponowne `sudo deploy/install.sh` — unit jest renderowany z
+`command -v node`, nie z zaszytej ścieżki.
+
+**Wszyscy dostają 429.** Limit po IP liczy się dla adresu, który poda proxy. Sprawdź, że
+Caddy nadpisuje nagłówek (`header_up X-Forwarded-For {remote_host}`) i że unit ma
+`TRUST_PROXY=1`. Przy odwrotnym ustawieniu cały ruch wpada do jednego kubełka
+`127.0.0.1` i wspólnie zjada dobowy limit.
+
+**Usługa się restartuje w pętli.** `journalctl -u open-problems -n 100`. Niespójne repo
+nie powinno tego robić (od tego jest tryb read-only), więc pętla oznacza błąd startu:
+brak `scripts/`, brak praw do katalogu, złe `ExecStart` albo zła wartość `PORT` lub
+`IP_CAP` w `Environment=`. Ta ostatnia mówi sama za siebie — `PORT="" nie jest liczbą
+całkowitą z zakresu 0-65535` — i jest celowo błędem startu: pusty `PORT` znaczyłby dla
+Node port 0, więc usługa wstałaby zdrowa na losowym porcie, którego Caddy nie dosięga,
+a `IP_CAP` spoza zakresu odrzucałby każdy zapis z 429 bez jednej linii w logu.
+
+**Zabija ją OOM.** Unit ma `MemoryMax=256M`. Zmierzone przy jednym problemie: serwer
+w spoczynku ~55 MB, `build.mjs` w szczycie ~49 MB, a przy zapisie chodzą oba naraz plus
+`git`. Zapas jest, ale `build.mjs` czyta wszystkie problemy i wszystkie dowody, więc
+zapotrzebowanie rośnie razem z rejestrem — to jest ta jedna liczba w unicie, którą kiedyś
+trzeba będzie podnieść. Bieżące zużycie razem z limitem pokazuje linia `Memory:`
+w `systemctl status open-problems`.
+
+## Zatrzymanie i deinstalacja
+
+    sudo systemctl disable --now open-problems
+    sudo rm /etc/systemd/system/open-problems.service
+    sudo systemctl daemon-reload
+    # dane zostają w /srv/open-problems — to jest cały rejestr, skasuj świadomie

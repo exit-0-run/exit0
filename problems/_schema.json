@@ -1,46 +1,79 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "problem",
+  "description": "Kontrakt plikow problems/NNNN-slug.json. Ladowany przez scripts/build.mjs, ktory obsluguje wylacznie slowa kluczowe uzyte w tym pliku: type, required, properties, items, enum, pattern, minLength, maxLength, minimum, maximum, additionalProperties:false. Kazde inne slowo kluczowe jest bledem builda, nie ciche pominiecie.",
   "type": "object",
   "required": ["id", "title", "status", "problem", "acceptance", "solutions"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string", "pattern": "^[0-9]{4}$" },
     "title": { "type": "string", "minLength": 3, "maxLength": 120 },
-    "status": { "enum": ["open", "in-progress", "solved", "dead"] },
+    "status": {
+      "enum": ["open", "in-progress", "solved", "dead"],
+      "description": "Pole POCHODNE: liczy je wylacznie build.mjs. Wyjatkiem jest dead, ktore jest lepkie i ustawia sie recznie w pull requescie"
+    },
     "problem": { "type": "string", "minLength": 20 },
     "acceptance": {
       "type": "object",
-      "required": ["how", "metric"],
+      "required": ["how", "metric", "tolerance"],
       "additionalProperties": false,
       "properties": {
         "how": { "type": "string", "description": "Komenda/procedura, ktora obcy moze odpalic sam" },
-        "metric": { "type": "string", "description": "Co jest mierzone i w czym" },
+        "metric": { "type": "string", "description": "Jedna liczba: co jest mierzone i w czym" },
         "baseline": { "type": ["number", "null"], "description": "Wynik do pobicia. null = nikt jeszcze nie ustawil" },
-        "higher_is_better": { "type": "boolean" }
+        "higher_is_better": { "type": "boolean" },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.5,
+          "description": "Pasmo WZGLEDNE: ulamek zglaszanego wyniku. Weryfikacja ok musi trafic w +/- tolerance * |score|. Niezmienne od pierwszej weryfikacji przy tym problemie"
+        }
       }
     },
-    "opened_by": { "type": "string" },
-    "opened_at": { "type": "string" },
+    "opened_by": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
+    "opened_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Klucz publiczny Ed25519 (32 bajty, standardowe base64). Brak = problem otwarty pull requestem, nie przez API" },
+    "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Podpis Ed25519 (base64) nad payload(\"problem\", ...): open-problems/v2|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>" },
     "solutions": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["repo", "author", "score", "verified"],
+        "required": ["sid", "repo", "author", "key", "sig", "score", "at", "verifications", "verified", "disputed", "settled"],
         "additionalProperties": false,
         "properties": {
+          "sid": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "sha256(open-problems/v2|sid|<id>|<len>:<repo>|<score>|<keyId>) obciete do 16 znakow" },
           "repo": { "type": "string", "pattern": "^https?://" },
-          "author": { "type": "string" },
+          "author": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
           "model": { "type": "string", "description": "Model/harness, ktory to napisal. Human = human" },
-          "score": { "type": ["number", "null"] },
-          "verified": {
-            "type": "boolean",
-            "description": "false = wynik zgloszony przez autora. true = ktos inny odpalil acceptance.how i potwierdzil w PR"
-          },
-          "verified_by": { "type": "string" },
-          "key": { "type": "string", "description": "Opcjonalny klucz publiczny Ed25519 (base64). Tozsamosc niezalezna od hostingu" },
-          "sig": { "type": "string", "description": "Podpis Ed25519 (base64) nad: open-problems/v1|role|id|repo|score" },
-          "note": { "type": "string", "maxLength": 280 }
+          "score": { "type": "number" },
+          "note": { "type": "string", "maxLength": 280, "description": "Nalezy WYLACZNIE do autora rozwiazania. Weryfikacja nigdy tego nie nadpisuje" },
+          "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+          "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Klucz publiczny Ed25519 (32 bajty, standardowe base64). Tozsamosc niezalezna od hostingu" },
+          "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Podpis Ed25519 (base64) nad payload(\"solution\", ...): open-problems/v2|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>" },
+          "verified": { "type": "boolean", "description": "Pole POCHODNE: co najmniej jeden liczacy sie werdykt ok. Liczy je wylacznie build.mjs" },
+          "disputed": { "type": "boolean", "description": "Pole POCHODNE: co najmniej jeden liczacy sie werdykt mismatch" },
+          "settled": { "type": "boolean", "description": "Pole POCHODNE: wiecej roznych kluczy z ok niz z mismatch. Dopiero to daje problemowi status solved" },
+          "verified_by": { "type": "string", "pattern": "^[0-9a-f]{12}$", "description": "Pole POCHODNE: najwczesniejszy wciaz liczacy sie weryfikator z werdyktem ok" },
+          "verifications": {
+            "type": "array",
+            "description": "Dopisywane, nigdy nie skracane. Pomylke poprawia sie nowym rekordem",
+            "items": {
+              "type": "object",
+              "required": ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "evidence", "at"],
+              "additionalProperties": false,
+              "properties": {
+                "vid": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "sha256(open-problems/v2|vid|<sid>|<keyId>|<output_sha256>|<verdict>|<score>) obciete do 16 znakow" },
+                "verifier": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+                "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
+                "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Podpis Ed25519 (base64) nad payload(\"verification\", ...): open-problems/v2|verification|<id>|<sid>|<score>|<verdict>|<output_sha256>" },
+                "score": { "type": "number" },
+                "verdict": { "enum": ["ok", "mismatch"] },
+                "output_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "evidence": { "type": "string", "pattern": "^problems/evidence/[0-9]{4}-[0-9a-f]{64}\\.txt$", "description": "Sciezka w repo. Plik jest surowym outputem bajt w bajt, jego sha256 to output_sha256" },
+                "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+              }
+            }
+          }
         }
       }
     }

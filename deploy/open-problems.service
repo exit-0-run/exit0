@@ -1,24 +1,63 @@
 # /etc/systemd/system/open-problems.service
-#   systemctl enable --now open-problems
+# Nie kopiuj tego pliku recznie. deploy/install.sh renderuje z niego wersje docelowa:
+# podmienia ExecStart, PATH, PORT, User, WorkingDirectory, ReadWritePaths i Documentation.
+#   sudo deploy/install.sh
+#   systemctl status open-problems
 
 [Unit]
 Description=open-problems registry
+Documentation=file:///srv/open-problems/deploy/RUNBOOK.md
 After=network.target
 
 [Service]
 Type=simple
 User=openproblems
 WorkingDirectory=/srv/open-problems
+
+# Serwer odpala `node scripts/build.mjs` i `git` PO NAZWIE, nie po sciezce. Domyslny
+# PATH jednostki nie zawiera /opt/... ani nvm, wiec bez tej linii kazdy zapis konczy
+# sie ENOENT, a odczyty dzialaja — awaria wyglada jak zdrowy serwer.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PORT=8080
+# Publiczny ruch wchodzi wylacznie przez Caddy z deploy/Caddyfile.
+Environment=HOST=127.0.0.1
+# Ten unit ma wlasne proxy przed soba i ono nadpisuje X-Forwarded-For. Bez tego caly
+# ruch wpada do jednego kubelka ::ffff:127.0.0.1 i limit po IP dusi cale wdrozenie.
+Environment=TRUST_PROXY=1
 ExecStart=/usr/bin/node scripts/server.mjs
 Restart=always
 RestartSec=2
 
-# Serwer wykonuje `git` i pisze wylacznie do swojego katalogu.
+# Zapis to build + commit. SIGTERM ma domknac kolejke, a nie urwac ja w polowie.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Swiadomie BEZ ExecStartPre z `build.mjs --check`: niespojne repo to w tym serwerze
+# tryb read-only (503 na zapisy, odczyty dzialaja), a nie wyjscie z procesu. Bramka
+# w ExecStartPre razem z Restart=always dawalaby petle restartow zamiast diagnozy.
+
+# Serwer wykonuje `git` i `node`, pisze wylacznie do swojego katalogu, nasluchuje na
+# porcie > 1024 i nie potrzebuje ani jednej capability.
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Tresc rejestru jest publiczna, ale .state/ip.json trzyma liczniki po adresach klientow.
+# Nie ma powodu, zeby na wspoldzielonym hoscie czytal je kazdy.
+UMask=0027
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 ReadWritePaths=/srv/open-problems
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M

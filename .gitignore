@@ -1,3 +1,9 @@
 node_modules/
-identity.pem
 .state/
+
+# Klucz JEST kontem, a install.sh robi `git add -A` na wdrozonym katalogu.
+# Wzorzec, nie sama nazwa domyslna: `keygen alice.pem` tez ma zostac poza gitem.
+*.pem
+
+# Worked example z QUICKSTART.md i llms.txt pisze cialo zadania tutaj.
+body.json

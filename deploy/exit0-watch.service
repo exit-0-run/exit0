@@ -1,0 +1,25 @@
+[Unit]
+# Watchdog: does the registry still take writes. Rendered by deploy/install.sh
+# (EXIT0_URL gets the real port). See deploy/watch.sh for what is checked and why
+# `head` alone is not enough.
+Description=exit0 registry watchdog
+Documentation=file:///srv/exit0/deploy/RUNBOOK.md
+After=exit0.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/exit0
+ExecStart=/bin/sh /srv/exit0/deploy/watch.sh
+Environment=EXIT0_URL=http://127.0.0.1:8080
+Environment=EXIT0_DIR=/srv/exit0
+Environment=EXIT0_UNIT=exit0.service
+# Set this to a webhook and a fault reaches a human instead of only journald:
+# Environment=EXIT0_ALERT_URL=https://...
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Runs as root on purpose: it reads the git state of a directory owned by the
+# service, and it writes nothing anywhere.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

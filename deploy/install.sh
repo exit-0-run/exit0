@@ -12,6 +12,7 @@ SVC_USER="${SVC_USER:-exit0}"
 SVC_GROUP="${SVC_GROUP:-$SVC_USER}"
 PORT="${PORT:-8080}"
 UNIT=exit0.service
+WATCH=exit0-watch
 
 die() { echo "install: $*" >&2; exit 1; }
 trap 'echo "install: ABORTED. deploy/RUNBOOK.md, section Failures. The service may be stopped." >&2' ERR
@@ -26,7 +27,8 @@ NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
 
 # --- 2. complete source; a copy missing any of these files is a dead service ---
 for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore .gitattributes \
-         problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md; do
+         problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md \
+         deploy/watch.sh deploy/backup.sh "deploy/$WATCH.service" "deploy/$WATCH.timer"; do
   [ -e "$SRC/$f" ] || die "$f missing in $SRC"
 done
 
@@ -125,8 +127,29 @@ sed -e "s#^ExecStart=.*#ExecStart=$NODE scripts/server.mjs#" \
 chmod 644 "$UNIT_DIR/.$UNIT.new"
 mv "$UNIT_DIR/.$UNIT.new" "$UNIT_DIR/$UNIT"
 
+# --- 9b. watchdog ---
+# Nobody finds out that writes fell into read-only mode until somebody looks at
+# /api/pulse by hand, and `head` does not show it: with writes suspended the server
+# still serves the last good index, so head looks perfectly normal. WATCH=0 skips it.
+if [ "${WATCH_ENABLE:-1}" = "1" ]; then
+  sed -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
+      -e "s#^ExecStart=.*#ExecStart=/bin/sh $DIR/deploy/watch.sh#" \
+      -e "s#^Environment=EXIT0_URL=.*#Environment=EXIT0_URL=http://127.0.0.1:$PORT#" \
+      -e "s#^Environment=EXIT0_DIR=.*#Environment=EXIT0_DIR=$DIR#" \
+      -e "s#^Environment=EXIT0_UNIT=.*#Environment=EXIT0_UNIT=$UNIT#" \
+      -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
+      "$SRC/deploy/$WATCH.service" > "$UNIT_DIR/.$WATCH.service.new"
+  chmod 644 "$UNIT_DIR/.$WATCH.service.new"
+  mv "$UNIT_DIR/.$WATCH.service.new" "$UNIT_DIR/$WATCH.service"
+  sed -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
+      "$SRC/deploy/$WATCH.timer" > "$UNIT_DIR/.$WATCH.timer.new"
+  chmod 644 "$UNIT_DIR/.$WATCH.timer.new"
+  mv "$UNIT_DIR/.$WATCH.timer.new" "$UNIT_DIR/$WATCH.timer"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "$UNIT"
+[ "${WATCH_ENABLE:-1}" = "1" ] && systemctl enable --now "$WATCH.timer"
 
 # --- 10. do not say "up" before it answers ---
 "$NODE" -e '
@@ -158,4 +181,6 @@ echo "  state:  systemctl status $UNIT"
 echo "  logs:   journalctl -u $UNIT -f"
 echo "  pulse:  curl -s localhost:$PORT/api/pulse"
 echo "  TLS:    cp $DIR/deploy/Caddyfile /etc/caddy/Caddyfile, replace the domain, systemctl reload caddy"
+echo "  watchdog: systemctl list-timers $WATCH.timer   journalctl -u $WATCH -n 20"
+echo "  backup: run deploy/backup.sh FROM ANOTHER MACHINE (it needs a second disk to mean anything)"
 echo "  backup, update, failures: $DIR/deploy/RUNBOOK.md"

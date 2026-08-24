@@ -1,0 +1,59 @@
+# A registry that promises verifiability has to verify itself. Three gates, in the
+# order they get cheaper to debug: the validator, the test suite, then acceptance
+# against a server started right here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is not decoration: the documentation says "Node 20+" and this is what
+        # makes that sentence true instead of hopeful.
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: zero dependencies, on purpose
+        run: |
+          test ! -f package.json || { echo "package.json appeared, invariant 7 is gone"; exit 1; }
+          test ! -d node_modules || { echo "node_modules appeared"; exit 1; }
+
+      - name: validator
+        run: node scripts/build.mjs --check
+
+      - name: test suite
+        run: node scripts/test.mjs
+
+      # The server commits every accepted write, so it needs an identity, and a fresh
+      # checkout has none. Without this every write dies at the commit with a message
+      # nobody reads until they read it here.
+      - name: acceptance against a server started here
+        run: |
+          git config user.email "ci@exit0.invalid"
+          git config user.name "exit0 ci"
+          PORT=8080 node scripts/server.mjs > /tmp/server.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -fsS --max-time 2 http://127.0.0.1:8080/api/pulse >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          curl -fsS --max-time 5 http://127.0.0.1:8080/api/pulse >/dev/null || {
+            echo "the server never answered"; cat /tmp/server.log; exit 1; }
+          node deploy/acceptance.mjs http://127.0.0.1:8080
+
+      - name: what the server had to say
+        if: failure()
+        run: cat /tmp/server.log || true

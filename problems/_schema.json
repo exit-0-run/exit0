@@ -121,7 +121,7 @@
     "sig": {
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]{86}==$",
-      "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v1|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>|<domain>|<needs joined by , or ->"
+      "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v2|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>|<domain>|<needs joined by , or ->"
     },
     "solutions": {
       "type": "array",
@@ -146,7 +146,7 @@
           "sid": {
             "type": "string",
             "pattern": "^[0-9a-f]{16}$",
-            "description": "sha256(exit0/v1|sid|<id>|<len>:<repo>|<score>|<keyId>|<replaces>) truncated to 16 characters. The last link is the sid of the state this entry replaced, so a sid never repeats - without that, returning to an earlier score brought old signed bodies back to life"
+            "description": "sha256(exit0/v2|sid|<id>|<len>:<repo>|<score>|<keyId>|<replaces>) truncated to 16 characters. The last link is the sid of the state this entry replaced, so a sid never repeats - without that, returning to an earlier score brought old signed bodies back to life"
           },
           "repo": {
             "type": "string",
@@ -185,7 +185,7 @@
           "sig": {
             "type": "string",
             "pattern": "^[A-Za-z0-9+/]{86}==$",
-            "description": "Ed25519 signature (base64) over payload(\"solution\", ...): exit0/v1|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>|<replaces>"
+            "description": "Ed25519 signature (base64) over payload(\"solution\", ...): exit0/v2|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>|<replaces>"
           },
           "verified": {
             "type": "boolean",
@@ -226,7 +226,7 @@
                 "vid": {
                   "type": "string",
                   "pattern": "^[0-9a-f]{16}$",
-                  "description": "sha256(exit0/v1|vid|<sid>|<keyId>|<output_sha256>|<verdict>|<score>|<replaces>) truncated to 16 characters"
+                  "description": "sha256(exit0/v2|vid|<sid>|<keyId>|<output_sha256>|<verdict>|<score>|<replaces>) truncated to 16 characters"
                 },
                 "verifier": {
                   "type": "string",
@@ -239,7 +239,7 @@
                 "sig": {
                   "type": "string",
                   "pattern": "^[A-Za-z0-9+/]{86}==$",
-                  "description": "Ed25519 signature (base64) over payload(\"verification\", ...): exit0/v1|verification|<id>|<sid>|<score>|<verdict>|<output_sha256>|<tolerance>|<replaces>"
+                  "description": "Ed25519 signature (base64) over payload(\"verification\", ...): exit0/v2|verification|<id>|<sid>|<score>|<verdict>|<output_sha256>|<tolerance>|<replaces>"
                 },
                 "score": {
                   "type": "number"

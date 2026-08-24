@@ -12,7 +12,7 @@ import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 // The signature contract. A change here invalidates EVERY existing signature.
-export const PREFIX = "exit0/v1";
+export const PREFIX = "exit0/v2";
 
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");

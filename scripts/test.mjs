@@ -384,8 +384,22 @@ if (gate.sign)
       assert.equal(sg.verifyEntry, undefined, "verifyEntry was supposed to be gone (A1/finding 14): no wrapper reconstructs the payload");
     });
 
-    test("PREFIX is exit0/v1, not a trace of the old name", () => {
-      assert.equal(sg.PREFIX, "exit0/v1");
+    test("PREFIX is exit0/v2, not a trace of the old name", () => {
+      assert.equal(sg.PREFIX, "exit0/v2");
+      // The bump is the whole point of doing it while nothing is signed: a body signed
+      // under the old prefix has to be refused, not quietly accepted because the rest of
+      // the string still lines up. PREFIX also feeds solutionId and verificationId, so a
+      // v1 signer disagrees about sids too, not only about the signature.
+      const F = { problem: "0001", repo: "https://e.example/r", score: 1, model: "m", note: "", replaces: "-" };
+      const now = sg.payload("solution", F);
+      assert.ok(now.startsWith("exit0/v2|"), "payload still emits the old prefix");
+      // The bump only means something if a body signed under the old prefix stops
+      // verifying. Everything after the prefix is identical, so nothing but the version
+      // is doing the work here - which is exactly what has to be true.
+      const k = mkKey();
+      const then = now.replace(/^exit0\/v2/, "exit0/v1");
+      assert.ok(sg.check(k.pub, sigOf(k, now), now), "a v2 signature has to verify under v2");
+      assert.ok(!sg.check(k.pub, sigOf(k, then), now), "a body signed under exit0/v1 still verifies under v2: the bump bought nothing");
       for (const f of readdirSync(join(TREE, "scripts")).filter((x) => x.endsWith(".mjs")))
         assert.ok(!readFileSync(join(TREE, "scripts", f), "utf8").includes(LEGACY), `${f} still knows the old name`);
     });
@@ -398,11 +412,11 @@ if (gate.sign)
     test("payload: exact literals for the three actions", () => {
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "-" }),
-        "exit0/v1|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-"
       );
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef" }),
-        "exit0/v1|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef"
       );
       assert.equal(
         sg.payload("verification", {
@@ -414,7 +428,7 @@ if (gate.sign)
           tolerance: 0.02,
           replaces: "-",
         }),
-        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|-"
+        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|-"
       );
       assert.equal(
         sg.payload("verification", {
@@ -426,7 +440,7 @@ if (gate.sign)
           tolerance: 0.05,
           replaces: "aaaaaaaaaaaaaaaa",
         }),
-        "exit0/v1|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.05|aaaaaaaaaaaaaaaa"
+        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.05|aaaaaaaaaaaaaaaa"
       );
       assert.equal(
         sg.payload("problem", {
@@ -440,7 +454,7 @@ if (gate.sign)
           domain: "routing",
           needs: ["api-key"],
         }),
-        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|-"
+        "exit0/v2|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|-"
       );
       // The same problem WITH a subject. Two literals, because "absent" and "present" are
       // the two shapes a verifier's signature check has to reproduce byte for byte, and the
@@ -458,7 +472,7 @@ if (gate.sign)
           needs: ["api-key"],
           subject: "https://github.com/owner/repo",
         }),
-        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|29:https://github.com/owner/repo"
+        "exit0/v2|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|29:https://github.com/owner/repo"
       );
       // Canonical or rejected, and the refusal has to name THIS field: canonUrl serves both
       // repo and subject now, and a message about "repo" would send the caller to the wrong
@@ -1591,7 +1605,7 @@ if (gate.server)
         assert.ok(r.headers.etag, `${p} with no ETag, so max-age cannot be refreshed`);
       }
       const s = await hit(SRV, { path: "/sign.mjs" });
-      assert.ok(s.text.includes("exit0/v1"), "/sign.mjs does not serve the contract");
+      assert.ok(s.text.includes("exit0/v2"), "/sign.mjs does not serve the contract");
       const pulse = await hit(SRV, { path: "/api/pulse" });
       assert.equal(String(s.headers.etag).replace(/"/g, ""), pulse.json?.contract, "the hash of /sign.mjs has to agree with pulse.contract");
     });
@@ -2746,8 +2760,8 @@ describe("repo invariants", () => {
     }
   });
 
-  test("the exit0/v1 contract everywhere, not a trace of the old name", () => {
-    assert.match(text("scripts/sign.mjs") ?? "", /exit0\/v1/);
+  test("the exit0/v2 contract everywhere, not a trace of the old name", () => {
+    assert.match(text("scripts/sign.mjs") ?? "", /exit0\/v2/);
     for (const f of scripts) assert.ok(!(text(`scripts/${f}`) ?? "").includes(LEGACY), `${f} still knows the old name`);
     assert.ok(!(text("problems/_schema.json") ?? "").includes(LEGACY), "_schema.json describes the old contract");
   });
@@ -2786,7 +2800,7 @@ describe("repo invariants", () => {
     assert.equal(v.properties.output_sha256.pattern, "^[0-9a-f]{64}$");
     assert.match(v.properties.evidence.pattern, /evidence/);
     assert.deepEqual(j.properties.acceptance.properties.baseline.type, ["number", "null"]);
-    assert.match(sol.properties.sig.description ?? "", /exit0\/v1/, "the description of sig describes the old contract");
+    assert.match(sol.properties.sig.description ?? "", /exit0\/v2/, "the description of sig describes the old contract");
 
     // The drawers have ONE source: sign.mjs. A schema that knows a different set of
     // values would accept a problem whose payload cannot be signed - or the reverse.
@@ -3049,7 +3063,7 @@ describe("repo invariants", () => {
   test("the documentation says what the code does", () => {
     assert.ok(text("AGENTS.md"), "AGENTS.md is linked from CLAUDE.md and llms.txt, and does not exist (B14)");
     const llms = text("llms.txt") ?? "";
-    assert.ok(llms.includes("exit0/v1|solution|"), "llms.txt is NORMATIVE — it has to carry the payload grammar (C6)");
+    assert.ok(llms.includes("exit0/v2|solution|"), "llms.txt is NORMATIVE — it has to carry the payload grammar (C6)");
     assert.match(llms, /sign\.mjs/, "llms.txt has to say where the reference implementation of the contract is");
     assert.match(text("CLAUDE.md") ?? "", /node scripts\/test\.mjs/, "CLAUDE.md still claims there is no test suite");
     assert.match(text("QUICKSTART.md") ?? "", /git config user\.email/, "the first command in QUICKSTART dies without a git identity");
@@ -3058,7 +3072,7 @@ describe("repo invariants", () => {
 
     // D1: the grammar in the normative llms.txt has to carry the replaces token,
     // otherwise an agent signs a body the server will reject.
-    assert.ok(llms.includes("exit0/v1|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]"), "llms.txt does not describe the replaces token (D1)");
+    assert.ok(llms.includes("exit0/v2|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]"), "llms.txt does not describe the replaces token (D1)");
     assert.ok(llms.includes("|0:|-"), "llms.txt has to carry a working literal of the solution payload");
 
     // D5: "a typo costs nothing" is true ONLY about the key limit.

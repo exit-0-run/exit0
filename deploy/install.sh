@@ -85,8 +85,12 @@ fi
 # rm before cp, so no file dropped from the source survives from an older version.
 # .gitattributes is code here, not a preference: without it git rewrites line
 # endings in evidence and the committed blob stops matching its sha256.
-rm -rf "$DIR/scripts" "$DIR/deploy"
-cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/llms.txt" "$SRC/.gitignore" "$SRC/.gitattributes" "$DIR/"
+# assets/ ships for one reason: README.md points into it. It was left out at first, so the
+# public mirror served a README whose wordmark resolved to nothing, which reads as a broken
+# registry rather than as a missing copy. The whole directory goes, not the referenced file,
+# so that shipping and checking have the same granularity.
+rm -rf "$DIR/scripts" "$DIR/deploy" "$DIR/assets"
+cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/assets" "$SRC/llms.txt" "$SRC/.gitignore" "$SRC/.gitattributes" "$DIR/"
 # README.md is CODE here, not registry data, even though build.mjs rewrites the table
 # region inside it. Treating it as data (copy only when absent) meant the deployed prose
 # was frozen at whatever the first install put there: the public mirror carried a README

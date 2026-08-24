@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
-  solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead,
+  solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
   canonNeeds, DOMAINS, NEEDS, STATUS_RANK, probCmp,
 } from "./sign.mjs";
 
@@ -173,6 +173,12 @@ const peekIp = (ip) => {
 // every polling client and they could not write once the service came back.
 // Deliberately silent on failure: a refund that fails must not turn a 503 about the
 // disk into a different 503 about the counter.
+// The status the client will actually be given. The refund and the response have to
+// read the same number: an error with no numeric code answers 500, and deciding the
+// refund from e.code alone made Number(undefined) >= 500 false, so the one class of
+// 500 a client can do nothing about - a bug in here - was the one they paid for.
+const statusOf = (e) => (typeof e?.code === "number" ? e.code : 500);
+
 const refundIp = (ip) => {
   try {
     const db = readCounter(IP_FILE);
@@ -1067,6 +1073,11 @@ const needsCheck = (idx, q) => {
 
 const renderQueue = (idx, q) => {
   const rows = needsCheck(idx, q);
+  // The same paging as the front listing and as /api/work: a text reader who hits the
+  // cut needs a parameter, not a smaller number.
+  const limit = intParam(q.get("limit"), PAGE.text, PAGE.max);
+  const offset = intParam(q.get("offset"), 0, 1e9);
+  const page = rows.slice(offset, offset + limit);
   const L = [];
   L.push("EXIT0 / WORK");
   L.push("solutions waiting for a stranger to run them. This is the whole bottleneck.");
@@ -1079,7 +1090,7 @@ const renderQueue = (idx, q) => {
     return L.join("\n") + "\n";
   }
   L.push("what        problem  solution          score       needs             repo");
-  for (const { p, s, why } of rows.slice(0, 40))
+  for (const { p, s, why } of page)
     L.push(
       [
         (why === "first" ? "FIRST CHECK" : "TIEBREAK   ").padEnd(11),
@@ -1090,7 +1101,8 @@ const renderQueue = (idx, q) => {
         s.repo,
       ].join(" ")
     );
-  if (rows.length > 40) L.push(`... and ${rows.length - 40} more`);
+  if (offset + page.length < rows.length || offset)
+    L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
   L.push("");
   L.push("Pick one, read GET /<problem> for the command, run it, then:");
   L.push('  POST /api/verification  {"problem","solution":"<sid>","score","verdict","output","output_sha256","replaces":"-"}');
@@ -1143,7 +1155,13 @@ const badgeFor = (idx, id) => {
       if (s.sid !== id) continue;
       const n = (Array.isArray(s.verifications) ? s.verifications : []).length;
       if (s.disputed && !s.settled) return badge("disputed", "#b00020");
-      if (s.verified) return badge(`verified by ${new Set((s.verifications ?? []).filter((v) => v.verdict === "ok").map((v) => v.verifier)).size}`, "#0a7d38");
+      // Heads of chains, not every record with verdict "ok". A verifier who said ok and
+      // then corrected themselves to mismatch has withdrawn that ok, and the badge is
+      // the most-read thing this registry hands out: it counts what build.mjs counts.
+      if (s.verified) {
+        const ok = new Set(verdictHeads(s.verifications).heads.filter((v) => v.verdict === "ok").map((v) => v.verifier));
+        return badge(`verified by ${ok.size}`, "#0a7d38");
+      }
       return badge(n ? "checked, no match" : "unverified", "#8a6d00");
     }
   return null;
@@ -1320,17 +1338,27 @@ const readRoute = (req, res, path, qs) => {
 
   if (path === "/work" || path === "/api/work") {
     const rows = needsCheck(idx, q);
-    if (path === "/api/work" || negotiate(req.headers.accept) === "json")
+    if (path === "/api/work" || negotiate(req.headers.accept) === "json") {
+      // Same paging as /api/problems, and for the same reason: declaring a cut is not
+      // the same as offering a way past it. This is the demand surface of a registry
+      // built for a thousand problems, so everything after the first page has to be
+      // reachable by a parameter, not only by luck.
+      const limit = intParam(q.get("limit"), PAGE.json, PAGE.max);
+      const offset = intParam(q.get("offset"), 0, 1e9);
+      const page = rows.slice(offset, offset + limit);
       return cond(req, res, JSON.stringify({
         head: headOf(idx),
         waiting: rows.length,
-        work: rows.slice(0, 100).map(({ p, s, why }) => ({
+        limit,
+        offset,
+        work: page.map(({ p, s, why }) => ({
           need: why, problem: p.id, solution: s.sid, score: s.score, repo: s.repo,
           needs: needsOf(p), tolerance: p.acceptance.tolerance ?? 0.02,
           how: `/api/problems/${p.id}`,
         })),
-        more: rows.length > 100,
+        more: offset + page.length < rows.length,
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
+    }
     if (negotiate(req.headers.accept) === "html")
       return cond(req, res, renderHtml(renderQueue(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderQueue(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
@@ -1446,7 +1474,7 @@ const doWrite = (req, action, raw) => {
   try {
     return doWriteCharged(req, action, raw);
   } catch (e) {
-    if (Number(e?.code) >= 500) refundIp(ip);
+    if (statusOf(e) >= 500) refundIp(ip);
     throw e;
   }
 };
@@ -1548,7 +1576,7 @@ const handler = async (req, res) => {
   } catch (e) {
     if (res.headersSent) return res.end();
     if (e && e.code === 413) return oversize(req, res, e);
-    const code = typeof e?.code === "number" ? e.code : 500;
+    const code = statusOf(e);
     const body = code === 500
       ? { error: "internal error", ref: e?.info?.ref ?? logRef(e) }
       : { error: e.message, ...(typeof e.canonical === "string" ? { canonical: e.canonical } : {}), ...(e.info ?? {}) };

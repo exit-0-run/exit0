@@ -647,6 +647,21 @@ const claim = async (pem, base, raw) => {
   }
   if (!x.repo || x.score === undefined) throw bad(400, "a claim needs repo and score: it is a result looking for a check");
 
+  // What the caller is holding when a step fails. The problem limit is ONE per key per
+  // day, so a claim that dies on the second write has spent the whole daily budget and
+  // left a problem open - and saying only "HTTP 400" leaves them to discover both by
+  // running the same command again tomorrow.
+  let opened = null;
+  const stranded = () => {
+    if (!opened) return;
+    console.error("");
+    console.error(`problem ${opened} IS open in the registry and your solution is NOT filed under it.`);
+    console.error("You have spent your daily budget of 1 problem per key, so do not re-run claim.");
+    console.error("Fix the body and file the solution alone:");
+    console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":...,"score":...,"replaces":"-"}'`);
+    console.error(`  curl -sS -X POST ${base}/api/solution -H 'content-type: application/json' -d @-`);
+  };
+
   const send = async (action, out) => {
     const msg = payload(action, out);
     const body = { ...out, key: pub, sig: sign(null, Buffer.from(msg, "utf8"), priv).toString("base64") };
@@ -663,6 +678,7 @@ const claim = async (pem, base, raw) => {
     if (res.status >= 300) {
       console.error(`${action}: HTTP ${res.status}`);
       console.error(text.slice(0, 800));
+      stranded();
       process.exit(1);
     }
     return j;
@@ -673,13 +689,24 @@ const claim = async (pem, base, raw) => {
   for (const [label, before, after] of changed)
     console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
   const p = await send("problem", problemOut);
+  opened = p.id;
   console.error(`problem ${p.id} opened by ${p.author}`);
 
-  const solChanged = [];
-  const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-" }, solChanged);
-  for (const [label, before, after] of solChanged)
-    console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
-  const sol = await send("solution", solOut);
+  // Everything from here on can fail with the problem already open, and not only over
+  // HTTP: canonBody and payload refuse a value the grammar cannot carry, and they
+  // refuse it BEFORE anything is sent. Both roads have to end at the same explanation.
+  let sol;
+  try {
+    const solChanged = [];
+    const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-" }, solChanged);
+    for (const [label, before, after] of solChanged)
+      console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    sol = await send("solution", solOut);
+  } catch (e) {
+    console.error(`solution: ${e?.message ?? e}`);
+    stranded();
+    process.exit(1);
+  }
 
   console.error(`solution ${sol.sid} filed under ${p.id}`);
   console.error(`waiting for a stranger: ${base}/work`);

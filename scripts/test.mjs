@@ -794,6 +794,38 @@ if (gate.sign)
       assert.equal(JSON.parse(a.out).sig, JSON.parse(b.out).sig);
     });
 
+    // Round 4. claim is two writes, and the problem limit is ONE per key per day. When
+    // the second write failed, the first had already gone in: the caller was left
+    // holding a problem they were never told about, with their whole daily problem
+    // budget spent, and a message that named neither. Retrying the same command the
+    // next minute fails at the first step with a 429 and no explanation.
+    test("a half-finished claim says the problem is open and how to continue", async () => {
+      const srv = await startServer(newTree("claim-half"));
+      assert.ok(srv.port, srv.why);
+      const dir = mkTree("claim-half-cli");
+      assert.equal(run(dir, "scripts/sign.mjs", ["keygen"]).code, 0);
+      // score 0.1 + 0.2 is outside the numToken grammar, so the problem write goes in
+      // and the solution write is refused: exactly the half-finished case.
+      const body = JSON.stringify({
+        title: "A claim that dies halfway",
+        problem: "A problem statement long enough to pass the minimum-length validation.",
+        how: "make eval | tee out.txt (n=500)",
+        metric: "cost_usd (USD)",
+        domain: "infra",
+        needs: [],
+        repo: "https://example.com/half",
+        score: 0.1 + 0.2,
+      });
+      const r = run(dir, "scripts/sign.mjs", ["claim", "identity.pem", `http://127.0.0.1:${srv.port}`, body]);
+      assert.notEqual(r.code, 0, "a claim whose solution was refused must not report success");
+      const id = (r.err.match(/problem (\d{4})/) ?? [])[1];
+      assert.ok(id, `the failure has to name the problem that is now open: ${JSON.stringify(r.err.slice(0, 400))}`);
+      assert.match(r.err, /sign\.mjs sign/, "the failure has to hand over the exact command that files the solution against it");
+      assert.match(r.err, /1 problem|per day|budget/i, "the failure has to say the daily problem budget is spent");
+      is(await hit(srv, { path: `/${id}` }), 200, "the problem really is open in the registry");
+      await stop(srv, "SIGKILL");
+    });
+
     test("the old positional form does not work", () => {
       const r = sgn(["sign", "identity.pem", "solution", "0001", "https://example.com/r", "0.42"]);
       assert.notEqual(r.code, 0, "the positional form from llms.txt/QUICKSTART was supposed to be gone (A6)");
@@ -1643,6 +1675,74 @@ if (gate.server)
       assert.match(pr.text, /solved/, "a problem with a settled solution has to be SOLVED on the badge too");
       is(await hit(SRV, { path: "/9999/badge.svg" }), 404, "the badge of a problem that does not exist");
       is(await hit(SRV, { path: `/${"f".repeat(16)}/badge.svg` }), 404, "the badge of a solution that does not exist");
+    });
+
+    // Round 4. The badge is the only thing the registry hands back to a submitter, and
+    // people paste it into a README, so it is the most-read artifact here. It counted
+    // every record with verdict "ok", including verdicts their own author has since
+    // withdrawn - so a verifier who said ok and then corrected themselves to mismatch
+    // kept inflating the receipt. D1 says the head of a chain is what counts; the badge
+    // has to obey the same rule as build.mjs.
+    test("the badge counts heads of chains, not withdrawn verdicts", async () => {
+      const P = await newProblem(SRV, { title: "A problem for the withdrawn verdict" });
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/withdrawn", score: 0.42 }));
+      is(s, 201, "a solution to verify");
+      const sid = s.json.sid;
+
+      const kB = mkKey();
+      const v1 = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: sid, score: 0.42, verdict: "ok", output: "b-ok\n" }));
+      is(v1, 201, "B says ok");
+      is(await post(SRV, "verification", verBody(kB, { problem: P.id, solution: sid, score: 0.9, verdict: "mismatch", output: "b-mismatch\n", replaces: v1.json.vid })), 201, "B withdraws it");
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: sid, score: 0.42, verdict: "ok", output: "c-ok\n" })), 201, "C says ok");
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: sid, score: 0.42, verdict: "ok", output: "d-ok\n" })), 201, "D says ok");
+
+      const sol = problemAt(TREE, P.id).solutions.find((x) => x.sid === sid);
+      assert.equal(sol.verified, true, "setup: two live ok verdicts");
+      assert.equal(sol.settled, true, "setup: 2 ok keys against 1 mismatch key");
+      assert.equal(sol.verifications.length, 4, "setup: four records on file, one of them withdrawn");
+
+      const b = await hit(SRV, { path: `/${sid}/badge.svg` });
+      is(b, 200, "the solution badge");
+      assert.match(b.text, /verified by 2/, `the badge counts a withdrawn ok: ${b.text.match(/verified by \d+/)?.[0]}`);
+    });
+
+    // Round 4. /work is the demand surface and the registry is built for a thousand
+    // problems. The listing declared its cut honestly but offered no way past it, so
+    // everything after the first hundred rows was unreachable by any parameter - unlike
+    // /api/problems, which solved this already.
+    test("/api/work pages like /api/problems instead of being a wall at 100", async () => {
+      const P = await newProblem(SRV, { title: "A problem for queue paging", needs: [] });
+      for (const n of [0.11, 0.12]) is(await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: `https://example.com/paging-${n}`, score: n })), 201, `a solution ${n}`);
+
+      const all = await hit(SRV, { path: "/api/work" });
+      is(all, 200, "GET /api/work");
+      assert.ok(all.json.waiting >= 2, "setup: at least two rows waiting");
+
+      const first = await hit(SRV, { path: "/api/work?limit=1" });
+      is(first, 200, "GET /api/work?limit=1");
+      assert.equal(first.json.work.length, 1, "/api/work ignores limit");
+      assert.equal(first.json.more, first.json.waiting > 1, "the cut has to be declared, not silent");
+
+      const second = await hit(SRV, { path: "/api/work?limit=1&offset=1" });
+      is(second, 200, "GET /api/work?limit=1&offset=1");
+      assert.equal(second.json.work.length, 1);
+      assert.notEqual(second.json.work[0].solution, first.json.work[0].solution, "offset does not move the window, so the queue past the cap is unreachable");
+
+      // The same grammar as /api/problems, deliberately: two paging dialects on one
+      // server is a second thing to learn for no gain.
+      is(await hit(SRV, { path: "/api/work?limit=x" }), 400, "a limit that is not a number");
+      is(await hit(SRV, { path: "/api/work?offset=-1" }), 400, "a negative offset");
+
+      // And the text view, which is the default representation here, has to page too:
+      // half a fix is a cut that a human can see and cannot pass.
+      const t1 = await hit(SRV, { path: "/work?limit=1" });
+      is(t1, 200, "GET /work?limit=1");
+      const t2 = await hit(SRV, { path: "/work?limit=1&offset=1" });
+      const sidOf = (txt) => txt.split("\n").filter((l) => /^(FIRST CHECK|TIEBREAK)/.test(l)).map((l) => l.split(/\s+/)[2]);
+      assert.equal(sidOf(t1.text).length, 1, "the text queue ignores limit");
+      assert.notEqual(sidOf(t2.text)[0], sidOf(t1.text)[0], "the text queue ignores offset");
+      assert.match(t1.text, /showing 1-1 of \d+/, "a cut text view has to say where it cut and how to go on");
+      assert.match(t1.text, /offset=1/, "it has to hand over the next page, not leave the reader to invent the parameter");
     });
 
     test("/api/problems: filters, pages, and states that it cut", async () => {
@@ -2667,6 +2767,25 @@ describe("repo invariants", () => {
     assert.match(unit, /TimeoutStopSec/);
     assert.match(text("deploy/Caddyfile") ?? "", /header_up X-Forwarded-For/, "Caddy has to OVERWRITE XFF, not append to it");
     assert.ok(text("deploy/RUNBOOK.md"), "deploy/RUNBOOK.md missing");
+  });
+
+  // Round 4. The refund rule is written one line above refundIp and names "an internal
+  // error" as something the address must not pay for. The condition did not cover it:
+  // an error with no numeric code answers 500 to the client (the mapping in the
+  // handler defaults to 500) while Number(undefined) >= 500 is false, so no refund
+  // happened. That is the one class of 500 a client can do nothing about - a bug here.
+  // By grep, because a genuine internal error is by definition one nobody arranged.
+  test("deploy: the address is refunded for every 500, including one with no code", () => {
+    const src = text("scripts/server.mjs") ?? "";
+    const fallback = /typeof e\?\.code === "number" \? e\.code : 500/;
+    assert.match(src, fallback, "the response mapping changed shape — this test compares the refund against it");
+    const refund = /catch \(e\) \{\s*\n\s*([^\n]*refundIp[^\n]*)/.exec(src);
+    assert.ok(refund, "no refund branch found in doWrite");
+    assert.ok(
+      !/Number\(e\?\.code\) >= 500/.test(refund[1]),
+      `the refund reads a raw code, so an error with no code answers 500 and is never refunded: ${refund[1].trim()}`
+    );
+    assert.match(refund[1], /statusOf|typeof e\?\.code/, "the refund has to decide from the SAME status the client is given");
   });
 
   // The installer once moved a live deployment from 8081 to 8080 (the default), Caddy

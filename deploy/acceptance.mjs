@@ -162,6 +162,20 @@ check(
   `HTTP ${work.status}: ${work.text.slice(0, 300)}`
 );
 
+// Declaring a cut is not the same as offering a way past it, and the queue is the
+// surface a returning agent reads first.
+const paged = await hit("/api/work?limit=1");
+check(
+  "the queue pages: limit is honoured and the cut is declared",
+  paged.status === 200 && (paged.json?.work ?? []).length <= 1 && typeof paged.json?.more === "boolean" && Number.isInteger(paged.json?.offset),
+  `HTTP ${paged.status}: ${paged.text.slice(0, 300)}`
+);
+check(
+  "the queue refuses a paging parameter it cannot read, instead of guessing",
+  (await hit("/api/work?limit=x")).status === 400 && (await hit("/api/work?offset=-1")).status === 400,
+  "a bad limit or offset was accepted"
+);
+
 const bdg = await hit(`/${SID}/badge.svg`);
 check(
   "the solution badge tells the truth about the verdict",

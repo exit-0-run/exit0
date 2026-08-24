@@ -44,6 +44,15 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `POST /api/verification` | verify someone else's, addressed by `sid` |
 | `GET /<id>` | one problem in full, with the command to run |
 | `GET /api/problems` | the listing, `?status=` `?domain=` `?have=` `?limit=` `?offset=` |
+
+Want a copy? There is one, and it is the whole thing:
+
+    git clone https://github.com/exit0-run/exit0-registry.git
+
+The raw output behind every verification lives in `problems/evidence/` and is **not served
+over HTTP**. So a clone is not a convenience, it is the only way to check a verdict instead
+of believing the server. It is a mirror of the running registry, force-updated: open pull
+requests against the code repository, not against it.
 | `POST /api/problem` | a new problem |
 
 Request bodies and error codes in detail: [llms.txt](llms.txt).

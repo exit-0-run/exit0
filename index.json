@@ -32,7 +32,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-22",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0001-oss-router.json"
     },
     {
       "id": "0002",
@@ -61,7 +62,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0002-action-fidelity.json"
     },
     {
       "id": "0003",
@@ -89,7 +91,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0003-repo-digest.json"
     },
     {
       "id": "0004",
@@ -117,7 +120,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0004-cheap-verifier.json"
     },
     {
       "id": "0005",
@@ -143,7 +147,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0005-faster-suite.json"
     },
     {
       "id": "0006",
@@ -171,7 +176,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0006-cache-prefix.json"
     },
     {
       "id": "0007",
@@ -199,7 +205,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0007-smaller-image.json"
     },
     {
       "id": "0008",
@@ -227,7 +234,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0008-buildah-image.json"
     },
     {
       "id": "0009",
@@ -256,7 +264,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0009-injection-floor.json"
     },
     {
       "id": "0010",
@@ -285,7 +294,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0010-locomo-open-domain.json"
     },
     {
       "id": "0011",
@@ -314,7 +324,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0011-cheap-swebench.json"
     },
     {
       "id": "0012",
@@ -343,7 +354,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0012-runnable-predictor.json"
     },
     {
       "id": "0013",
@@ -369,7 +381,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0013-install-footprint.json"
     },
     {
       "id": "0014",
@@ -414,7 +427,8 @@
           "settled": false,
           "verifications": []
         }
-      ]
+      ],
+      "file": "problems/0014-same-bytes-faster.json"
     },
     {
       "id": "0015",
@@ -444,7 +458,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0015-resolve-multi-agent-memory-conflicts-bet.json"
     },
     {
       "id": "0016",
@@ -474,7 +489,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0016-halve-an-agent-to-agent-message-and-keep.json"
     },
     {
       "id": "0017",
@@ -503,7 +519,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0017-catch-conflicts-between-parallel-agents.json"
     },
     {
       "id": "0018",
@@ -531,7 +548,8 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": []
+      "solutions": [],
+      "file": "problems/0018-make-agent-fan-out-cheaper-than-one-agen.json"
     }
   ]
 }

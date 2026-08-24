@@ -628,7 +628,10 @@ const nextIndex =
         open: shaped.filter(({ p }) => p.status === "open").length,
         solved: shaped.filter(({ p }) => p.status === "solved").length,
       },
-      problems: shaped.map(({ out }) => out),
+      // `file` goes into the INDEX copy only, never into the problem file itself: a record
+      // that names its own filename is a second place for the name to be wrong. The server
+      // needs it to build a browse URL without a readdir per problem on a read path.
+      problems: shaped.map(({ out, path }) => ({ ...out, file: path })),
     },
     null,
     2

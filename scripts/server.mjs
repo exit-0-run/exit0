@@ -26,7 +26,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
   solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
-  canonNeeds, DOMAINS, NEEDS, STATUS_RANK, probCmp,
+  canonNeeds, canonUrl, DOMAINS, NEEDS, STATUS_RANK, probCmp,
 } from "./sign.mjs";
 
 // Number() on an env var goes quiet in two ways and I measured both.
@@ -52,6 +52,25 @@ const PORT = envInt("PORT", 8080, 65535);
 const HOST = process.env.HOST ?? "127.0.0.1";
 const IP_CAP = envInt("IP_CAP", 60, 1e9);
 const TRUST_PROXY = !["", "0", "false", "no"].includes(String(process.env.TRUST_PROXY ?? "").trim().toLowerCase());
+
+// Where a reader can BROWSE the signed record: a base URL that a problem's file path is
+// appended to, e.g. https://github.com/owner/repo/blob/main. Unset means no links, which
+// is the right default for a registry that is not published anywhere.
+// Built by string, never by calling the host's API: an API call would put a network
+// dependency, a token and a rate limit on a read path that today touches only git, and
+// invariant 10 exists because read paths get polled. The URL is deterministic anyway.
+// Validated once at startup, because a broken base is a broken link on every problem.
+const SOURCE = (() => {
+  const raw = process.env.SOURCE_URL;
+  if (raw === undefined || String(raw).trim() === "") return null;
+  try {
+    return canonUrl(String(raw).trim(), "SOURCE_URL").replace(/\/+$/, "");
+  } catch (e) {
+    console.error(`SOURCE_URL: ${e.message}`);
+    process.exit(1);
+  }
+})();
+const sourceOf = (p) => (SOURCE && p.file ? `${SOURCE}/${p.file}` : null);
 
 const DIR = "problems";
 const STATE = ".state";
@@ -1043,6 +1062,10 @@ const summary = (p) => ({
   baseline: p.acceptance.baseline ?? null,
   tolerance: p.acceptance.tolerance ?? 0.02,
   subject: p.subject ?? null,
+  // NOT `source`: /api/pulse already has a field by that name and it means something else
+  // entirely ("reads are coming from HEAD because the tree is dirty"). One word meaning
+  // two things in one API is a trap for exactly the reader this field exists for.
+  source_url: sourceOf(p),
   solutions: solsOf(p).length,
   verified: solsOf(p).filter((x) => x.verified).length,
   disputed: solsOf(p).filter((x) => x.disputed).length,
@@ -1081,6 +1104,10 @@ const renderProblem = (p) => {
   // Straight above the statement, because it is the first thing an agent needs in order to
   // know WHERE the problem is. It went through canonUrl, so it is one line and it is a URL.
   if (p.subject) L.push(`subject: ${p.subject}`);
+  // The signed record itself, browsable. Not the same thing as `subject`: subject is what
+  // the problem is ABOUT, this is where the problem's own bytes and their history live.
+  const src = sourceOf(p);
+  if (src) L.push(`source_url: ${src}`);
   L.push("");
   L.push(fieldBlock("problem", String(p.problem ?? ""), 0));
   L.push("");

@@ -74,7 +74,7 @@ $GIT archive HEAD | tar -x -C "$TMP" || die "cannot unpack HEAD"
 # No --force and no --mirror. --mirror carries force semantics and can delete refs, and
 # a stale pusher would then silently rewind the public copy that people clone to check
 # verdicts. If this ever stops being a fast-forward, that is a finding, not a nuisance.
-if GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
+if GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN -o StrictHostKeyChecking=yes -o BatchMode=yes" \
    $GIT push --quiet "$MIRROR" "HEAD:refs/heads/$BRANCH" 2>"$TMP/.push"; then
   mkdir -p "$(dirname "$STATE")"
   printf '%s\n' "$HEAD_SHA" > "$STATE"

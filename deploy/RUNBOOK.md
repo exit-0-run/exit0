@@ -36,6 +36,13 @@ That is the whole procedure. The installer stops the service itself, replaces **
 (`scripts/`, `deploy/`, `llms.txt`, the documents, `problems/_schema.json`), rebuilds,
 commits the result and starts it back up.
 
+`PORT` is **not** re-applied from its default on an update: the installer reads the port
+out of the unit that is already installed and keeps it, because it once rewrote a live
+8081 to the default 8080 while the reverse proxy kept talking to 8081. The only symptom it
+could produce was `pulse answered HTTP 400: Invalid host header`, which reads like a bug in
+the server. Pass `PORT=` explicitly to move it, and expect the proxy to 502 until you
+update that too.
+
 **Never run `git pull` in `/srv/exit0`.** The history of that directory is the history of the
 registry, not the history of the code. These are two different repositories with no common
 ancestor.
@@ -127,6 +134,58 @@ then run the installer again:
 
 New problem files that the release brings with it ARE copied (step 7 copies what is
 missing), so usually only the older ones need touching.
+
+## Public mirror
+
+The backup above is pulled from another machine on purpose. The **mirror** is a different
+job with different needs, and for a while `backup.sh` was doing both: it also pushed the
+public copy, which made the freshness of the thing strangers clone depend on somebody's
+laptop being awake.
+
+They are split now:
+
+| | where it runs | direction | what it is for |
+|---|---|---|---|
+| `backup.sh` | another machine | pull | the copy of last resort. No credentials here |
+| `mirror.sh` | this host, `exit0-mirror.timer` | push | the public clone stays current |
+
+    systemctl list-timers exit0-mirror.timer
+    journalctl -u exit0-mirror -n 20
+    systemctl start exit0-mirror.service     # publish now
+
+Every run validates before it publishes, and validates `HEAD` through `git archive`
+rather than the working tree: a dirty tree here is a normal write in flight and is not
+what a push would send. `build.mjs --check`, never a plain build, because a build would
+regenerate `README.md` and `index.json` and hide the very disagreement that should stop
+the publication.
+
+The push is a plain fast-forward of one branch. **Never `--mirror` and never `--force`**:
+`--mirror` carries force semantics and deletes refs, so a pusher that had been asleep
+would rewind the public copy people clone to check verdicts. If a push stops being a
+fast-forward, that is a finding, not a nuisance - look before you do anything about it.
+
+### Setting it up
+
+    ssh-keygen -t ed25519 -N '' -C exit0-mirror -f /etc/exit0/mirror_key
+
+Then add `/etc/exit0/mirror_key.pub` as a **deploy key with write access** on the mirror
+repository, and run `deploy/install.sh` again: it seeds `/etc/exit0/known_hosts` with
+`ssh-keyscan` and enables the timer.
+
+The key lives in `/etc/exit0`, outside `/srv/exit0`, and that is not tidiness. The service
+user's home **is** the registry directory, and the installer runs `git add -A` there - a
+key under it would be one install away from being published in the mirror it unlocks.
+
+The host key is pinned in `/etc/exit0/known_hosts` rather than learned on first contact.
+The unit runs with `ProtectHome=yes`, so ssh cannot write `~/.ssh` to remember a new host:
+it fails with a message about a read-only filesystem that points at everything except the
+cause. Pinning also means a changed host key stops the publication instead of being
+accepted quietly.
+
+**If the push says `Permission denied (publickey)`**, the deploy key is not on the
+repository, or it is there without write access. Check with:
+
+    GIT_SSH_COMMAND="ssh -i /etc/exit0/mirror_key -o IdentitiesOnly=yes" ssh -T git@github.com
 
 ## Restore
 

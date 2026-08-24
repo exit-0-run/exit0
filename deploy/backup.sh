@@ -17,9 +17,12 @@ set -eu
 
 SRC=${1:-${EXIT0_SRC:-ssh://root@exit0.run/srv/exit0}}
 DST=${2:-${EXIT0_BACKUP:-$HOME/backups/exit0.git}}
-# Optional public mirror. Pushed only AFTER the copy has been restored and validated
-# below, so a broken registry never gets republished as the thing to clone.
-MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0-registry.git}
+# Optional public mirror, OFF by default. The registry host publishes its own mirror
+# now (deploy/mirror.sh on a timer there), and two pushers is not redundancy: this one
+# pushes --mirror, which carries force semantics, so a run from a machine that has been
+# asleep would rewind the public copy people clone to check verdicts. Set it to a URL
+# only if nothing on the host is publishing.
+MIRROR=${EXIT0_MIRROR:-off}
 say() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { say "FAILED: $*"; exit 1; }
 
@@ -60,8 +63,8 @@ say "OK  branch=$BRANCH  head=$HEAD_SHA  commits=$COMMITS  problems=$PROBLEMS  e
 
 # The public mirror is what makes the registry's own promise true: the evidence bytes
 # behind every `verified` are not served over HTTP at all, so without somewhere to
-# clone from, nobody outside this machine can check a verdict. Set EXIT0_MIRROR=off to
-# skip it.
+# clone from, nobody outside this machine can check a verdict. Normally that is the
+# host's job; this stays here as the fallback for when it is not.
 if [ "$MIRROR" != "off" ] && [ -n "$MIRROR" ]; then
   if git -C "$DST" push --mirror "$MIRROR" >/dev/null 2>&1; then
     say "mirror pushed -> $MIRROR"

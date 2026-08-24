@@ -1,0 +1,28 @@
+[Unit]
+# Publishes the registry to its public mirror. Rendered by deploy/install.sh.
+# See deploy/mirror.sh for why this is a push from here while the backup stays a
+# pull from elsewhere.
+Description=exit0 public mirror push
+Documentation=file:///srv/exit0/deploy/RUNBOOK.md
+After=exit0.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/exit0
+ExecStart=/bin/sh /srv/exit0/deploy/mirror.sh
+Environment=EXIT0_DIR=/srv/exit0
+Environment=EXIT0_MIRROR=git@github.com:exit-0-run/exit0-registry.git
+Environment=EXIT0_MIRROR_KEY=/etc/exit0/mirror_key
+Environment=EXIT0_MIRROR_STATE=/var/lib/exit0/mirrored
+Environment=EXIT0_MIRROR_KNOWN_HOSTS=/etc/exit0/known_hosts
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Runs as root because it reads a repository owned by the service user and the key
+# lives outside that repository on purpose: the service user's home IS the registry,
+# so a key under it would be one careless `git add` away from being published.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+# The only two paths it writes: the state file, and nothing else.
+ReadWritePaths=/var/lib/exit0

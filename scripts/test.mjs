@@ -2666,6 +2666,66 @@ describe("niezmienniki repo", () => {
     assert.ok(text("deploy/RUNBOOK.md"), "brak deploy/RUNBOOK.md");
   });
 
+  // Instalator raz przestawil port dzialajacego wdrozenia z 8081 na 8080 (domyslna
+  // wartosc), Caddy dalej gadal z 8081, a jedyny objaw, jaki instalator umial wydac,
+  // brzmial "pulse answered HTTP 400: Invalid host header" — czyli wygladal na blad
+  // serwera. Aktualizacja nie ma prawa ruszac portu, ktorego nikt nie nazwal.
+  test("deploy: aktualizacja nie przestawia portu dzialajacego wdrozenia", () => {
+    const sh = text("deploy/install.sh") ?? "";
+    assert.match(sh, /PORT_GIVEN=\$\{PORT\+yes\}/, "install.sh nie odroznia PORT podanego od domyslnego");
+    assert.match(sh, /PORT_LIVE=/, "install.sh nie czyta portu z juz zainstalowanego unitu");
+    assert.match(sh, /PORT="\$PORT_LIVE"/, "install.sh nie przejmuje portu wdrozenia, wiec cicha zmiana portu wraca");
+  });
+
+  // Lustro publikuje to, po co ludzie w ogole klonuja rejestr: bajty dowodow, ktorych
+  // HTTP nie serwuje. Trzy wlasnosci tego skryptu nie sa kosmetyka.
+  test("deploy: lustro waliduje przed publikacja i nigdy nie cofa publicznej kopii", () => {
+    const m = text("deploy/mirror.sh");
+    assert.ok(m, "brak deploy/mirror.sh");
+    assert.equal(spawnSync("sh", ["-n", join(ROOT, "deploy/mirror.sh")], { encoding: "utf8" }).status, 0, "mirror.sh nie parsuje sie w sh");
+
+    // 1. Walidacja PRZED pushem, i to walidacja HEAD-a, nie drzewa roboczego.
+    const iCheck = m.indexOf("build.mjs --check");
+    // Indeks KOMENDY, nie pierwszego wystapienia slowa: naglowek tego pliku tlumaczy,
+    // dlaczego push stoi tutaj, a nie w backup.sh, wiec slowo pada wczesniej niz kod.
+    const iPush = m.search(/^[^#\n]*\$GIT push\b/m);
+    assert.ok(iCheck > 0, "mirror.sh nie waliduje kopii przed publikacja");
+    assert.ok(iCheck < iPush, "mirror.sh publikuje zanim sprawdzi, wiec zepsuty rejestr trafia do klonowania");
+    assert.match(m, /archive HEAD/, "mirror.sh waliduje drzewo robocze zamiast tego, co realnie poleci pushem");
+
+    // 2. Zaden push nie moze niesc semantyki force. --mirror ja niesie i kasuje refy:
+    // pusher, ktory spal, cofnalby publiczna kopie, po ktorej ktos sprawdza werdykty.
+    const pushLines = m.split("\n").filter((l) => /\bgit push\b|\$GIT push\b/.test(l) && !/^\s*#/.test(l));
+    assert.ok(pushLines.length > 0, "nie widze linii pushujacej w mirror.sh");
+    for (const l of pushLines) {
+      assert.ok(!/--force|--mirror|\+refs/.test(l), `mirror.sh pcha z semantyka force: ${l.trim()}`);
+    }
+
+    // 3. Klucz hosta przypiety, nie uczony przy pierwszym kontakcie: unit ma
+    // ProtectHome, wiec nauka konczy sie komunikatem o systemie tylko do odczytu,
+    // ktory nie mowi nic o przyczynie.
+    assert.match(m, /UserKnownHostsFile/, "mirror.sh polega na $HOME/.ssh, ktorego ProtectHome nie da mu zapisac");
+    assert.match(m, /StrictHostKeyChecking=yes/, "mirror.sh akceptuje nowy klucz hosta w locie");
+  });
+
+  // Klucz prywatny nie moze lezec w katalogu rejestru: domem uzytkownika uslugi JEST
+  // /srv/exit0, a install.sh robi tam `git add -A`. Jeden zly domyslny path i klucz
+  // wjezdza do publicznego lustra.
+  test("deploy: klucz lustra lezy poza repozytorium rejestru", () => {
+    const sh = text("deploy/install.sh") ?? "";
+    const key = (sh.match(/MIRROR_KEY="\$\{MIRROR_KEY:-([^}"]+)\}"/) ?? [])[1];
+    assert.ok(key, "nie widze domyslnej sciezki klucza lustra w install.sh");
+    const dir = (sh.match(/DIR="\$\{DIR:-([^}"]+)\}"/) ?? [])[1];
+    assert.ok(dir, "nie widze domyslnego DIR w install.sh");
+    assert.ok(!key.startsWith(dir), `klucz ${key} lezy w ${dir}, czyli w drzewie, ktore install.sh commituje przez git add -A`);
+  });
+
+  // Dwoch pchajacych to nie nadmiarowosc, gdy jeden z nich pcha --mirror.
+  test("deploy: kopia zapasowa nie pcha lustra domyslnie", () => {
+    const b = text("deploy/backup.sh") ?? "";
+    assert.match(b, /MIRROR=\$\{EXIT0_MIRROR:-off\}/, "backup.sh znowu pcha lustro domyslnie — razem z mirror.sh na hoscie to jest przepis na cofniecie publicznej kopii");
+  });
+
   // Ten sam limit stoi w dwoch plikach dwoch wlascicieli i nic go dotad nie wiazalo.
   // Caddy nizej niz serwer = 128KB-owe ciala gina na proxy z cudzym kodem bledu;
   // Caddy wyzej = origin dostaje to, co miala odciac krawedz.

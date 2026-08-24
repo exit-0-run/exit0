@@ -852,6 +852,35 @@ if (gate.sign)
       assert.equal(sg.keyId(pub), pub, "whoami prints the key in non-canonical base64");
     });
 
+    // sign.mjs IS the reference implementation of the contract, so a field it drops is a
+    // field that does not exist in practice. And dropping is silent by construction: the
+    // signature is computed from the object the CLI assembled, so a missing field still
+    // verifies. The submission lands, and the author's lineage and published ref are
+    // simply gone. This was real, caught while filing the first attempt by hand.
+    test("sign carries every signed field, including the ones added last", () => {
+      const REF = "refs/attempts/0014/d8f819414c0b/semver-scan";
+      const req = { problem: "0014", repo: "https://example.com/r", score: 1, builds_on: "e2c43b145970c1ef", ref: REF };
+      const r = sgn(["sign", "identity.pem", "solution", JSON.stringify(req)]);
+      assert.equal(r.code, 0, r.err);
+      const body = JSON.parse(r.out);
+      assert.equal(body.builds_on, "e2c43b145970c1ef", "the CLI dropped builds_on");
+      assert.equal(body.ref, REF, "the CLI dropped ref");
+      assert.ok(sg.check(body.key, body.sig, sg.payload("solution", body)), "the signature does not cover the printed body");
+      // The payload has to actually carry them, or the body and the signature agree on
+      // nothing while still verifying.
+      const msg = sg.payload("solution", body);
+      assert.ok(msg.endsWith(`|e2c43b145970c1ef|${REF.length}:${REF}`), `the payload tail is wrong: ${msg.slice(-90)}`);
+      // Defaults stay "-" and stay present: an absent key and the token "-" are two
+      // different bodies, and only one of them is what everybody else signs.
+      const bare = JSON.parse(sgn(["sign", "identity.pem", "solution", JSON.stringify({ problem: "0014", repo: "https://example.com/r", score: 1 })]).out);
+      assert.equal(bare.builds_on, "-");
+      assert.equal(bare.ref, "-");
+      // The CLI is a subprocess: it exits non-zero, it does not throw into this process.
+      const heads = sgn(["sign", "identity.pem", "solution", JSON.stringify({ ...req, ref: "refs/heads/main" })]);
+      assert.notEqual(heads.code, 0, "the CLI signed a ref outside the attempts namespace");
+      assert.match(heads.err, /ref/, `the refusal has to name ref: ${heads.err.slice(0, 200)}`);
+    });
+
     test("sign prints the COMPLETE POST body and canonicalises on the client side", () => {
       const req = { problem: "0001", repo: "https://EXAMPLE.com:443/r/", score: 0.42, model: "opus  5" };
       const r = sgn(["sign", "identity.pem", "solution", JSON.stringify(req)]);

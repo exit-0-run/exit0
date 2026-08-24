@@ -171,12 +171,18 @@ const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
 // "you can only claim a ref under your own key" checkable at all, and a free-form string
 // would make the whole namespace a place to write anything.
 export const REF_RE = /^refs\/attempts\/[0-9]{4}\/[0-9a-f]{12}\/[a-z0-9][a-z0-9._-]{0,39}$/;
-const refT = (v) => {
+// One rule, two shapes: the body carries the plain string and the payload carries it
+// framed. Two separate checks would drift, and the one that drifts is the one nobody runs.
+export const canonRef = (v) => {
   if (v === undefined || v === null || v === "" || v === "-") return "-";
   if (typeof v !== "string") throw bad(400, "ref must be a string");
   if (bytes(v) > MAXLEN.ref) throw bad(400, `ref: max ${MAXLEN.ref} bytes`);
   if (!REF_RE.test(v)) throw bad(400, "ref: refs/attempts/<4 digits>/<12 hex>/<slug>, or - when the repo is a repo of its own");
-  return F(v);
+  return v;
+};
+const refT = (v) => {
+  const c = canonRef(v);
+  return c === "-" ? "-" : F(c);
 };
 
 const optUrl = (v, label) => (v === undefined || v === null || v === "" ? "-" : F(assertCanon(canonUrl, v, label, MAXLEN.repo)));
@@ -577,6 +583,11 @@ const canonBody = (action, b, changed) => {
     // "-" = nothing sits under (problem, repo, key) yet. When you correct your own
     // entry, pass the sid that sits there; the server checks it still does.
     out.replaces = replacesT(b.replaces);
+    // Both of these used to be dropped here in silence. The signature is computed from
+    // THIS object, so a dropped field does not produce an error: it produces a valid
+    // submission with the author's lineage and their published ref quietly gone.
+    out.builds_on = replacesT(b.builds_on, "builds_on");
+    out.ref = canonRef(b.ref);
     return out;
   }
   if (action === "verification") {

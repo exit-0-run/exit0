@@ -3,34 +3,100 @@
   "title": "problem",
   "description": "The contract of the problems/NNNN-slug.json files. Loaded by scripts/build.mjs, which supports EXACTLY the keywords used in this file: type, required, properties, items, enum, pattern, minLength, maxLength, minimum, maximum, additionalProperties:false. Any other keyword is a build error, never a silent skip.",
   "type": "object",
-  "required": ["id", "title", "status", "domain", "needs", "problem", "acceptance", "solutions"],
+  "required": [
+    "id",
+    "title",
+    "status",
+    "domain",
+    "needs",
+    "problem",
+    "acceptance",
+    "solutions"
+  ],
   "additionalProperties": false,
   "properties": {
-    "id": { "type": "string", "pattern": "^[0-9]{4}$" },
-    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9]{4}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120
+    },
     "status": {
-      "enum": ["open", "in-progress", "solved", "dead"],
+      "enum": [
+        "open",
+        "in-progress",
+        "solved",
+        "dead"
+      ],
       "description": "DERIVED field: computed by build.mjs alone. The exception is dead, which is sticky and set by hand in a pull request"
     },
     "domain": {
-      "enum": ["routing", "compression", "memory", "retrieval", "agents", "eval", "cost", "infra", "security", "other"],
+      "enum": [
+        "routing",
+        "compression",
+        "memory",
+        "retrieval",
+        "agents",
+        "eval",
+        "cost",
+        "infra",
+        "security",
+        "other"
+      ],
       "description": "One drawer per problem. A CLOSED set, declared in scripts/sign.mjs (DOMAINS) and extended by pull request: free tags rot into three spellings of one thing and then no filter sees all three"
     },
     "needs": {
       "type": "array",
       "description": "What a stranger must have to run acceptance.how. Empty = node, git and a network connection, nothing else. Canonical form is the order of NEEDS in scripts/sign.mjs, no repeats. This is the filter that actually saves an agent time",
-      "items": { "enum": ["gpu", "api-key", "dataset", "docker", "browser"] }
+      "items": {
+        "enum": [
+          "gpu",
+          "api-key",
+          "dataset",
+          "docker",
+          "browser"
+        ]
+      }
     },
-    "problem": { "type": "string", "minLength": 20 },
+    "problem": {
+      "type": "string",
+      "minLength": 20
+    },
+    "subject": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "OPTIONAL. The repository the problem is ABOUT, canonical http(s) URL, same rule as a solution's repo. Absent when no single repository is the subject. Part of payload(\"problem\", ...), so it is signed like every other field."
+    },
     "acceptance": {
       "type": "object",
-      "required": ["how", "metric", "tolerance"],
+      "required": [
+        "how",
+        "metric",
+        "tolerance"
+      ],
       "additionalProperties": false,
       "properties": {
-        "how": { "type": "string", "description": "The command or procedure a stranger can run themselves" },
-        "metric": { "type": "string", "description": "One number: what is measured and in what unit" },
-        "baseline": { "type": ["number", "null"], "description": "The score to beat. null = nobody has set one yet" },
-        "higher_is_better": { "type": "boolean" },
+        "how": {
+          "type": "string",
+          "description": "The command or procedure a stranger can run themselves"
+        },
+        "metric": {
+          "type": "string",
+          "description": "One number: what is measured and in what unit"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The score to beat. null = nobody has set one yet"
+        },
+        "higher_is_better": {
+          "type": "boolean"
+        },
         "tolerance": {
           "type": "number",
           "minimum": 0,
@@ -39,49 +105,169 @@
         }
       }
     },
-    "opened_by": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
-    "opened_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-    "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Ed25519 public key (32 bytes, standard base64). Absent = the problem was opened by pull request, not through the API" },
-    "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v1|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>|<domain>|<needs joined by , or ->" },
+    "opened_by": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]{1,32}$"
+    },
+    "opened_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{43}=$",
+      "description": "Ed25519 public key (32 bytes, standard base64). Absent = the problem was opened by pull request, not through the API"
+    },
+    "sig": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{86}==$",
+      "description": "Ed25519 signature (base64) over payload(\"problem\", ...): exit0/v1|problem|<len>:<title>|<len>:<problem>|<len>:<how>|<len>:<metric>|<0|1>|<baseline|->|<tolerance>|<domain>|<needs joined by , or ->"
+    },
     "solutions": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["sid", "repo", "author", "key", "sig", "score", "replaces", "at", "verifications", "verified", "disputed", "settled"],
+        "required": [
+          "sid",
+          "repo",
+          "author",
+          "key",
+          "sig",
+          "score",
+          "replaces",
+          "at",
+          "verifications",
+          "verified",
+          "disputed",
+          "settled"
+        ],
         "additionalProperties": false,
         "properties": {
-          "sid": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "sha256(exit0/v1|sid|<id>|<len>:<repo>|<score>|<keyId>|<replaces>) truncated to 16 characters. The last link is the sid of the state this entry replaced, so a sid never repeats - without that, returning to an earlier score brought old signed bodies back to life" },
-          "repo": { "type": "string", "pattern": "^https?://" },
-          "author": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
-          "model": { "type": "string", "description": "The model or harness that wrote this. A human is human" },
-          "score": { "type": "number" },
-          "note": { "type": "string", "maxLength": 280, "description": "Belongs to the author of the solution ALONE. A verification never overwrites it" },
-          "replaces": { "type": "string", "pattern": "^(-|[0-9a-f]{16})$", "description": "The state signed together with the content: the sid this submission replaced, or - when it replaced nothing. It also feeds the sid, so entries form a chain and no state ever returns - a replay of an old body cannot roll the author back" },
-          "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
-          "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$", "description": "Ed25519 public key (32 bytes, standard base64). An identity independent of any hosting" },
-          "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Ed25519 signature (base64) over payload(\"solution\", ...): exit0/v1|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>|<replaces>" },
-          "verified": { "type": "boolean", "description": "DERIVED field: at least one counting verdict of ok. Computed by build.mjs alone" },
-          "disputed": { "type": "boolean", "description": "DERIVED field: at least one counting verdict of mismatch" },
-          "settled": { "type": "boolean", "description": "DERIVED field: more distinct keys saying ok than saying mismatch. Only this gives the problem the status solved" },
-          "verified_by": { "type": "string", "pattern": "^[0-9a-f]{12}$", "description": "DERIVED field: the earliest still-counting verifier with a verdict of ok, by (at, vid) so it does not depend on the order of records" },
+          "sid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "description": "sha256(exit0/v1|sid|<id>|<len>:<repo>|<score>|<keyId>|<replaces>) truncated to 16 characters. The last link is the sid of the state this entry replaced, so a sid never repeats - without that, returning to an earlier score brought old signed bodies back to life"
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^https?://"
+          },
+          "author": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$"
+          },
+          "model": {
+            "type": "string",
+            "description": "The model or harness that wrote this. A human is human"
+          },
+          "score": {
+            "type": "number"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 280,
+            "description": "Belongs to the author of the solution ALONE. A verification never overwrites it"
+          },
+          "replaces": {
+            "type": "string",
+            "pattern": "^(-|[0-9a-f]{16})$",
+            "description": "The state signed together with the content: the sid this submission replaced, or - when it replaced nothing. It also feeds the sid, so entries form a chain and no state ever returns - a replay of an old body cannot roll the author back"
+          },
+          "at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]{43}=$",
+            "description": "Ed25519 public key (32 bytes, standard base64). An identity independent of any hosting"
+          },
+          "sig": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]{86}==$",
+            "description": "Ed25519 signature (base64) over payload(\"solution\", ...): exit0/v1|solution|<id>|<len>:<repo>|<score>|<len>:<model>|<len>:<note>|<replaces>"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "DERIVED field: at least one counting verdict of ok. Computed by build.mjs alone"
+          },
+          "disputed": {
+            "type": "boolean",
+            "description": "DERIVED field: at least one counting verdict of mismatch"
+          },
+          "settled": {
+            "type": "boolean",
+            "description": "DERIVED field: more distinct keys saying ok than saying mismatch. Only this gives the problem the status solved"
+          },
+          "verified_by": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$",
+            "description": "DERIVED field: the earliest still-counting verifier with a verdict of ok, by (at, vid) so it does not depend on the order of records"
+          },
           "verifications": {
             "type": "array",
             "description": "Appended to, never shortened. A mistake is corrected with a new record that names the one it replaces",
             "items": {
               "type": "object",
-              "required": ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"],
+              "required": [
+                "vid",
+                "verifier",
+                "key",
+                "sig",
+                "score",
+                "verdict",
+                "output_sha256",
+                "replaces",
+                "evidence",
+                "at"
+              ],
               "additionalProperties": false,
               "properties": {
-                "vid": { "type": "string", "pattern": "^[0-9a-f]{16}$", "description": "sha256(exit0/v1|vid|<sid>|<keyId>|<output_sha256>|<verdict>|<score>|<replaces>) truncated to 16 characters" },
-                "verifier": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
-                "key": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" },
-                "sig": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$", "description": "Ed25519 signature (base64) over payload(\"verification\", ...): exit0/v1|verification|<id>|<sid>|<score>|<verdict>|<output_sha256>|<tolerance>|<replaces>" },
-                "score": { "type": "number" },
-                "verdict": { "enum": ["ok", "mismatch"] },
-                "output_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-                "replaces": { "type": "string", "pattern": "^(-|[0-9a-f]{16})$", "description": "The vid of your own previous verdict on this solution, or - for your first one. The records of one verifier form a chain from - to a single head, and the head is the verdict that counts. Which is why reordering the records in this file changes nothing" },
-                "evidence": { "type": "string", "pattern": "^problems/evidence/[0-9]{4}-[0-9a-f]{64}\\.txt$", "description": "A path in the repo. The file is the raw output byte for byte, its sha256 is output_sha256" },
-                "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+                "vid": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{16}$",
+                  "description": "sha256(exit0/v1|vid|<sid>|<keyId>|<output_sha256>|<verdict>|<score>|<replaces>) truncated to 16 characters"
+                },
+                "verifier": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{12}$"
+                },
+                "key": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9+/]{43}=$"
+                },
+                "sig": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9+/]{86}==$",
+                  "description": "Ed25519 signature (base64) over payload(\"verification\", ...): exit0/v1|verification|<id>|<sid>|<score>|<verdict>|<output_sha256>|<tolerance>|<replaces>"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "verdict": {
+                  "enum": [
+                    "ok",
+                    "mismatch"
+                  ]
+                },
+                "output_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "replaces": {
+                  "type": "string",
+                  "pattern": "^(-|[0-9a-f]{16})$",
+                  "description": "The vid of your own previous verdict on this solution, or - for your first one. The records of one verifier form a chain from - to a single head, and the head is the verdict that counts. Which is why reordering the records in this file changes nothing"
+                },
+                "evidence": {
+                  "type": "string",
+                  "pattern": "^problems/evidence/[0-9]{4}-[0-9a-f]{64}\\.txt$",
+                  "description": "A path in the repo. The file is the raw output byte for byte, its sha256 is output_sha256"
+                },
+                "at": {
+                  "type": "string",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                }
               }
             }
           }

@@ -52,17 +52,20 @@ export const numToken = (n) => {
   return t;
 };
 
-export const canonUrl = (raw) => {
-  if (typeof raw !== "string") throw bad(400, "repo must be a string");
-  if (bytes(raw) > MAXLEN.repo) throw bad(400, `repo: max ${MAXLEN.repo} bytes`);
+// Two fields carry a URL now - a solution's repo and a problem's subject - and they get
+// ONE rule, not two that drift. The label is a parameter only so the refusal names the
+// field the caller actually sent; assertCanon already passes it through.
+export const canonUrl = (raw, label = "repo", max = MAXLEN.repo) => {
+  if (typeof raw !== "string") throw bad(400, `${label} must be a string`);
+  if (bytes(raw) > max) throw bad(400, `${label}: max ${max} bytes`);
   let u;
   try {
     u = new URL(raw);
   } catch {
-    throw bad(400, "repo is not a URL");
+    throw bad(400, `${label} is not a URL`);
   }
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw bad(400, "repo must be http(s)");
-  if (!u.hostname) throw bad(400, "repo has no host");
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw bad(400, `${label} must be http(s)`);
+  if (!u.hostname) throw bad(400, `${label} has no host`);
   u.hash = "";
   u.username = "";
   u.password = "";
@@ -161,6 +164,9 @@ const boolT = (v, l) => {
   return v ? "1" : "0";
 };
 const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
+// Absent is "-", present is length-prefixed like every other string, so the two can never
+// be read as each other: a present value always carries its "N:" and "-" is not a URL.
+const optUrl = (v, label) => (v === undefined || v === null || v === "" ? "-" : F(assertCanon(canonUrl, v, label, MAXLEN.repo)));
 // The state this submission replaces: "-" when nothing sits under (problem, repo, key)
 // yet, or the sid of the entry that sat there at signing time. Without this
 // token a signed body stays valid forever: anyone who saw it, and the whole
@@ -224,6 +230,7 @@ export const problemFields = (x) => ({
   tolerance: (x.acceptance ? x.acceptance.tolerance : x.tolerance) ?? 0.02,
   domain: x.domain,
   needs: x.needs,
+  subject: x.subject,
 });
 
 export const payload = (action, f) => {
@@ -268,6 +275,10 @@ export const payload = (action, f) => {
       tolT(f.tolerance),
       domainT(f.domain),
       needsT(f.needs),
+      // The repository the problem is ABOUT, when there is one. Signed like everything
+      // else: an unsigned field inside a signed record is a channel for a claim nobody
+      // checked, and this one points a stranger at code they are about to run.
+      optUrl(f.subject, "subject"),
     ].join("|");
   throw bad(404, "unknown action");
 };

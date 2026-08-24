@@ -310,6 +310,7 @@ const probFields = (o = {}) => ({
   higher_is_better: o.higher_is_better ?? false,
   baseline: o.baseline ?? null,
   tolerance: o.tolerance ?? 0.02,
+  ...(o.subject ? { subject: o.subject } : {}),
 });
 const probBody = (k, o) => {
   const f = probFields(o);
@@ -439,12 +440,48 @@ if (gate.sign)
           domain: "routing",
           needs: ["api-key"],
         }),
-        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key"
+        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|-"
+      );
+      // The same problem WITH a subject. Two literals, because "absent" and "present" are
+      // the two shapes a verifier's signature check has to reproduce byte for byte, and the
+      // absent one is a bare "-" while the present one is length-prefixed like every string.
+      assert.equal(
+        sg.payload("problem", {
+          title: "Router that picks a model",
+          problem: "x".repeat(30),
+          how: "make eval | tee out.txt (n=500)",
+          metric: "cost_usd (USD)",
+          higher_is_better: false,
+          baseline: null,
+          tolerance: 0.02,
+          domain: "routing",
+          needs: ["api-key"],
+          subject: "https://github.com/owner/repo",
+        }),
+        "exit0/v1|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|29:https://github.com/owner/repo"
+      );
+      // Canonical or rejected, and the refusal has to name THIS field: canonUrl serves both
+      // repo and subject now, and a message about "repo" would send the caller to the wrong
+      // line of their body.
+      assert.throws(
+        () => sg.payload("problem", { title: "T", problem: "x".repeat(30), how: "h", metric: "m", higher_is_better: false, baseline: null, tolerance: 0.02, domain: "infra", needs: [], subject: "https://github.com/owner/repo/" }),
+        (e) => e.code === 400 && /subject/.test(e.message) && e.canonical === "https://github.com/owner/repo",
+        "a trailing slash must come back as 400 naming subject, with the canonical form"
+      );
+      assert.throws(
+        () => sg.payload("problem", { title: "T", problem: "x".repeat(30), how: "h", metric: "m", higher_is_better: false, baseline: null, tolerance: 0.02, domain: "infra", needs: [], subject: "ftp://example.com/r" }),
+        (e) => e.code === 400 && /subject/.test(e.message),
+        "a subject that is not http(s)"
       );
       // The drawers are CLOSED sets, and `needs` has to arrive in canonical form:
       // sorting it for the sender would mean two different bodies give one signature.
       const P = { title: "T", problem: "x".repeat(30), how: "h", metric: "m", higher_is_better: false, baseline: null, tolerance: 0.02 };
-      assert.match(sg.payload("problem", { ...P, domain: "infra", needs: [] }), /\|infra\|-$/, "empty needs is the token -");
+      // By slot, not by "ends with": needs stopped being the last field the moment subject
+      // was appended, and an anchored regex would then be testing the wrong token while
+      // still passing for the wrong reason.
+      const slots = sg.payload("problem", { ...P, domain: "infra", needs: [] }).split("|");
+      assert.equal(slots[slots.length - 2], "-", "empty needs is the token -");
+      assert.equal(slots[slots.length - 1], "-", "an absent subject is the token -");
       assert.throws(() => sg.payload("problem", { ...P, domain: "invented", needs: [] }), (e) => e.code === 400, "a domain outside the set");
       assert.throws(() => sg.payload("problem", { ...P, domain: "infra", needs: ["quantum"] }), (e) => e.code === 400, "a need outside the set");
       assert.throws(
@@ -2423,6 +2460,59 @@ if (gate.server)
     // build.mjs reads paths relative to the current directory, so run by an absolute
     // path it checks SOMEBODY ELSE'S tree. The RUNBOOK did exactly that in the sanity
     // check after restoring from the mirror, and got a confident "OK".
+    // A problem points a stranger at code they are about to clone and run. If that pointer
+    // were carried but not signed, anyone with commit access could swap the repository
+    // under a problem without breaking a single signature, and the registry would be
+    // handing out a target nobody vouched for.
+    test("subject: a problem can name the repository it is about, and that pointer is signed", async () => {
+      const dir = newTree("subject-signed");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const url = "https://github.com/owner/some-repo";
+
+      // Optional: a problem with no single subject stays exactly as it was.
+      const bare = await newProblem(srv, { title: "No single subject here" });
+      const bareText = (await hit(srv, { path: `/${bare.id}` })).text;
+      assert.ok(!/^subject:/m.test(bareText), "a problem without a subject must not print an empty or invented one");
+
+      is(await post(srv, "problem", probBody(mkKey(), { title: "Subject carried", subject: url })), 201, "a problem naming its subject");
+      const id = await idByTitle(srv, "Subject carried");
+
+      const text = (await hit(srv, { path: `/${id}` })).text;
+      assert.match(text, new RegExp(`^subject: ${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"), "the text view does not show the subject");
+      const j = JSON.parse((await hit(srv, { path: `/api/problems/${id}` })).text);
+      assert.equal(j.subject, url, "the JSON view does not carry the subject");
+
+      // The one that matters: swap the repository in the stored record by hand. Every
+      // signature in the file is still the signature that was filed, so only a payload
+      // that actually covers this field can notice.
+      const file = readdirSync(join(dir, "problems")).find((f) => f.startsWith(id));
+      const path = join(dir, "problems", file);
+      const rec = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(rec.subject, url, "the stored record does not carry the subject");
+      rec.subject = "https://github.com/attacker/lookalike";
+      writeFileSync(path, JSON.stringify(rec, null, 2) + "\n");
+      const r = build(dir, "--check");
+      assert.equal(r.code, 1, "swapping the subject under a signed problem passed --check: the field is carried but NOT signed");
+      // The exit code alone is NOT the proof and must not be simplified down to it. Editing
+      // the record also makes index.json stale, so --check exits 1 either way: with the
+      // field left out of the payload entirely this assertion still passed, and only the
+      // REASON gave it away. Verified by mutation: drop optUrl from payload("problem") and
+      // the line below is the one that fails, on "stale: index.json".
+      assert.match(`${r.out}${r.err}`, /signature/i, `--check must fail on the signature, not on something downstream: ${(r.out + r.err).slice(0, 300)}`);
+
+      // Canonical or rejected, like every other field. The body is assembled by hand on
+      // purpose: sign.mjs refuses to SIGN a non-canonical subject, so going through it
+      // would only prove the client is careful. What has to be proved is that the SERVER
+      // refuses, because a caller who signs the canonical form and sends another one is
+      // exactly the case where trusting the signature would be trusting the wrong bytes.
+      const tricky = { ...probBody(mkKey(), { title: "Non canonical subject", subject: url }), subject: `${url}/` };
+      const bad = await post(srv, "problem", tricky);
+      is(bad, 400, "a trailing slash has to be refused, not fixed");
+      assert.match(bad.text, /subject/, "the refusal has to name subject, not repo");
+      assert.match(bad.text, new RegExp(url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the 400 has to hand back the canonical form");
+    });
+
     test("run from the wrong directory it says what is wrong (D10)", () => {
       const empty = mkdtempSync(join(tmpdir(), "exit0-bad-cwd-"));
       trees.push(empty);

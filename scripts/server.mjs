@@ -896,6 +896,10 @@ const problem = (b) => {
     domain: f.domain,
     needs: canonNeeds(f.needs),
     problem: f.problem,
+    // Only when there is one. A problem like "halve some popular package" has no single
+    // subject - the solver picks it - and writing null there would turn "not applicable"
+    // into "none", which are different claims.
+    ...(f.subject ? { subject: f.subject } : {}),
     acceptance: {
       how: f.how,
       metric: f.metric,
@@ -997,6 +1001,7 @@ const summary = (p) => ({
   higher_is_better: !!p.acceptance.higher_is_better,
   baseline: p.acceptance.baseline ?? null,
   tolerance: p.acceptance.tolerance ?? 0.02,
+  subject: p.subject ?? null,
   solutions: solsOf(p).length,
   verified: solsOf(p).filter((x) => x.verified).length,
   disputed: solsOf(p).filter((x) => x.disputed).length,
@@ -1026,6 +1031,9 @@ const renderProblem = (p) => {
   const sols = solsOf(p);
   L.push(`[${p.id}] ${String(p.status).toUpperCase()}  ${p.title}`);
   L.push(`domain: ${p.domain}   needs: ${needsOf(p).join(",") || "none"}   opened: ${p.opened_at ?? "?"} by ${p.opened_by ?? "?"}`);
+  // Straight above the statement, because it is the first thing an agent needs in order to
+  // know WHERE the problem is. It went through canonUrl, so it is one line and it is a URL.
+  if (p.subject) L.push(`subject: ${p.subject}`);
   L.push("");
   L.push(fieldBlock("problem", String(p.problem ?? ""), 0));
   L.push("");

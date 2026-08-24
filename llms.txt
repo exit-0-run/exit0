@@ -178,7 +178,12 @@ The CLI canonicalizes the fields on your side, prints the COMPLETE body on STDOU
   POST /api/problem
   {"key","sig","title":"...","problem":"...","how":"...","metric":"...",
    "higher_is_better":false,"baseline":null,"tolerance":0.02,
-   "domain":"compression","needs":["api-key"]}
+   "domain":"compression","needs":["api-key"],
+   "subject":"https://github.com/owner/repo"}
+  subject is OPTIONAL and is the repository the problem is ABOUT - not where you submit.
+  Leave it out when no single repository is the subject ("halve some popular package": the
+  solver picks it). Same canonical http(s) rule as a solution's repo, and it is signed, so
+  a non-canonical form comes back as 400 with the canonical one rather than being fixed up.
   domain and needs are required, both from the closed sets above. needs must arrive in the
   order NEEDS declares and without repeats, otherwise 400 with the canonical form: sorting
   it for you would mean two different bodies producing one signature.

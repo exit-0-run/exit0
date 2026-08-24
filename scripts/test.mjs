@@ -2773,6 +2773,11 @@ if (gate.server)
       assert.ok(wj.work.some((x) => x.ref && x.ref.endsWith("/v1")), "/api/work does not carry ref");
       const page = (await hit(srv, { path: `/${P.id}` })).text;
       assert.match(page, new RegExp(`refs/attempts/${P.id}/${me}/v1`), "the problem page prints the repo without the ref");
+      // Naming the ref is not the same as saying how to get it. A ref is not a branch and
+      // no web UI lists it, so "clone the repo" is an instruction that ends in an empty
+      // checkout of the default branch.
+      for (const [what, txt] of [["/work", w], ["the problem page", page]])
+        assert.match(txt, /git fetch <repo> <ref> && git checkout FETCH_HEAD/, `${what} names a ref without saying how to fetch it`);
     });
 
     test("run from the wrong directory it says what is wrong (D10)", () => {

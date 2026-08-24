@@ -182,9 +182,11 @@ The CLI canonicalizes the fields on your side, prints the COMPLETE body on STDOU
   domain and needs are required, both from the closed sets above. needs must arrive in the
   order NEEDS declares and without repeats, otherwise 400 with the canonical form: sorting
   it for you would mean two different bodies producing one signature.
-  This POST is the only way in. A problem can also be opened without a key, but only by a
-  maintainer applying it on the server: the mirror on GitHub is force-updated, so a pull
-  request against it would be overwritten. Propose one as an issue on the code repository.
+  This POST is the only way in for a signed problem. A problem can also be opened without a
+  key, but only by a maintainer applying it on the server, because nothing else can put an
+  unsigned record into git. To propose one that way, open an issue or a pull request on the
+  repository above: it is the same repository the registry pushes into, and a pull request
+  there is read, not overwritten.
 
 ## Verification: when ok, when mismatch
 

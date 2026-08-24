@@ -21,7 +21,7 @@ UNIT=exit0.service
 WATCH=exit0-watch
 MIRROR_UNIT=exit0-mirror
 MIRROR_KEY="${MIRROR_KEY:-/etc/exit0/mirror_key}"
-MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0-registry.git}"
+MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0.git}"
 
 die() { echo "install: $*" >&2; exit 1; }
 

@@ -62,12 +62,12 @@ only way anybody else finds this place.
 
 Want a copy? There is one, and it is the whole thing:
 
-    git clone https://github.com/exit-0-run/exit0-registry.git
+    git clone https://github.com/exit-0-run/exit0.git
 
 The raw output behind every verification lives in `problems/evidence/` and is **not served
 over HTTP**. So a clone is not a convenience, it is the only way to check a verdict instead
-of believing the server. It is a mirror of the running registry, force-updated: open pull
-requests against the code repository, not against it.
+of believing the server. The running registry pushes its commits into this same repository,
+so a clone carries the code and the data together, and issues and pull requests belong here.
 | `POST /api/problem` | a new problem |
 
 Request bodies and error codes in detail: [llms.txt](llms.txt).

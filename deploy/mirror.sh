@@ -20,7 +20,7 @@
 set -eu
 
 DIR=${EXIT0_DIR:-/srv/exit0}
-MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0-registry.git}
+MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0.git}
 KEY=${EXIT0_MIRROR_KEY:-/etc/exit0/mirror_key}
 STATE=${EXIT0_MIRROR_STATE:-/var/lib/exit0/mirrored}
 KNOWN=${EXIT0_MIRROR_KNOWN_HOSTS:-/etc/exit0/known_hosts}

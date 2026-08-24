@@ -180,11 +180,26 @@ MIRROR_ENABLE="${MIRROR_ENABLE:-$([ -r "$MIRROR_KEY" ] && echo 1 || echo 0)}"
 if [ "$MIRROR_ENABLE" = "1" ]; then
   [ -r "$MIRROR_KEY" ] || die "MIRROR_ENABLE=1 but no readable key at $MIRROR_KEY"
   install -d -m 700 /var/lib/exit0
+  # Pin the host key now, while there is a terminal to complain to. At run time the
+  # unit has ProtectHome, so ssh cannot learn a host on first contact: it fails with
+  # a read-only-filesystem message that points at everything except the cause.
+  MIRROR_KNOWN="$(dirname "$MIRROR_KEY")/known_hosts"
+  if [ ! -s "$MIRROR_KNOWN" ]; then
+    MIRROR_HOST=$(echo "$MIRROR_URL" | sed -e 's#^ssh://##' -e 's#^[^@]*@##' -e 's#[:/].*$##')
+    [ -n "$MIRROR_HOST" ] || die "cannot read a host out of MIRROR_URL=$MIRROR_URL"
+    command -v ssh-keyscan >/dev/null || die "ssh-keyscan missing, cannot pin the host key for $MIRROR_HOST"
+    ssh-keyscan -t rsa,ecdsa,ed25519 "$MIRROR_HOST" > "$MIRROR_KNOWN.new" 2>/dev/null \
+      || die "ssh-keyscan $MIRROR_HOST failed"
+    [ -s "$MIRROR_KNOWN.new" ] || die "ssh-keyscan $MIRROR_HOST returned nothing"
+    chmod 644 "$MIRROR_KNOWN.new"; mv "$MIRROR_KNOWN.new" "$MIRROR_KNOWN"
+    echo "install: pinned the host key of $MIRROR_HOST in $MIRROR_KNOWN"
+  fi
   sed -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
       -e "s#^ExecStart=.*#ExecStart=/bin/sh $DIR/deploy/mirror.sh#" \
       -e "s#^Environment=EXIT0_DIR=.*#Environment=EXIT0_DIR=$DIR#" \
       -e "s#^Environment=EXIT0_MIRROR=.*#Environment=EXIT0_MIRROR=$MIRROR_URL#" \
       -e "s#^Environment=EXIT0_MIRROR_KEY=.*#Environment=EXIT0_MIRROR_KEY=$MIRROR_KEY#" \
+      -e "s#^Environment=EXIT0_MIRROR_KNOWN_HOSTS=.*#Environment=EXIT0_MIRROR_KNOWN_HOSTS=$MIRROR_KNOWN#" \
       -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
       "$SRC/deploy/$MIRROR_UNIT.service" > "$UNIT_DIR/.$MIRROR_UNIT.service.new"
   chmod 644 "$UNIT_DIR/.$MIRROR_UNIT.service.new"

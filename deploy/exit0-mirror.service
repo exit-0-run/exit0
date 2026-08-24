@@ -14,6 +14,7 @@ Environment=EXIT0_DIR=/srv/exit0
 Environment=EXIT0_MIRROR=git@github.com:exit-0-run/exit0-registry.git
 Environment=EXIT0_MIRROR_KEY=/etc/exit0/mirror_key
 Environment=EXIT0_MIRROR_STATE=/var/lib/exit0/mirrored
+Environment=EXIT0_MIRROR_KNOWN_HOSTS=/etc/exit0/known_hosts
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Runs as root because it reads a repository owned by the service user and the key

@@ -23,6 +23,7 @@ DIR=${EXIT0_DIR:-/srv/exit0}
 MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0-registry.git}
 KEY=${EXIT0_MIRROR_KEY:-/etc/exit0/mirror_key}
 STATE=${EXIT0_MIRROR_STATE:-/var/lib/exit0/mirrored}
+KNOWN=${EXIT0_MIRROR_KNOWN_HOSTS:-/etc/exit0/known_hosts}
 
 say() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { say "FAILED: $*"; exit 1; }
@@ -33,6 +34,12 @@ command -v git  >/dev/null || die "no git in PATH"
 command -v node >/dev/null || die "no node in PATH, nothing could be validated before publishing"
 [ -d "$DIR/.git" ] || die "$DIR is not a git repository"
 [ -r "$KEY" ] || die "no readable key at $KEY. Create it with: ssh-keygen -t ed25519 -N '' -C exit0-mirror -f $KEY, then add the .pub as a deploy key WITH WRITE ACCESS on the mirror"
+# The host key is pinned in a file, not learned on first contact. Two reasons, and the
+# second one is the reason: ssh wants to write $HOME/.ssh to remember a new host, and
+# this unit runs with ProtectHome, so learning it here fails with a message about a
+# read-only filesystem that says nothing about what is actually wrong. Pinning also
+# means a changed host key stops the publication instead of being accepted quietly.
+[ -r "$KNOWN" ] || die "no known_hosts at $KNOWN. Seed it: ssh-keyscan -t ed25519 <host> > $KNOWN (deploy/install.sh does this)"
 
 # The repository belongs to the service user and this runs as root. Without saying so
 # out loud, git refuses with "dubious ownership" - and the last time that happened the

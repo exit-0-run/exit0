@@ -2648,10 +2648,16 @@ describe("niezmienniki repo", () => {
     assert.equal(spawnSync("bash", ["-n", join(ROOT, "deploy/install.sh")], { encoding: "utf8" }).status, 0, "install.sh nie parsuje sie w bashu");
     assert.match(sh, /cp -r [^\n]*deploy/, "install.sh nie kopiuje deploy/ — instalacja przerywa sie przed unitem (C17)");
     assert.match(sh, /cp -r [^\n]*\.gitattributes/, "install.sh nie kopiuje .gitattributes — wdrozony rejestr rozjedzie sumy dowodow (D3)");
-    for (const gen of ["README.md", "index.json"]) {
-      const kopie = sh.split("\n").filter((l) => /^\s*cp\b/.test(l) && l.includes(gen));
-      assert.equal(kopie.length, 0, `install.sh bezwarunkowo kopiuje generowany ${gen} -> brudne drzewo po buildzie -> serwer na stale read-only`);
-    }
+    // index.json jest w 100% generowany: kopiowanie go nic nie wnosi.
+    const kopieIndex = sh.split("\n").filter((l) => /^\s*cp\b/.test(l) && l.includes("index.json"));
+    assert.equal(kopieIndex.length, 0, "install.sh kopiuje w calosci generowany index.json");
+    // README.md JEST kopiowany i musi byc. Wczesniej ta petla zabraniala tego takze
+    // jemu, z uzasadnieniem "brudne drzewo po buildzie" — nieprawdziwym, bo kopia idzie
+    // PRZED buildem i commitem. Skutek byl taki, ze wdrozona proza zostawala zamrozona
+    // na tym, co wgral pierwszy instalator: publiczne lustro nioslo README w zlym jezyku,
+    // gdy wszystkie inne dokumenty byly aktualne.
+    assert.match(sh, /for f in [^\n]*README\.md[^\n]*; do/, "install.sh nie odswieza README.md — wdrozona proza zamarznie na pierwszej instalacji");
+    assert.ok(!/\[ -f "\$DIR\/README\.md" \]/.test(sh), "README.md wrocil do kopiowania warunkowego, czyli do zamrozenia prozy");
     assert.match(sh, /ExecStart/, "unit ma byc renderowany z realnym interpreterem");
     const unit = text("deploy/exit0.service") ?? "";
     assert.match(unit, /TRUST_PROXY=1/, "unit z wlasnym Caddy musi ufac proxy, inaczej caly ruch wpada w jeden kubelek IP (finding 33)");

@@ -67,7 +67,13 @@ fi
 # endings in evidence and the committed blob stops matching its sha256.
 rm -rf "$DIR/scripts" "$DIR/deploy"
 cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/llms.txt" "$SRC/.gitignore" "$SRC/.gitattributes" "$DIR/"
-for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md; do
+# README.md is CODE here, not registry data, even though build.mjs rewrites the table
+# region inside it. Treating it as data (copy only when absent) meant the deployed prose
+# was frozen at whatever the first install put there: the public mirror carried a README
+# in the wrong language for a day while every other document was current. Copying it
+# before the build is safe, because step 8 regenerates the table and commits, so the tree
+# still comes out clean.
+for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md README.md; do
   if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$DIR/"; else echo "install: skipping missing document $f" >&2; fi
 done
 # _schema.json is the file contract, so it is code: build.mjs reads it and it must ship with the scripts.
@@ -89,7 +95,6 @@ for f in "$SRC"/problems/evidence/*.txt; do
   [ -e "$f" ] || continue
   [ -e "$DIR/problems/evidence/$(basename "$f")" ] || cp "$f" "$DIR/problems/evidence/"
 done
-[ -f "$DIR/README.md" ] || cp "$SRC/README.md" "$DIR/"
 
 # --- 8. build and commit; after this step the tree MUST be clean ---
 cd "$DIR"

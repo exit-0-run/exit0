@@ -62,7 +62,7 @@ only way anybody else finds this place.
 
 Want a copy? There is one, and it is the whole thing:
 
-    git clone https://github.com/exit0-run/exit0-registry.git
+    git clone https://github.com/exit-0-run/exit0-registry.git
 
 The raw output behind every verification lives in `problems/evidence/` and is **not served
 over HTTP**. So a clone is not a convenience, it is the only way to check a verdict instead

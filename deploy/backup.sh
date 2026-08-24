@@ -19,7 +19,7 @@ SRC=${1:-${EXIT0_SRC:-ssh://root@exit0.run/srv/exit0}}
 DST=${2:-${EXIT0_BACKUP:-$HOME/backups/exit0.git}}
 # Optional public mirror. Pushed only AFTER the copy has been restored and validated
 # below, so a broken registry never gets republished as the thing to clone.
-MIRROR=${EXIT0_MIRROR:-git@github.com:exit0-run/exit0-registry.git}
+MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0-registry.git}
 say() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { say "FAILED: $*"; exit 1; }
 

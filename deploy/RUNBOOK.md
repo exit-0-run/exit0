@@ -43,9 +43,19 @@ could produce was `pulse answered HTTP 400: Invalid host header`, which reads li
 the server. Pass `PORT=` explicitly to move it, and expect the proxy to 502 until you
 update that too.
 
-**Never run `git pull` in `/srv/exit0`.** The history of that directory is the history of the
-registry, not the history of the code. These are two different repositories with no common
-ancestor.
+**`/srv/exit0` and the code share one history.** They used to be two repositories with no
+common ancestor, and a public mirror pushed to a second GitHub repo whose README was
+identical to the code one - a puzzle for anybody arriving, with no right answer. They were
+merged, so one clone now carries the code, the registry data and the evidence.
+
+That means one branch with **two writers**: code pushed from a laptop, registry data
+committed here. A push that crosses the other one is therefore expected, not exotic.
+`mirror.sh` handles it by fetching and **merging** - never rebasing, because these commits
+are the audit trail - then revalidating and pushing again. Do not reconcile it by hand with
+a force or a rebase.
+
+Pull here only to move the registry onto newer code, and only as a fast-forward. The
+installer is still the way code arrives; a pull is not a substitute for it.
 
 The installer refuses to work if it finds uncommitted changes there. That is deliberate: such
 changes are either a manual edit in progress or an interrupted write. Resolve them (`Failures`)
@@ -148,6 +158,11 @@ They are split now:
 |---|---|---|---|
 | `backup.sh` | another machine | pull | the copy of last resort. No credentials here |
 | `mirror.sh` | this host, `exit0-mirror.timer` | push | the public clone stays current |
+
+The mirror needs a **deploy key with write access** on the repository it publishes to, and
+GitHub allows a given key on one repository only. Moving the target means removing the key
+from the old repository first, or the push fails with `Permission to ... denied to deploy
+key` - which reads like a broken key and is not.
 
     systemctl list-timers exit0-mirror.timer
     journalctl -u exit0-mirror -n 20

@@ -60,25 +60,71 @@ fi
 # it is not what git push would send.
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/exit0-mirror.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
-$GIT archive HEAD | tar -x -C "$TMP" || die "cannot unpack HEAD"
-[ -f "$TMP/scripts/build.mjs" ] || die "HEAD has no scripts/build.mjs"
 
-# --check, never a plain build: it must agree that README and index.json at HEAD already
-# match the records. A build would regenerate them and hide exactly the disagreement
-# that should stop the publication.
-( cd "$TMP" && node scripts/build.mjs --check ) >/dev/null 2>"$TMP/.err" \
-  || die "HEAD does not validate, NOT publishing: $(head -3 "$TMP/.err" | tr '\n' ' ')"
+SSH="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN -o StrictHostKeyChecking=yes -o BatchMode=yes"
+
+# A function, because the reconcile path below has to validate again. A second push that
+# skipped this would publish exactly the state the first push was right to hold back.
+validate_head() {
+  rm -rf "$TMP/w"
+  mkdir -p "$TMP/w"
+  $GIT archive HEAD | tar -x -C "$TMP/w" || die "cannot unpack HEAD"
+  [ -f "$TMP/w/scripts/build.mjs" ] || die "HEAD has no scripts/build.mjs"
+  # --check, never a plain build: it must agree that README and index.json at HEAD already
+  # match the records. A build would regenerate them and hide exactly the disagreement
+  # that should stop the publication.
+  ( cd "$TMP/w" && node scripts/build.mjs --check ) >/dev/null 2>"$TMP/.err" \
+    || die "HEAD does not validate, NOT publishing: $(head -3 "$TMP/.err" | tr '\n' ' ')"
+}
 
 # Push by URL rather than through a named remote: no remote-tracking ref is written, so
 # this touches nothing inside a repository it does not own.
 # No --force and no --mirror. --mirror carries force semantics and can delete refs, and
 # a stale pusher would then silently rewind the public copy that people clone to check
-# verdicts. If this ever stops being a fast-forward, that is a finding, not a nuisance.
-if GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN -o StrictHostKeyChecking=yes -o BatchMode=yes" \
-   $GIT push --quiet "$MIRROR" "HEAD:refs/heads/$BRANCH" 2>"$TMP/.push"; then
+# verdicts.
+push_head() {
+  GIT_SSH_COMMAND="$SSH" $GIT push --quiet "$MIRROR" "HEAD:refs/heads/$BRANCH" 2>"$TMP/.push"
+}
+
+validate_head
+
+if push_head; then
   mkdir -p "$(dirname "$STATE")"
-  printf '%s\n' "$HEAD_SHA" > "$STATE"
+  printf '%s\n' "$($GIT rev-parse HEAD)" > "$STATE"
   say "published $BRANCH $HEAD_SHA -> $MIRROR"
-else
+  exit 0
+fi
+
+# A rejected push has two causes that must not be treated alike. No write access is a
+# fact about credentials and retrying cannot fix it. A non-fast-forward is the expected
+# consequence of ONE branch with TWO writers: code is pushed from a laptop, registry data
+# is committed here, and both land on the same branch since the two repositories were
+# merged into one. Neither side is wrong and neither may be dropped.
+if ! grep -qi 'non-fast-forward\|fetch first\|behind\|rejected.*fetch' "$TMP/.push"; then
   die "push rejected: $(head -3 "$TMP/.push" | tr '\n' ' ')"
 fi
+
+# Only ever from a clean tree. A dirty tree means a write is in flight, and merging under
+# one would fold a half-written record into the history. Ten minutes from now it is clean.
+[ -z "$($GIT status --porcelain --no-optional-locks)" ] \
+  || { say "diverged from $MIRROR but the tree is dirty (write in flight). Leaving it; the next run retries."; exit 0; }
+
+say "diverged from the public copy, merging it in"
+GIT_SSH_COMMAND="$SSH" $GIT fetch --quiet "$MIRROR" "$BRANCH" 2>"$TMP/.fetch" \
+  || die "diverged, and cannot fetch to reconcile: $(head -3 "$TMP/.fetch" | tr '\n' ' ')"
+
+# MERGE, never rebase and never force. Every accepted write is a commit and the history IS
+# the audit trail, so rewriting these commits would rewrite the evidence. A merge only adds.
+if ! $GIT merge --no-rebase --no-edit FETCH_HEAD >"$TMP/.merge" 2>&1; then
+  $GIT merge --abort >/dev/null 2>&1
+  die "cannot merge the public copy automatically, registry left untouched: $(head -3 "$TMP/.merge" | tr '\n' ' ')"
+fi
+
+# The merged state is a state nobody has validated yet: it is the first time these two
+# sets of commits have existed in one tree.
+validate_head
+
+push_head || die "push still rejected after merging: $(head -3 "$TMP/.push" | tr '\n' ' ')"
+mkdir -p "$(dirname "$STATE")"
+printf '%s\n' "$($GIT rev-parse HEAD)" > "$STATE"
+say "merged and published $BRANCH $($GIT rev-parse HEAD) -> $MIRROR"

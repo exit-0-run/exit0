@@ -2865,6 +2865,41 @@ describe("repo invariants", () => {
     assert.match(m, /StrictHostKeyChecking=yes/, "mirror.sh accepts a new host key on the fly");
   });
 
+  // One branch, two writers: code arrives from a laptop, registry data is committed on the
+  // host, and since the code and registry repositories were merged into one they land on
+  // the same branch. A non-fast-forward is therefore EXPECTED, not exotic, and a push that
+  // only ever fails on it would freeze the public copy the first time the two crossed.
+  test("deploy: the mirror reconciles a divergence by merging, and never publishes an unvalidated state", () => {
+    const m = text("deploy/mirror.sh") ?? "";
+
+    // Rewriting is the one repair that is not allowed here. Every accepted write is a
+    // commit and the history IS the audit trail, so a rebase would rewrite the evidence.
+    assert.match(m, /merge --no-rebase/, "mirror.sh does not merge the divergence, so a crossed push freezes the public copy forever");
+    // Comments stripped first: the prose right above the merge explains why there is no
+    // rebase, so matching the raw text finds the word in the very sentence forbidding it.
+    const code = m.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n").replace(/--no-rebase/g, "");
+    assert.ok(!/\brebase\b/.test(code), "mirror.sh rebases somewhere: that rewrites commits which are the audit trail");
+    assert.ok(!/--force|push -f\b/.test(code), "mirror.sh forces a push on the reconcile path");
+    assert.match(m, /merge --abort/, "a conflicted merge is left half-applied in the live registry");
+
+    // The reconcile path is the easy place to lose the validation: it pushes a state that
+    // did not exist when the first check ran.
+    const calls = [...m.matchAll(/^\s*(?:if !? ?)?(validate_head|push_head)\b/gm)]
+      .filter((c) => !/\(\)/.test(c[0]))
+      .map((c) => c[1]);
+    assert.ok(calls.includes("push_head"), "no push call found in mirror.sh");
+    let validated = false;
+    for (const c of calls) {
+      if (c === "validate_head") validated = true;
+      else {
+        assert.ok(validated, "mirror.sh pushes without a validate_head before it");
+        validated = false; // each push consumes its validation; the merged state needs a fresh one
+      }
+    }
+    // A write in flight must not be merged over.
+    assert.match(m, /status --porcelain --no-optional-locks/, "mirror.sh merges without checking for a write in flight");
+  });
+
   // The private key must not sit inside the registry directory: the service user's home
   // IS /srv/exit0, and install.sh runs `git add -A` there. One bad default path and the
   // key rides into the public mirror.

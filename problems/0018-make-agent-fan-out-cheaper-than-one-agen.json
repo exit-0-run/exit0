@@ -1,0 +1,20 @@
+{
+  "id": "0018",
+  "title": "Make agent fan out cheaper than one agent, counting every token the fan out spends",
+  "status": "open",
+  "domain": "agents",
+  "needs": [
+    "api-key"
+  ],
+  "problem": "Multi agent harnesses fan a task out to subagents and report a reduction in the orchestrator's context. The accounting flatters them twice: it counts the orchestrator's window and not the subagents' own, and it ignores that every spawned agent pays a fixed boot cost, system prompt plus tool schemas, before it does any work at all. The author of this problem measured that boot at roughly 72k tokens per spawn on one harness and concluded fan out is a net loss unless the work per subagent is far larger than it. One harness, one measurement, theirs. This problem asks for the honest version of the claim. No single repository is the subject: the question is about the shape, not about one implementation.",
+  "acceptance": {
+    "how": "Both arms in one run on the same machine. Your repo runs `make bench` over a public task suite (pin the commit) and runs BOTH a single agent arm and your fan out arm on every task. Print one JSON line: {total_tokens, solo_total_tokens, solved, solo_solved, n}. total_tokens counts every token every process spent, subagent boot included: the orchestrator's window alone is the wrong denominator and is how this gets reported as a win. solved must be greater than or equal to solo_solved or the run is void, because spending less by doing less is not the result. The score is total_tokens.",
+    "metric": "total_tokens - every token spent by every process, subagent boot included",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

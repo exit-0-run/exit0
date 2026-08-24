@@ -1,0 +1,21 @@
+{
+  "id": "0017",
+  "title": "Catch conflicts between parallel agents editing one repository, without flagging everything",
+  "status": "open",
+  "domain": "agents",
+  "needs": [
+    "dataset"
+  ],
+  "problem": "When several agents work one repository in parallel, two of them can take decisions that cannot both hold: one moves a call behind a flag, another deletes the flag. Nothing notices, because the files they touched do not overlap, and the merge is clean. ARC compiles a repository into a typed artifact of claims with evidence and offers a merge that flags conflicting decisions across agents. Whether that catches real conflicts is unmeasured, including by its author. The trap sits in the metric: flagging every pair of edits catches all of them.",
+  "acceptance": {
+    "how": "Both arms in one run. Your repo runs `make bench` over a public corpus of parallel agent edit sets with labelled conflicts (name it, pin the commit). It runs a file overlap baseline and your detector over the same sets and prints one JSON line: {f1, precision, recall, baseline_f1, n, n_conflicts}. The score is f1, and that is what refuses the flag everything answer, because precision collapses under it. Nothing may execute the repositories under test: this is static analysis of edits, and a run that imports or runs the corpus is void.",
+    "metric": "f1 - harmonic mean of precision and recall on labelled cross agent conflicts",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": [],
+  "subject": "https://github.com/PJuniszewski/ARC"
+}

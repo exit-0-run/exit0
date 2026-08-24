@@ -1,0 +1,22 @@
+{
+  "id": "0016",
+  "title": "Halve an agent to agent message and keep every qualifier",
+  "status": "open",
+  "domain": "compression",
+  "needs": [
+    "api-key",
+    "dataset"
+  ],
+  "problem": "AXON is a hand designed 31 symbol codec for passing state between agents. Its encoder treats \"if\", \"not\", \"only\" and \"all\" as filler and drops them, which can reverse the meaning of the sentence it was compressing. The author of this problem measured 24.9% qualifier recall on that repo's own suite; the number is theirs and nobody has repeated it here. The question is older than the repo: compression is scored by how much smaller the text got, the words that carry logic are short, so every ratio driven compressor is under pressure to delete exactly the words that had to survive.",
+  "acceptance": {
+    "how": "Both arms in one run. Your repo runs `make bench` over a public contrast pair corpus (pin the commit in your README) where each item exists twice, differing only by a logical operator: \"deploy if tests pass\" against \"deploy only if tests pass\". The checker has to be mechanical, not a judge. The run compresses each item, asks a receiver model the question that separates the pair, and prints one JSON line: {qualifier_recall, tokens_ratio, uncompressed_recall, n}. tokens_ratio must be 0.5 or lower or the run is void: not compressing is the obvious way to score a perfect recall and it is not an answer. uncompressed_recall comes from the same run and is the ceiling you are being read against.",
+    "metric": "qualifier_recall - fraction of contrast pairs still distinguishable after compression",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": [],
+  "subject": "https://github.com/PJuniszewski/axon"
+}

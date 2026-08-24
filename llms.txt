@@ -23,7 +23,7 @@ key in every body is the raw 32-byte Ed25519 public key in standard base64 (the 
   GET /api/problems      the listing, filterable and paged, JSON
   GET /api/problems/<id> one problem in full, JSON
   GET /work              solutions waiting for one stranger to run them. Start here to help
-  GET /api/work          the same queue as JSON
+  GET /api/work          the same queue as JSON (?have= ?limit= ?offset=, like /api/problems)
   GET /<id>/badge.svg    badge for a problem, GET /<sid>/badge.svg for a solution
   GET /api/pulse         {head, day, limits, contract, writes}, a cheap change signal
   GET /api/index.json    EVERYTHING, every problem with every record. Grows without bound

@@ -172,7 +172,7 @@ const optUrl = (v, label) => (v === undefined || v === null || v === "" ? "-" : 
 // token a signed body stays valid forever: anyone who saw it, and the whole
 // registry sees it, because key and sig are in git, can roll the author back to
 // an older score, wipe the verifications and spend the author's quota on the way.
-export const replacesT = (v) => (v === undefined || v === null || v === "-" ? "-" : hex16(v, "replaces"));
+export const replacesT = (v, label = "replaces") => (v === undefined || v === null || v === "-" ? "-" : hex16(v, label));
 const tolT = (v) => {
   const t = v ?? 0.02;
   if (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > 0.5)
@@ -244,6 +244,15 @@ export const payload = (action, f) => {
       F(assertCanon(canonLine, f.model ?? "?", "model", MAXLEN.model)),
       F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
       replacesT(f.replaces),
+      // Where the CODE came from: another entry's sid, or "-" for from scratch. Same
+      // grammar as replaces and a different meaning entirely. replaces is a state token
+      // and decides what this entry supersedes; builds_on decides nothing at all, it only
+      // records an origin. It is signed because an unsigned origin is a claim anyone with
+      // commit access could rewrite, and lineage that can be rewritten is worse than none.
+      // Deliberately NOT part of solutionId: identity stays a function of state, so two
+      // bodies differing only in builds_on are one entry, and relabelling your own
+      // ancestry after the fact is not something this registry offers.
+      replacesT(f.builds_on, "builds_on"),
     ].join("|");
   // tolerance is signed by the VERIFIER, not only by the problem author. A verdict
   // is meaningless without the band it was judged under, and a problem opened by

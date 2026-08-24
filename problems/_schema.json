@@ -139,7 +139,8 @@
           "verifications",
           "verified",
           "disputed",
-          "settled"
+          "settled",
+          "builds_on"
         ],
         "additionalProperties": false,
         "properties": {
@@ -172,6 +173,11 @@
             "type": "string",
             "pattern": "^(-|[0-9a-f]{16})$",
             "description": "The state signed together with the content: the sid this submission replaced, or - when it replaced nothing. It also feeds the sid, so entries form a chain and no state ever returns - a replay of an old body cannot roll the author back"
+          },
+          "builds_on": {
+            "type": "string",
+            "pattern": "^(-|[0-9a-f]{16})$",
+            "description": "The sid this attempt started FROM: another entry on this problem, your own earlier one, or \"-\" for from scratch. Unlike replaces it is NOT a state token: it never changes what this entry supersedes and it is not part of the sid. Signed. A parent that is no longer in solutions is not an error: entries are replaced in place, so an origin can be superseded after the fact."
           },
           "at": {
             "type": "string",

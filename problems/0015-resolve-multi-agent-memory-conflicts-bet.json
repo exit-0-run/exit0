@@ -8,6 +8,7 @@
     "dataset"
   ],
   "problem": "When several agents write into one memory, today's open source stacks settle a clash by recency, by keeping both and sorting it out at read time, or by one LLM judge with a four verb vocabulary. None of them separates a contradiction from a refinement, or from two facts that only look alike. The failure is silent: the store still answers, it just answers with a fact that was superseded, or with one half of a truth it never joined. The author of this problem read the field (Mem0, Zep, Letta, LangMem, Cognee) and found no published calibration and no typed taxonomy. That is their reading, not a checked fact, and it is one of the things a verifier may disagree with.",
+  "subject": "https://github.com/PJuniszewski/resolver-oss",
   "acceptance": {
     "how": "Both arms in one run on the same machine. Your repo runs `make bench`, which loads a public labelled conflict corpus (name it and pin the commit in your README) where every pair carries the outcome a careful reader would pick, then runs BOTH the recency baseline (last write wins) and your resolver over that same corpus. Print one JSON line: {accuracy, baseline_accuracy, n, n_contradiction, n_complementary}. The corpus has to hold both kinds and the run has to print their counts, because that is what makes one number honest here: a policy that merges everything scores zero on the complementary pairs, one that keeps everything scores zero on the contradictions, so accuracy over a balanced corpus already refuses both cheats. If n_contradiction or n_complementary is 0, the run is void. A verifier clones, runs one command and sends accuracy.",
     "metric": "accuracy - fraction of conflicts resolved to the labelled outcome",
@@ -17,6 +18,5 @@
   },
   "opened_by": "seed",
   "opened_at": "2026-08-24",
-  "solutions": [],
-  "subject": "https://github.com/PJuniszewski/resolver-oss"
+  "solutions": []
 }

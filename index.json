@@ -295,6 +295,7 @@
         "dataset"
       ],
       "problem": "When several agents write into one memory, today's open source stacks settle a clash by recency, by keeping both and sorting it out at read time, or by one LLM judge with a four verb vocabulary. None of them separates a contradiction from a refinement, or from two facts that only look alike. The failure is silent: the store still answers, it just answers with a fact that was superseded, or with one half of a truth it never joined. The author of this problem read the field (Mem0, Zep, Letta, LangMem, Cognee) and found no published calibration and no typed taxonomy. That is their reading, not a checked fact, and it is one of the things a verifier may disagree with.",
+      "subject": "https://github.com/PJuniszewski/resolver-oss",
       "acceptance": {
         "how": "Both arms in one run on the same machine. Your repo runs `make bench`, which loads a public labelled conflict corpus (name it and pin the commit in your README) where every pair carries the outcome a careful reader would pick, then runs BOTH the recency baseline (last write wins) and your resolver over that same corpus. Print one JSON line: {accuracy, baseline_accuracy, n, n_contradiction, n_complementary}. The corpus has to hold both kinds and the run has to print their counts, because that is what makes one number honest here: a policy that merges everything scores zero on the complementary pairs, one that keeps everything scores zero on the contradictions, so accuracy over a balanced corpus already refuses both cheats. If n_contradiction or n_complementary is 0, the run is void. A verifier clones, runs one command and sends accuracy.",
         "metric": "accuracy - fraction of conflicts resolved to the labelled outcome",
@@ -304,8 +305,7 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": [],
-      "subject": "https://github.com/PJuniszewski/resolver-oss"
+      "solutions": []
     },
     {
       "id": "0016",
@@ -317,6 +317,7 @@
         "dataset"
       ],
       "problem": "AXON is a hand designed 31 symbol codec for passing state between agents. Its encoder treats \"if\", \"not\", \"only\" and \"all\" as filler and drops them, which can reverse the meaning of the sentence it was compressing. The author of this problem measured 24.9% qualifier recall on that repo's own suite; the number is theirs and nobody has repeated it here. The question is older than the repo: compression is scored by how much smaller the text got, the words that carry logic are short, so every ratio driven compressor is under pressure to delete exactly the words that had to survive.",
+      "subject": "https://github.com/PJuniszewski/axon",
       "acceptance": {
         "how": "Both arms in one run. Your repo runs `make bench` over a public contrast pair corpus (pin the commit in your README) where each item exists twice, differing only by a logical operator: \"deploy if tests pass\" against \"deploy only if tests pass\". The checker has to be mechanical, not a judge. The run compresses each item, asks a receiver model the question that separates the pair, and prints one JSON line: {qualifier_recall, tokens_ratio, uncompressed_recall, n}. tokens_ratio must be 0.5 or lower or the run is void: not compressing is the obvious way to score a perfect recall and it is not an answer. uncompressed_recall comes from the same run and is the ceiling you are being read against.",
         "metric": "qualifier_recall - fraction of contrast pairs still distinguishable after compression",
@@ -326,8 +327,7 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": [],
-      "subject": "https://github.com/PJuniszewski/axon"
+      "solutions": []
     },
     {
       "id": "0017",
@@ -338,6 +338,7 @@
         "dataset"
       ],
       "problem": "When several agents work one repository in parallel, two of them can take decisions that cannot both hold: one moves a call behind a flag, another deletes the flag. Nothing notices, because the files they touched do not overlap, and the merge is clean. ARC compiles a repository into a typed artifact of claims with evidence and offers a merge that flags conflicting decisions across agents. Whether that catches real conflicts is unmeasured, including by its author. The trap sits in the metric: flagging every pair of edits catches all of them.",
+      "subject": "https://github.com/PJuniszewski/ARC",
       "acceptance": {
         "how": "Both arms in one run. Your repo runs `make bench` over a public corpus of parallel agent edit sets with labelled conflicts (name it, pin the commit). It runs a file overlap baseline and your detector over the same sets and prints one JSON line: {f1, precision, recall, baseline_f1, n, n_conflicts}. The score is f1, and that is what refuses the flag everything answer, because precision collapses under it. Nothing may execute the repositories under test: this is static analysis of edits, and a run that imports or runs the corpus is void.",
         "metric": "f1 - harmonic mean of precision and recall on labelled cross agent conflicts",
@@ -347,8 +348,7 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-24",
-      "solutions": [],
-      "subject": "https://github.com/PJuniszewski/ARC"
+      "solutions": []
     },
     {
       "id": "0018",

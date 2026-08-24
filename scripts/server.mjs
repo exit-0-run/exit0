@@ -729,12 +729,12 @@ const verifySig = (b, msg, f) => {
 // Every action VALIDATES and returns a plan. The disk write happens in apply(),
 // called after the limit check, or a rejected request would leave garbage behind.
 
-// { key, sig, problem, repo, score, model?, note?, replaces }
+// { key, sig, problem, repo, score, model?, note?, replaces, builds_on }
 const solution = (b) => {
   const path = problemFile(b.problem);
   const p = readProblem(path);
   notDead(p);
-  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "", replaces: b.replaces ?? "-" };
+  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "", replaces: b.replaces ?? "-", builds_on: b.builds_on ?? "-" };
   const msg = payload("solution", f);
   verifySig(b, msg, f);
 
@@ -743,9 +743,37 @@ const solution = (b) => {
   const sols = Array.isArray(p.solutions) ? p.solutions : [];
   const mine = sols.findIndex((s) => s.repo === f.repo && keyId(s.key) === keyId(b.key));
 
+  // builds_on is checked HERE, at write time, against the entries that exist right now.
+  // It is deliberately not re-checked offline: a replaced entry is overwritten in place
+  // (see below), so the parent a submitter legitimately named can stop existing later
+  // through somebody else's correction. Failing --check on that would take the whole
+  // registry red, permanently, with nobody at fault. build.mjs checks the shape, the
+  // self-parent and the cycle, and tolerates a parent that has since been superseded.
+  const bo = f.builds_on ?? "-";
+  if (bo !== "-") {
+    if (bo === sid) throw bad(400, "builds_on names this same entry", { info: { sid } });
+    const parent = sols.find((x) => x.sid === bo);
+    if (!parent) throw bad(404, "builds_on names no entry on this problem", { info: { problem: p.id } });
+    // Walking is cheap and a loop is not fixable once it is signed into a record. The
+    // server cannot produce one (a parent has to exist before its child is written), so
+    // this guards against ingesting on top of a hand-edited file, which is the only way
+    // one can appear.
+    const seen = new Set([sid]);
+    let cur = parent;
+    for (let i = 0; cur && i < 64; i++) {
+      if (seen.has(cur.sid)) throw bad(409, "builds_on closes a loop", { info: { sid: cur.sid } });
+      seen.add(cur.sid);
+      const next = cur.builds_on;
+      if (!next || next === "-") { cur = null; break; }
+      cur = sols.find((x) => x.sid === next) ?? null;
+    }
+    if (cur) throw bad(409, "builds_on chain is deeper than 64", { info: { problem: p.id } });
+  }
+
   const entry = { sid, repo: f.repo, author, key: b.key, sig: b.sig, model: f.model, score: f.score };
   if (f.note) entry.note = f.note;
   entry.replaces = f.replaces;
+  entry.builds_on = bo;
   entry.at = today();
   entry.verifications = [];
 

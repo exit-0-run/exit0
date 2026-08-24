@@ -110,7 +110,7 @@ Variable-length fields are framed: [length_in_utf8_bytes]:[value]. That is why a
 Number: "%.9f" with no trailing zeros and no trailing dot. 0.42 -> "0.42", 1e3 -> "1000", 1e-7 -> "0.0000001". Max 9 decimal places, max 15 significant digits, |value| < 1e15; a number outside that domain (e.g. 0.1+0.2) gets a 400 with a reason.
 Optional value (baseline): "-" when null. Boolean: "1" or "0".
 
-  solution      exit0/v2|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]
+  solution      exit0/v2|solution|[problem]|[repo]|[score]|[model]|[note]|[replaces]|[builds_on]
   verification  exit0/v2|verification|[problem]|[solution]|[score]|[verdict]|[output_sha256]|[tolerance]|[replaces]
   problem       exit0/v2|problem|[title]|[problem]|[how]|[metric]|[higher_is_better]|[baseline]|[tolerance]|[domain]|[needs]
 
@@ -120,13 +120,16 @@ Framed are repo, model, note, title, problem, how and metric. The rest are token
 
 [replaces] also goes into the sid: sid = sha256(exit0/v2|sid|[problem]|[repo framed]|[score]|[canonical key]|[replaces]) truncated to 16 hex characters. Successive entries under one (problem, repo, key) therefore form a chain and no state ever comes back, not even when you return to a result you once submitted. That is what makes "exactly once" true of the whole history, not just of the last step.
 
+[builds_on] is NOT that token and must not be read as one. It says where your CODE came from: the sid of another entry on this problem (someone else's or your own earlier one), or "-" when you started from scratch. It changes nothing: not what your entry supersedes, not your sid, not which verdict counts. It is signed, because an origin anyone could rewrite is worse than no origin at all.
+The server checks it when you write: an unknown sid is a 404, naming yourself is a 400, a loop is a 409. It does NOT check it again offline, and that is deliberate. A replaced entry is overwritten in place, so the parent you legitimately named stops existing the moment its author corrects their own result. If that counted as invalid, their correction would come back 422 and every entry with a child would be frozen forever. A parent that is gone means the origin was superseded, not that the lineage was a lie.
+
 A verification carries the same token, and it works the same way: "-" for your first verdict on a solution, otherwise the vid of your own current verdict on it. Your verdicts on one solution form a chain from "-" to a single head, and the head is the one that counts. So which verdict of yours counts does NOT depend on the order of records in the file: reordering two correctly signed records used to flip a problem to solved with the offline validator still green. The vid is built the same way: vid = sha256(exit0/v2|vid|[solution]|[canonical key]|[output_sha256]|[verdict]|[score]|[replaces]) truncated to 16 hex characters.
 
 [tolerance] in a verification is acceptance.tolerance OF THE PROBLEM, and you sign it. A verdict means nothing without the band it was judged under, so the band is part of what you attest to. Copy it from GET / or from /api/index.json; sign a different one and you get a 403 carrying the exact payload the server expected. Once one verdict exists, the band cannot move any more: moving it breaks every verdict already filed, in any clone, with no git history needed.
 
 Three strings straight from a running server:
 
-  exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-
+  exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-|-
   exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|-
   exit0/v2|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key
 

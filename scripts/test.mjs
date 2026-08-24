@@ -246,6 +246,7 @@ const solBody = (k, o) =>
   signBody(k, "solution", {
     problem: o.problem, repo: o.repo, score: o.score,
     model: o.model ?? "?", note: o.note ?? "", replaces: o.replaces ?? "-",
+    builds_on: o.builds_on ?? "-",
   });
 
 // tolerance is SIGNED but not sent: the server takes it from the problem. A body that
@@ -412,11 +413,29 @@ if (gate.sign)
     test("payload: exact literals for the three actions", () => {
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "-" }),
-        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-|-"
       );
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef" }),
-        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|-"
+      );
+      // replaces and builds_on share a grammar and share nothing else. Pinned together in
+      // one literal precisely because the failure mode of this pair is reading one as the
+      // other: the left token says what this entry supersedes, the right one says only
+      // where its code came from and decides nothing.
+      assert.equal(
+        sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef", builds_on: "aaaaaaaaaaaaaaaa" }),
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|aaaaaaaaaaaaaaaa"
+      );
+      // Not part of the sid: identity stays a function of state. Two bodies differing only
+      // in their claimed origin are ONE entry, so ancestry cannot be relabelled after the
+      // fact by re-sending the same result.
+      const idArgs = ["0001", "https://example.com/r", 0.42, mkKey().pub, "-"];
+      assert.equal(sg.solutionId(...idArgs), sg.solutionId(...idArgs), "solutionId is not deterministic");
+      assert.throws(
+        () => sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "m", note: "", replaces: "-", builds_on: "nothex" }),
+        (e) => e.code === 400 && /builds_on/.test(e.message),
+        "a malformed builds_on must be refused, naming builds_on and not replaces"
       );
       assert.equal(
         sg.payload("verification", {
@@ -2525,6 +2544,55 @@ if (gate.server)
       is(bad, 400, "a trailing slash has to be refused, not fixed");
       assert.match(bad.text, /subject/, "the refusal has to name subject, not repo");
       assert.match(bad.text, new RegExp(url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the 400 has to hand back the canonical form");
+    });
+
+    // Lineage. The rule that is NOT here is the point of the test: a parent that has since
+    // been superseded is tolerated offline. The server overwrites a replaced entry in place,
+    // so the sid somebody legitimately built on stops existing the moment its author
+    // corrects their own result.
+    // Verified by mutation, and the result was sharper than "--check goes red later": every
+    // write passes through build.mjs BEFORE the commit (invariant 2), so with a dangling
+    // parent treated as invalid the CORRECTION ITSELF comes back 422. The registry would
+    // quietly freeze every entry that has a child - once somebody builds on your result you
+    // could never fix it again - and the message would be about a field you did not send.
+    test("builds_on: checked at the write, tolerated at the read once the parent is superseded", async () => {
+      const dir = newTree("lineage");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "Lineage problem" });
+      const kA = mkKey(), kB = mkKey();
+
+      const a = await post(srv, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/a", score: 0.40 }));
+      is(a, 201, "the first attempt");
+      const sidA = JSON.parse(a.text).sid;
+
+      // Unknown parent is a 404 and not a silent accept: lineage pointing at nothing is
+      // worse than no lineage, because it reads as provenance.
+      is(await post(srv, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/x", score: 0.1, builds_on: "0123456789abcdef" })), 404, "a parent that does not exist");
+
+      // Building on ANOTHER key's entry is the entire feature, not an edge case.
+      const b = await post(srv, "solution", solBody(kB, { problem: P.id, repo: "https://example.com/b", score: 0.45, builds_on: sidA }));
+      is(b, 201, "an attempt that continues somebody else's");
+      const sidB = JSON.parse(b.text).sid;
+      assert.notEqual(sidB, sidA);
+
+      // Self-parent, computed by the submitter who can work out their own sid.
+      const selfSid = sg.solutionId(P.id, "https://example.com/self", 0.2, mkKey().pub, "-");
+      const kS = mkKey();
+      const selfOwn = sg.solutionId(P.id, "https://example.com/self", 0.2, kS.pub, "-");
+      is(await post(srv, "solution", solBody(kS, { problem: P.id, repo: "https://example.com/self", score: 0.2, builds_on: selfOwn })), 400, "an entry naming itself as its own origin");
+      assert.ok(selfSid !== selfOwn, "sid has to depend on the key, or the case above is not what it claims");
+
+      // Now the correction that used to be the trap: A's author replaces A, so sidA is
+      // gone from the array while B still names it.
+      const a2 = await post(srv, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/a", score: 0.41, replaces: sidA }));
+      is(a2, 200, "the author corrects their own result");
+      const rec = JSON.parse(readFileSync(join(dir, "problems", readdirSync(join(dir, "problems")).find((f) => f.startsWith(P.id))), "utf8"));
+      assert.ok(!rec.solutions.some((x) => x.sid === sidA), "the replaced entry is still there, so this test proves nothing");
+      assert.equal(rec.solutions.find((x) => x.sid === sidB).builds_on, sidA, "B stopped naming its origin");
+
+      const r = build(dir, "--check");
+      assert.equal(r.code, 0, `a superseded origin took --check down: ${(r.out + r.err).slice(0, 400)}`);
     });
 
     test("run from the wrong directory it says what is wrong (D10)", () => {

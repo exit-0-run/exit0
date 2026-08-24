@@ -356,6 +356,33 @@ for (const { path, p } of loaded) {
     }
   }
 
+  // Lineage, offline. THREE rules, and the one that is deliberately absent matters as much
+  // as the three: a parent that is not in the array is NOT an error. A replaced entry is
+  // overwritten in place by the server, so the sid a submitter legitimately built on stops
+  // existing the moment its author corrects their own result. Treating that as invalid
+  // would turn one stranger's correction into a permanently red --check for every clone,
+  // which is the same shape of fault as a title that blew the README markers apart.
+  // A dangling parent renders as an origin whose entry has since been superseded, and that
+  // is the truth: the code it came from was real when it was taken.
+  {
+    const bySid = new Map(p.solutions.map((s) => [s.sid, s]));
+    p.solutions.forEach((s, i) => {
+      const at = `solutions[${i}]`;
+      const bo = s.builds_on;
+      if (bo === undefined) return err(`${at}: builds_on is missing ("-" when the attempt started from scratch)`);
+      if (bo !== "-" && !/^[0-9a-f]{16}$/.test(bo)) return err(`${at}: builds_on must be "-" or 16 hex characters`);
+      if (bo === s.sid) return err(`${at}: builds_on names the entry itself`);
+      const seen = new Set([s.sid]);
+      let cur = bo === "-" ? null : bySid.get(bo);
+      for (let d = 0; cur && d < 64; d++) {
+        if (seen.has(cur.sid)) return err(`${at}: builds_on closes a loop at ${cur.sid}`);
+        seen.add(cur.sid);
+        cur = cur.builds_on && cur.builds_on !== "-" ? bySid.get(cur.builds_on) ?? null : null;
+      }
+      if (cur) err(`${at}: builds_on chain is deeper than 64`);
+    });
+  }
+
   p.solutions.forEach((s, i) => {
     const at = `solutions[${i}]`;
     sameField(canonUrl, s.repo, `${at}.repo`, MAXLEN.repo, err);
@@ -373,7 +400,7 @@ for (const { path, p } of loaded) {
     }
     let smsg = null;
     try {
-      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note, replaces: s.replaces });
+      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note, replaces: s.replaces, builds_on: s.builds_on });
     } catch (e) {
       err(`${at}: ${e.message}`);
     }
@@ -443,10 +470,10 @@ const ordered = (o, keys) => {
 };
 
 const shape = (p) => {
-  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "acceptance", "opened_by", "opened_at", "key", "sig", "solutions"]);
+  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "opened_by", "opened_at", "key", "sig", "solutions"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
-    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
+    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
     sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"]));
     return sol;
   });

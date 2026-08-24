@@ -64,6 +64,21 @@
               "at": "2026-08-24"
             }
           ]
+        },
+        {
+          "sid": "28d056072428ab0c",
+          "repo": "https://example.com/acceptance-1787557547567",
+          "author": "0647f0efeecf",
+          "key": "Syte9EFRwYfVUaGULWNjSLRYCo8dsxfvrXPv2vhYBV0=",
+          "sig": "c70yvqGuSgS4d2bR4KtNDgxVt/ZjGESFG2r7mgQB8QMRbg9XGK3sttXxYNoLH+KWwMrtOkAjCMjaDChe9teCBw==",
+          "model": "acceptance",
+          "score": 0.31,
+          "replaces": "-",
+          "at": "2026-08-24",
+          "verified": false,
+          "disputed": false,
+          "settled": false,
+          "verifications": []
         }
       ]
     },

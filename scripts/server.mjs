@@ -1067,6 +1067,12 @@ const listLine = (p) => {
 
 // One problem in full. This is where `how` lives: the index gives you the line, this
 // gives you the command, so the front door stays a constant size.
+// An address a verifier can act on. A solution hosted as a ref shares its repo URL with
+// every other attempt in that repository, so printing the repo alone sends them to clone
+// the default branch and find nothing. The output of "find one" has to paste into "run
+// it", or the two halves are not the same instruction.
+const where = (s) => (s.ref ? `${s.repo} ${s.ref}` : s.repo);
+
 const renderProblem = (p) => {
   const L = [];
   const sols = solsOf(p);
@@ -1084,7 +1090,7 @@ const renderProblem = (p) => {
   L.push("");
   L.push(`solutions: ${sols.length} submitted, ${sols.filter((x) => x.verified).length} verified`);
   for (const s of [...sols].sort(solCmp(p)))
-    L.push(`  ${s.verified ? "OK" : "??"}  ${s.sid}  ${s.score}  ${s.repo}  (${s.author}${s.verified_by ? ` <- ${s.verified_by}` : ""})${s.disputed ? "  DISPUTED" : ""}`);
+    L.push(`  ${s.verified ? "OK" : "??"}  ${s.sid}  ${s.score}  ${where(s)}  (${s.author}${s.verified_by ? ` <- ${s.verified_by}` : ""})${s.disputed ? "  DISPUTED" : ""}`);
 
   // Lineage, and only when somebody actually continued somebody. A tree of one line per
   // root is noise; a tree with a real edge in it is the difference between a scoreboard
@@ -1103,7 +1109,7 @@ const renderProblem = (p) => {
       kids.get(par.sid).push(s);
     }
     const line = (s, d) =>
-      `  ${"  ".repeat(d)}${d ? "\u2514 " : ""}${s.verified ? "OK" : "??"}  ${s.sid}  ${s.score}  ${s.repo}` +
+      `  ${"  ".repeat(d)}${d ? "\u2514 " : ""}${s.verified ? "OK" : "??"}  ${s.sid}  ${s.score}  ${where(s)}` +
       (s.builds_on && s.builds_on !== "-" && !bySid.has(s.builds_on) ? `  (from ${s.builds_on}, since superseded)` : "");
     L.push("");
     L.push("lineage: what was built on what");
@@ -1244,7 +1250,7 @@ const renderQueue = (idx, q) => {
     L.push("Open problems to solve: GET /?status=open");
     return L.join("\n") + "\n";
   }
-  L.push("what        problem  solution          score       needs             repo");
+  L.push("what        problem  solution          score       needs             where to get it");
   for (const { p, s, why } of page)
     L.push(
       [
@@ -1253,7 +1259,7 @@ const renderQueue = (idx, q) => {
         s.sid.padEnd(17),
         String(s.score).padEnd(11),
         (needsOf(p).join(",") || "none").padEnd(17),
-        s.repo,
+        where(s),
       ].join(" ")
     );
   if (offset + page.length < rows.length || offset)
@@ -1546,7 +1552,7 @@ const readRoute = (req, res, path, qs) => {
         limit,
         offset,
         work: page.map(({ p, s, why }) => ({
-          need: why, problem: p.id, solution: s.sid, score: s.score, repo: s.repo,
+          need: why, problem: p.id, solution: s.sid, score: s.score, repo: s.repo, ref: s.ref ?? null,
           needs: needsOf(p), tolerance: p.acceptance.tolerance ?? 0.02,
           how: `/api/problems/${p.id}`,
         })),

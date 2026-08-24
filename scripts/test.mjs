@@ -2763,6 +2763,16 @@ if (gate.server)
       is(wrong, 400, "a ref naming a different problem");
 
       assert.equal(build(dir, "--check").code, 0, "a registry holding hosted attempts does not validate");
+
+      // The address has to reach the verifier. A ref stored and signed but not printed
+      // where somebody looks for work sends them to clone the default branch and find
+      // nothing: the output of "find one" must paste into "run it".
+      const w = (await hit(srv, { path: "/work" })).text;
+      assert.match(w, new RegExp(`refs/attempts/${P.id}/${me}/v1`), "/work prints the repo without the ref");
+      const wj = JSON.parse((await hit(srv, { path: "/api/work" })).text);
+      assert.ok(wj.work.some((x) => x.ref && x.ref.endsWith("/v1")), "/api/work does not carry ref");
+      const page = (await hit(srv, { path: `/${P.id}` })).text;
+      assert.match(page, new RegExp(`refs/attempts/${P.id}/${me}/v1`), "the problem page prints the repo without the ref");
     });
 
     test("run from the wrong directory it says what is wrong (D10)", () => {

@@ -734,14 +734,26 @@ const solution = (b) => {
   const path = problemFile(b.problem);
   const p = readProblem(path);
   notDead(p);
-  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "", replaces: b.replaces ?? "-", builds_on: b.builds_on ?? "-" };
+  const f = { problem: p.id, repo: b.repo, score: b.score, model: b.model ?? "?", note: b.note ?? "", replaces: b.replaces ?? "-", builds_on: b.builds_on ?? "-", ref: b.ref ?? "-" };
   const msg = payload("solution", f);
   verifySig(b, msg, f);
 
   const author = fingerprint(b.key);
-  const sid = solutionId(p.id, f.repo, f.score, b.key, f.replaces);
+  // The shape of the ref was checked while building the payload. What is checked here is
+  // the CLAIM inside it: the problem it names and the fingerprint it sits under. Without
+  // this anybody could file a solution pointing at a ref in somebody else's namespace, and
+  // the namespace would stop meaning "this is mine" the moment it started meaning anything.
+  if (f.ref !== "-") {
+    const seg = f.ref.split("/");
+    if (seg[2] !== p.id) throw bad(400, `ref names problem ${seg[2]}, this submission is for ${p.id}`);
+    if (seg[3] !== author) throw bad(403, "ref sits under another key's fingerprint", { info: { yours: author } });
+  }
+  const sid = solutionId(p.id, f.repo, f.score, b.key, f.replaces, f.ref);
   const sols = Array.isArray(p.solutions) ? p.solutions : [];
-  const mine = sols.findIndex((s) => s.repo === f.repo && keyId(s.key) === keyId(b.key));
+  // The chain is per (problem, repo, ref, key). ref belongs in it because attempts hosted
+  // as refs SHARE one repo URL: without it a second attempt by the same key would look
+  // like a correction of the first and quietly replace it.
+  const mine = sols.findIndex((s) => s.repo === f.repo && (s.ref ?? "-") === f.ref && keyId(s.key) === keyId(b.key));
 
   // builds_on is checked HERE, at write time, against the entries that exist right now.
   // It is deliberately not re-checked offline: a replaced entry is overwritten in place
@@ -774,6 +786,7 @@ const solution = (b) => {
   if (f.note) entry.note = f.note;
   entry.replaces = f.replaces;
   entry.builds_on = bo;
+  if (f.ref !== "-") entry.ref = f.ref;
   entry.at = today();
   entry.verifications = [];
 
@@ -795,7 +808,7 @@ const solution = (b) => {
     throw bad(
       409,
       old
-        ? `under (problem, repo, key) there is now ${old.sid}, sign the submission with "replaces":"${old.sid}"`
+        ? `under (problem, repo, ref, key) there is now ${old.sid}, sign the submission with "replaces":"${old.sid}"`
         : 'nothing to replace, sign the submission with "replaces":"-"',
       { info: { replaces: stan, ...(old ? { sid: old.sid, score: old.score } : {}) } }
     );

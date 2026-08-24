@@ -298,10 +298,13 @@ for (const { path, file, p } of loaded) {
     else seenSid.add(s.sid);
     let dedup = null;
     try {
-      dedup = `${canonUrl(s.repo)}|${keyId(s.key)}`;
+      // (repo, ref, key), the same key the server chains on. Attempts hosted as refs share
+      // one repo URL by design, so a dedup that stops at (repo, key) would call the second
+      // one a duplicate and refuse a write the server had every reason to accept.
+      dedup = `${canonUrl(s.repo)}|${s.ref ?? "-"}|${keyId(s.key)}`;
     } catch {}
     if (dedup !== null) {
-      if (seenDedup.has(dedup)) err(`solutions[${i}]: the same repo from the same key occurs twice. The write should be a replacement, not an addition`);
+      if (seenDedup.has(dedup)) err(`solutions[${i}]: the same (repo, ref) from the same key occurs twice. The write should be a replacement, not an addition`);
       else seenDedup.add(dedup);
     }
     const seenVid = new Set();
@@ -432,14 +435,14 @@ for (const { path, p } of loaded) {
     else {
       if (fingerprint(s.key) !== s.author) err(`${at}: author does not match the key fingerprint`);
       try {
-        if (solutionId(p.id, s.repo, s.score, s.key, s.replaces) !== s.sid) err(`${at}: sid does not match the content of the entry`);
+        if (solutionId(p.id, s.repo, s.score, s.key, s.replaces, s.ref) !== s.sid) err(`${at}: sid does not match the content of the entry`);
       } catch (e) {
         err(`${at}: cannot compute the sid (${e.message})`);
       }
     }
     let smsg = null;
     try {
-      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note, replaces: s.replaces, builds_on: s.builds_on });
+      smsg = payload("solution", { problem: p.id, repo: s.repo, score: s.score, model: s.model, note: s.note, replaces: s.replaces, builds_on: s.builds_on, ref: s.ref });
     } catch (e) {
       err(`${at}: ${e.message}`);
     }
@@ -512,7 +515,7 @@ const shape = (p) => {
   const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
-    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
+    const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "ref", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
     sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"]));
     return sol;
   });

@@ -246,7 +246,7 @@ const solBody = (k, o) =>
   signBody(k, "solution", {
     problem: o.problem, repo: o.repo, score: o.score,
     model: o.model ?? "?", note: o.note ?? "", replaces: o.replaces ?? "-",
-    builds_on: o.builds_on ?? "-",
+    builds_on: o.builds_on ?? "-", ref: o.ref ?? "-",
   });
 
 // tolerance is SIGNED but not sent: the server takes it from the problem. A body that
@@ -413,11 +413,11 @@ if (gate.sign)
     test("payload: exact literals for the three actions", () => {
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "-" }),
-        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-|-"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|-|-|-"
       );
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef" }),
-        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|-"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|-|-"
       );
       // replaces and builds_on share a grammar and share nothing else. Pinned together in
       // one literal precisely because the failure mode of this pair is reading one as the
@@ -425,12 +425,33 @@ if (gate.sign)
       // where its code came from and decides nothing.
       assert.equal(
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef", builds_on: "aaaaaaaaaaaaaaaa" }),
-        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|aaaaaaaaaaaaaaaa"
+        "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|aaaaaaaaaaaaaaaa|-"
+      );
+      // An attempt that lives as a ref inside a repository rather than as one of its own.
+      assert.equal(
+        sg.payload("solution", { problem: "0014", repo: "https://github.com/o/r", score: 1, model: "m", note: "", replaces: "-", builds_on: "-", ref: "refs/attempts/0014/abc123def456/semver-scan" }),
+        "exit0/v2|solution|0014|22:https://github.com/o/r|1|1:m|0:|-|-|43:refs/attempts/0014/abc123def456/semver-scan"
+      );
+      // The namespace is only worth something if its shape is enforced. refs/heads is the
+      // one that matters: a ref grammar that accepts it turns "publish an attempt" into
+      // "write to the branch the registry serves".
+      for (const bad of ["refs/heads/main", "refs/attempts/0014/ABCDEF123456/x", "refs/attempts/14/abc123def456/x", "refs/attempts/0014/abc123def456/", "refs/attempts/0014/abc123def456/../x"])
+        assert.throws(
+          () => sg.payload("solution", { problem: "0014", repo: "https://github.com/o/r", score: 1, model: "m", note: "", replaces: "-", builds_on: "-", ref: bad }),
+          (e) => e.code === 400 && /ref/.test(e.message),
+          `a ref shaped ${JSON.stringify(bad)} was accepted`
+        );
+      // In the sid, not only in the payload: two refs under one repo URL are two chains.
+      const K = mkKey().pub;
+      assert.notEqual(
+        sg.solutionId("0014", "https://github.com/o/r", 1, K, "-", "refs/attempts/0014/abc123def456/a"),
+        sg.solutionId("0014", "https://github.com/o/r", 1, K, "-", "refs/attempts/0014/abc123def456/b"),
+        "two attempts differing only by ref share a sid, so the second would replace the first"
       );
       // Not part of the sid: identity stays a function of state. Two bodies differing only
       // in their claimed origin are ONE entry, so ancestry cannot be relabelled after the
       // fact by re-sending the same result.
-      const idArgs = ["0001", "https://example.com/r", 0.42, mkKey().pub, "-"];
+      const idArgs = ["0001", "https://example.com/r", 0.42, mkKey().pub, "-", "-"];
       assert.equal(sg.solutionId(...idArgs), sg.solutionId(...idArgs), "solutionId is not deterministic");
       assert.throws(
         () => sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "m", note: "", replaces: "-", builds_on: "nothex" }),
@@ -2581,9 +2602,9 @@ if (gate.server)
       assert.notEqual(sidB, sidA);
 
       // Self-parent, computed by the submitter who can work out their own sid.
-      const selfSid = sg.solutionId(P.id, "https://example.com/self", 0.2, mkKey().pub, "-");
+      const selfSid = sg.solutionId(P.id, "https://example.com/self", 0.2, mkKey().pub, "-", "-");
       const kS = mkKey();
-      const selfOwn = sg.solutionId(P.id, "https://example.com/self", 0.2, kS.pub, "-");
+      const selfOwn = sg.solutionId(P.id, "https://example.com/self", 0.2, kS.pub, "-", "-");
       is(await post(srv, "solution", solBody(kS, { problem: P.id, repo: "https://example.com/self", score: 0.2, builds_on: selfOwn })), 400, "an entry naming itself as its own origin");
       assert.ok(selfSid !== selfOwn, "sid has to depend on the key, or the case above is not what it claims");
 
@@ -2677,6 +2698,42 @@ if (gate.server)
       assert.match(page, /lineage: what was built on what/, "the problem page does not show lineage");
       assert.ok(page.indexOf(sidA) < page.lastIndexOf("https://example.com/b"), "the child is not rendered under its parent");
       assert.match(page, new RegExp(`start from ${sidA}`), "the page does not say what to build on");
+    });
+
+    // An attempt that has nowhere of its own to live: it sits as a ref inside a repository
+    // the registry already publishes to. The namespace is only worth something if you can
+    // only write under your own fingerprint, and that is checked here, not assumed.
+    test("ref: an attempt can live inside a repo, under its own fingerprint and nobody else's", async () => {
+      const dir = newTree("attempt-ref");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "Ref problem", higher_is_better: true });
+      const k = mkKey();
+      const me = sg.fingerprint(k.pub);
+      const REPO = "https://github.com/owner/registry";
+
+      const mk = (slug, extra = {}) => solBody(k, { problem: P.id, repo: REPO, score: 1, ref: `refs/attempts/${P.id}/${me}/${slug}`, ...extra });
+
+      is(await post(srv, "solution", mk("v1")), 201, "an attempt hosted as a ref");
+
+      // The same repo URL again, a different ref. Two attempts, not a correction: if ref
+      // were outside the chain key the second would silently replace the first.
+      const two = await post(srv, "solution", mk("v2", { score: 2 }));
+      is(two, 201, "a second ref under the same repo has to be its own entry");
+      const rec = JSON.parse(readFileSync(join(dir, "problems", readdirSync(join(dir, "problems")).find((f) => f.startsWith(P.id))), "utf8"));
+      assert.equal(rec.solutions.length, 2, "two refs under one repo collapsed into one entry");
+      assert.equal(new Set(rec.solutions.map((x) => x.ref)).size, 2);
+
+      // Somebody else's namespace.
+      const other = mkKey();
+      const stolen = await post(srv, "solution", solBody(other, { problem: P.id, repo: REPO, score: 3, ref: `refs/attempts/${P.id}/${me}/mine` }));
+      is(stolen, 403, "a ref claimed under another key's fingerprint");
+
+      // Another problem's namespace.
+      const wrong = await post(srv, "solution", solBody(k, { problem: P.id, repo: REPO, score: 4, ref: `refs/attempts/9999/${me}/x` }));
+      is(wrong, 400, "a ref naming a different problem");
+
+      assert.equal(build(dir, "--check").code, 0, "a registry holding hosted attempts does not validate");
     });
 
     test("run from the wrong directory it says what is wrong (D10)", () => {

@@ -18,7 +18,7 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");
 
 // Budgets are in utf-8 BYTES, not characters.
-export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, output: 32768 };
+export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, ref: 80, output: 32768 };
 
 export const bad = (code, msg, extra) => {
   const e = new Error(msg);
@@ -166,6 +166,19 @@ const boolT = (v, l) => {
 const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
 // Absent is "-", present is length-prefixed like every other string, so the two can never
 // be read as each other: a present value always carries its "N:" and "-" is not a URL.
+// An attempt can live as a ref inside a repository instead of as a repository of its own.
+// The shape is fixed and checked, not just carried: the fingerprint segment is what makes
+// "you can only claim a ref under your own key" checkable at all, and a free-form string
+// would make the whole namespace a place to write anything.
+export const REF_RE = /^refs\/attempts\/[0-9]{4}\/[0-9a-f]{12}\/[a-z0-9][a-z0-9._-]{0,39}$/;
+const refT = (v) => {
+  if (v === undefined || v === null || v === "" || v === "-") return "-";
+  if (typeof v !== "string") throw bad(400, "ref must be a string");
+  if (bytes(v) > MAXLEN.ref) throw bad(400, `ref: max ${MAXLEN.ref} bytes`);
+  if (!REF_RE.test(v)) throw bad(400, "ref: refs/attempts/<4 digits>/<12 hex>/<slug>, or - when the repo is a repo of its own");
+  return F(v);
+};
+
 const optUrl = (v, label) => (v === undefined || v === null || v === "" ? "-" : F(assertCanon(canonUrl, v, label, MAXLEN.repo)));
 // The state this submission replaces: "-" when nothing sits under (problem, repo, key)
 // yet, or the sid of the entry that sat there at signing time. Without this
@@ -253,6 +266,11 @@ export const payload = (action, f) => {
       // bodies differing only in builds_on are one entry, and relabelling your own
       // ancestry after the fact is not something this registry offers.
       replacesT(f.builds_on, "builds_on"),
+      // Where the code IS, when it is not a repository of its own: a ref inside one. The
+      // pair (repo, ref) is the address, so both are signed and both are part of the
+      // chain. Without this a submitter with nowhere to publish has to either turn away
+      // or point at somebody else's host.
+      refT(f.ref),
     ].join("|");
   // tolerance is signed by the VERIFIER, not only by the problem author. A verdict
   // is meaningless without the band it was judged under, and a problem opened by
@@ -304,10 +322,13 @@ export const payload = (action, f) => {
 // With the link the state cannot repeat: a repeat would need a sha256 collision,
 // because "-" occurs exactly once (a record never disappears) and every next
 // link commits to the previous one.
-export const solutionId = (problemId, repo, score, key, replaces) =>
+// ref is in here, not only in the payload. Two attempts by one key can now share a repo
+// URL and differ only by ref (that is the whole point of hosting them as refs), so leaving
+// it out would give them one sid and collapse two independent chains into one.
+export const solutionId = (problemId, repo, score, key, replaces, ref) =>
   sha(
     Buffer.from(
-      [PREFIX, "sid", pid(problemId), F(canonUrl(repo)), numToken(score), keyId(key), replacesT(replaces)].join("|"),
+      [PREFIX, "sid", pid(problemId), F(canonUrl(repo)), numToken(score), keyId(key), replacesT(replaces), refT(ref)].join("|"),
       "utf8"
     )
   ).slice(0, 16);

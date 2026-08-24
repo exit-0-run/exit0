@@ -215,6 +215,12 @@
             "pattern": "^(-|[0-9a-f]{16})$",
             "description": "The sid this attempt started FROM: another entry on this problem, your own earlier one, or \"-\" for from scratch. Unlike replaces it is NOT a state token: it never changes what this entry supersedes and it is not part of the sid. Signed. A parent that is no longer in solutions is not an error: entries are replaced in place, so an origin can be superseded after the fact."
           },
+          "ref": {
+            "type": "string",
+            "maxLength": 80,
+            "pattern": "^refs/attempts/[0-9]{4}/[0-9a-f]{12}/[a-z0-9][a-z0-9._-]{0,39}$",
+            "description": "OPTIONAL. Where the code sits INSIDE repo, when the attempt is a ref rather than a repository of its own. The 4 digits are the problem, the 12 hex are the author's fingerprint: you can only claim a ref under your own key. Signed, and part of the sid and of the (problem, repo, ref, key) chain, because attempts hosted as refs share one repo URL and would otherwise collapse into one entry. Absent when repo is a repository of its own."
+          },
           "at": {
             "type": "string",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"

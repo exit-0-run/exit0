@@ -13,6 +13,9 @@ SVC_GROUP="${SVC_GROUP:-$SVC_USER}"
 PORT="${PORT:-8080}"
 UNIT=exit0.service
 WATCH=exit0-watch
+MIRROR_UNIT=exit0-mirror
+MIRROR_KEY="${MIRROR_KEY:-/etc/exit0/mirror_key}"
+MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0-registry.git}"
 
 die() { echo "install: $*" >&2; exit 1; }
 trap 'echo "install: ABORTED. deploy/RUNBOOK.md, section Failures. The service may be stopped." >&2' ERR
@@ -28,7 +31,8 @@ NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
 # --- 2. complete source; a copy missing any of these files is a dead service ---
 for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore .gitattributes \
          problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md \
-         deploy/watch.sh deploy/backup.sh "deploy/$WATCH.service" "deploy/$WATCH.timer"; do
+         deploy/watch.sh deploy/backup.sh "deploy/$WATCH.service" "deploy/$WATCH.timer" \
+         deploy/mirror.sh "deploy/$MIRROR_UNIT.service" "deploy/$MIRROR_UNIT.timer"; do
   [ -e "$SRC/$f" ] || die "$f missing in $SRC"
 done
 
@@ -152,9 +156,33 @@ if [ "${WATCH_ENABLE:-1}" = "1" ]; then
   mv "$UNIT_DIR/.$WATCH.timer.new" "$UNIT_DIR/$WATCH.timer"
 fi
 
+# --- 9c. public mirror ---
+# Default OFF unless a key is already there. A timer that fails every ten minutes
+# because a credential was never created teaches the operator to ignore its alerts,
+# and this host already has a watchdog whose alerts have to keep meaning something.
+MIRROR_ENABLE="${MIRROR_ENABLE:-$([ -r "$MIRROR_KEY" ] && echo 1 || echo 0)}"
+if [ "$MIRROR_ENABLE" = "1" ]; then
+  [ -r "$MIRROR_KEY" ] || die "MIRROR_ENABLE=1 but no readable key at $MIRROR_KEY"
+  install -d -m 700 /var/lib/exit0
+  sed -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
+      -e "s#^ExecStart=.*#ExecStart=/bin/sh $DIR/deploy/mirror.sh#" \
+      -e "s#^Environment=EXIT0_DIR=.*#Environment=EXIT0_DIR=$DIR#" \
+      -e "s#^Environment=EXIT0_MIRROR=.*#Environment=EXIT0_MIRROR=$MIRROR_URL#" \
+      -e "s#^Environment=EXIT0_MIRROR_KEY=.*#Environment=EXIT0_MIRROR_KEY=$MIRROR_KEY#" \
+      -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
+      "$SRC/deploy/$MIRROR_UNIT.service" > "$UNIT_DIR/.$MIRROR_UNIT.service.new"
+  chmod 644 "$UNIT_DIR/.$MIRROR_UNIT.service.new"
+  mv "$UNIT_DIR/.$MIRROR_UNIT.service.new" "$UNIT_DIR/$MIRROR_UNIT.service"
+  sed -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
+      "$SRC/deploy/$MIRROR_UNIT.timer" > "$UNIT_DIR/.$MIRROR_UNIT.timer.new"
+  chmod 644 "$UNIT_DIR/.$MIRROR_UNIT.timer.new"
+  mv "$UNIT_DIR/.$MIRROR_UNIT.timer.new" "$UNIT_DIR/$MIRROR_UNIT.timer"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "$UNIT"
 [ "${WATCH_ENABLE:-1}" = "1" ] && systemctl enable --now "$WATCH.timer"
+[ "$MIRROR_ENABLE" = "1" ] && systemctl enable --now "$MIRROR_UNIT.timer"
 
 # --- 10. do not say "up" before it answers ---
 "$NODE" -e '
@@ -188,4 +216,10 @@ echo "  pulse:  curl -s localhost:$PORT/api/pulse"
 echo "  TLS:    cp $DIR/deploy/Caddyfile /etc/caddy/Caddyfile, replace the domain, systemctl reload caddy"
 echo "  watchdog: systemctl list-timers $WATCH.timer   journalctl -u $WATCH -n 20"
 echo "  backup: run deploy/backup.sh FROM ANOTHER MACHINE (it needs a second disk to mean anything)"
+if [ "$MIRROR_ENABLE" = "1" ]; then
+  echo "  mirror: systemctl list-timers $MIRROR_UNIT.timer   journalctl -u $MIRROR_UNIT -n 20"
+else
+  echo "  mirror: OFF. ssh-keygen -t ed25519 -N '' -C exit0-mirror -f $MIRROR_KEY, add the .pub"
+  echo "          as a deploy key WITH WRITE ACCESS on $MIRROR_URL, then run this again."
+fi
 echo "  backup, update, failures: $DIR/deploy/RUNBOOK.md"

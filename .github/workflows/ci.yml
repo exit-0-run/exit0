@@ -3,9 +3,10 @@
 # against a server started right here.
 name: ci
 
+# Every branch, not just main: a gate nobody has seen fail is a decoration, and the
+# only way to see it fail is to push a deliberately broken branch at it.
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:

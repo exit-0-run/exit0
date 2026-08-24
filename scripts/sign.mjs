@@ -497,9 +497,15 @@ const USAGE = [
   "  node scripts/sign.mjs keygen [file.pem] [--force]",
   "  node scripts/sign.mjs whoami [file.pem]",
   "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem> <json|@file|->",
+  "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
   "",
   "The third argument of sign is EXACTLY the body you are about to POST.",
   "stdout carries the complete body with the key and sig fields; stderr carries commentary only.",
+  "",
+  "claim is for the common case the rest of this CLI makes awkward: you already HAVE a",
+  "result and you want somebody to check it. It opens the problem and files your solution",
+  "under it, in that order, because the problem id is assigned by the server and your",
+  "solution signature covers it. Two signed writes, one command.",
 ].join("\n");
 
 const readArg = (a) => {
@@ -511,8 +517,11 @@ const readArg = (a) => {
 // Canonicalization on the client side: the server never fixes anything, so the
 // CLI does it and says what it changed.
 const canonBody = (action, b, changed) => {
+  // Compared by VALUE, not by reference: `needs` is an array, so !== was always true
+  // and the CLI reported "fixed needs: [] -> []" on every run. A tool that cries wolf
+  // about a change it did not make gets ignored when it reports a real one.
   const fix = (label, before, after) => {
-    if (before !== undefined && before !== after) changed.push([label, before, after]);
+    if (before !== undefined && JSON.stringify(before) !== JSON.stringify(after)) changed.push([label, before, after]);
     return after;
   };
   if (action === "solution") {
@@ -611,13 +620,81 @@ const cli = (argv) => {
     return;
   }
 
+  if (cmd === "claim") {
+    const [pem, base, body] = rest;
+    if (!pem || !base || body === undefined) {
+      console.error(USAGE);
+      process.exit(1);
+    }
+    return claim(pem, base.replace(/\/+$/, ""), readArg(body));
+  }
+
   console.error(USAGE);
   process.exit(1);
 };
 
+// One command, two signed writes. It cannot be one write: the problem id is assigned by
+// the server and the solution payload covers it, so the second signature does not exist
+// until the first write has landed. Nothing here is signed on the server side.
+const claim = async (pem, base, raw) => {
+  const priv = createPrivateKey(readFileSync(pem, "utf8"));
+  const pub = pubToB64(createPublicKey(priv));
+  let x;
+  try {
+    x = JSON.parse(raw);
+  } catch (e) {
+    throw bad(400, `the third argument is not valid JSON: ${e.message}`);
+  }
+  if (!x.repo || x.score === undefined) throw bad(400, "a claim needs repo and score: it is a result looking for a check");
+
+  const send = async (action, out) => {
+    const msg = payload(action, out);
+    const body = { ...out, key: pub, sig: sign(null, Buffer.from(msg, "utf8"), priv).toString("base64") };
+    const res = await fetch(`${base}/api/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let j = null;
+    try {
+      j = JSON.parse(text);
+    } catch {}
+    if (res.status >= 300) {
+      console.error(`${action}: HTTP ${res.status}`);
+      console.error(text.slice(0, 800));
+      process.exit(1);
+    }
+    return j;
+  };
+
+  const changed = [];
+  const problemOut = canonBody("problem", x, changed);
+  for (const [label, before, after] of changed)
+    console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  const p = await send("problem", problemOut);
+  console.error(`problem ${p.id} opened by ${p.author}`);
+
+  const solChanged = [];
+  const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-" }, solChanged);
+  for (const [label, before, after] of solChanged)
+    console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+  const sol = await send("solution", solOut);
+
+  console.error(`solution ${sol.sid} filed under ${p.id}`);
+  console.error(`waiting for a stranger: ${base}/work`);
+  console.log(JSON.stringify({ problem: p.id, solution: sol.sid, url: `${base}/${p.id}`, badge: `${base}/${sol.sid}/badge.svg` }, null, 2));
+};
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    cli(process.argv.slice(2));
+    // claim is the only async command, so the CLI returns a promise for it alone.
+    const r = cli(process.argv.slice(2));
+    if (r && typeof r.catch === "function")
+      r.catch((e) => {
+        console.error(`error: ${e.message}`);
+        process.exit(1);
+      });
   } catch (e) {
     console.error(`error: ${e.message}`);
     if (e.canonical !== undefined) console.error(`canonical form: ${JSON.stringify(e.canonical)}`);

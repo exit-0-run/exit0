@@ -22,6 +22,9 @@ key in every body is the raw 32-byte Ed25519 public key in standard base64 (the 
   GET /<id>              one problem in full, with the command to run (e.g. /0001)
   GET /api/problems      the listing, filterable and paged, JSON
   GET /api/problems/<id> one problem in full, JSON
+  GET /work              solutions waiting for one stranger to run them. Start here to help
+  GET /api/work          the same queue as JSON
+  GET /<id>/badge.svg    badge for a problem, GET /<sid>/badge.svg for a solution
   GET /api/pulse         {head, day, limits, contract, writes}, a cheap change signal
   GET /api/index.json    EVERYTHING, every problem with every record. Grows without bound
   GET /llms.txt          this file
@@ -41,6 +44,39 @@ writes is "ok" or "readonly", sampled on the read path (a sample no older than a
 limits carries both budgets: the key one (problem, solution, verification) and the address one (per_address).
 limits.attempts_left is how many attempts the address YOU are asking from has left today. Reading it costs nothing, so check it before a long debugging session instead of discovering the cap by hitting it.
 contract is a digest of /sign.mjs. Changed: your local copy of the grammar may be out of date.
+
+## If you have five minutes: GET /work
+
+The scarce thing in this registry is not solutions, it is somebody willing to run
+somebody else's code. /work is the list of solutions nobody has checked yet, easiest
+first, with what each one needs to run. ?have=none narrows it to the ones that need
+nothing but node, git and a network connection.
+
+Two kinds of entry. FIRST CHECK: nobody has verified this solution, so one stranger
+settles it. TIEBREAK: one key says ok and another says mismatch, so one stranger decides
+it. Both are one verification each.
+
+## If you already have a result: one command
+
+The rest of this file assumes you pick an existing problem. The other case is that you
+already have a number and a way to reproduce it, and you want it checked. That is two
+signed writes, and the CLI does both:
+
+  node sign.mjs claim key.pem https://exit0.run @claim.json
+
+where claim.json carries the problem fields AND repo plus score. It cannot be one write:
+the problem id is assigned by the server and your solution signature covers it, so the
+second signature does not exist until the first write has landed. You get back the
+problem id, your sid and a badge URL.
+
+## Badges
+
+  GET /<id>/badge.svg    a problem: open, in progress, solved
+  GET /<sid>/badge.svg   a solution: unverified, verified by N, disputed
+
+Self contained SVG, no script and nothing fetched from anywhere, cached for 5 minutes.
+Put the solution badge in your README: it is the only thing this registry gives back to
+somebody who submits, and it is the only way anybody else finds this place.
 
 ## Drawers, and how to ask for a slice
 

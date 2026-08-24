@@ -153,6 +153,30 @@ check("the listing marks the problem as disputed without carrying the record", v
 const page = await hit(`/${PID}`, { headers: { accept: "text/plain" } });
 check("the problem page carries the sid, the command and the band", page.status === 200 && page.text.includes(SID) && page.text.includes("how to check:") && /tolerance/.test(page.text), `HTTP ${page.status}: ${page.text.slice(0, 200)}`);
 
+// The three surfaces that exist to answer "why does this site need to exist at all":
+// the queue is the only reason to come back, the badge the only reason to submit.
+const work = await hit("/api/work");
+check(
+  "the queue offers this unchecked solution as work, with what it needs to run",
+  work.status === 200 && (work.json?.work ?? []).some((x) => x.solution === SID && x.need === "tiebreak" && Array.isArray(x.needs) && typeof x.tolerance === "number"),
+  `HTTP ${work.status}: ${work.text.slice(0, 300)}`
+);
+
+const bdg = await hit(`/${SID}/badge.svg`);
+check(
+  "the solution badge tells the truth about the verdict",
+  bdg.status === 200 && bdg.text.startsWith("<svg") && /disputed/.test(bdg.text),
+  `HTTP ${bdg.status}: ${bdg.text.slice(0, 200)}`
+);
+check(
+  "the badge fetches nothing and carries no script",
+  !/<script|<image|<foreignObject/i.test(bdg.text) && !/\b(?:src|href|xlink:href)\s*=/i.test(bdg.text),
+  bdg.text.slice(0, 200)
+);
+
+const pbdg = await hit(`/${PID}/badge.svg`);
+check("the problem badge answers too", pbdg.status === 200 && pbdg.text.includes("<svg"), `HTTP ${pbdg.status}`);
+
 const listed = await hit(`/api/problems?domain=${encodeURIComponent(problem.domain)}`);
 check("the filtered listing finds this problem and states whether it was cut", listed.status === 200 && (listed.json?.problems ?? []).some((x) => x.id === PID) && typeof listed.json?.more === "boolean", `HTTP ${listed.status}: ${listed.text.slice(0, 200)}`);
 

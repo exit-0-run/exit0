@@ -17,6 +17,9 @@ set -eu
 
 SRC=${1:-${EXIT0_SRC:-ssh://root@exit0.run/srv/exit0}}
 DST=${2:-${EXIT0_BACKUP:-$HOME/backups/exit0.git}}
+# Optional public mirror. Pushed only AFTER the copy has been restored and validated
+# below, so a broken registry never gets republished as the thing to clone.
+MIRROR=${EXIT0_MIRROR:-git@github.com:exit0-run/exit0-registry.git}
 say() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { say "FAILED: $*"; exit 1; }
 
@@ -54,3 +57,16 @@ git -C "$DST" archive HEAD | tar -x -C "$TMP" || die "cannot restore the copy"
 PROBLEMS=$(ls "$TMP/problems"/[0-9]*.json 2>/dev/null | wc -l | tr -d ' ')
 EVIDENCE=$(ls "$TMP/problems/evidence" 2>/dev/null | wc -l | tr -d ' ')
 say "OK  branch=$BRANCH  head=$HEAD_SHA  commits=$COMMITS  problems=$PROBLEMS  evidence=$EVIDENCE  ->  $DST"
+
+# The public mirror is what makes the registry's own promise true: the evidence bytes
+# behind every `verified` are not served over HTTP at all, so without somewhere to
+# clone from, nobody outside this machine can check a verdict. Set EXIT0_MIRROR=off to
+# skip it.
+if [ "$MIRROR" != "off" ] && [ -n "$MIRROR" ]; then
+  if git -C "$DST" push --mirror "$MIRROR" >/dev/null 2>&1; then
+    say "mirror pushed -> $MIRROR"
+  else
+    # Not fatal: the backup itself succeeded, and that is the part that cannot wait.
+    say "WARNING mirror push failed -> $MIRROR (backup itself is fine). Check the key: ssh -T git@github.com"
+  fi
+fi

@@ -1574,6 +1574,75 @@ if (gate.server)
       assert.equal(jeden.json?.id, "0001", "/api/problems/<id> ma oddac rekord w JSON");
     });
 
+    // Trzy powierzchnie dodane po pytaniu "po co ta strona": odznaka (powod, zeby
+    // cokolwiek zglosic), kolejka (jedyny powod, zeby wrocic) i claim (zbicie bariery
+    // wejscia z "napisz dobrze postawiony problem" do "mam liczbe i komende").
+    test("kolejka /work pokazuje rozwiazania czekajace na obcego", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod kolejke", needs: [] });
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/kolejka", score: 0.42 }));
+      is(s, 201, "rozwiazanie do kolejki");
+
+      const w = await hit(SRV, { path: "/work" });
+      is(w, 200, "GET /work");
+      assert.match(w.text, new RegExp(`FIRST CHECK.*${s.json.sid}`), "swieze rozwiazanie nie trafilo do kolejki");
+      assert.match(w.text, /POST \/api\/verification/, "kolejka bez komendy do wykonania jest tablica ogloszen, nie kolejka");
+
+      const j = await hit(SRV, { path: "/api/work" });
+      is(j, 200, "GET /api/work");
+      const wpis = (j.json?.work ?? []).find((x) => x.solution === s.json.sid);
+      assert.ok(wpis, "brak wpisu w /api/work");
+      assert.equal(wpis.need, "first");
+      assert.equal(wpis.tolerance, P.fields.tolerance, "bez tolerancji weryfikator nie ma czego podpisac");
+      assert.deepEqual(wpis.needs, [], "kolejka musi mowic, czego wymaga uruchomienie");
+
+      // Po weryfikacji ma zniknac: kolejka to popyt, nie archiwum.
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "kolejka ok\n" })), 201, "weryfikacja");
+      const po = await hit(SRV, { path: "/api/work" });
+      assert.ok(!(po.json?.work ?? []).some((x) => x.solution === s.json.sid), "zweryfikowane rozwiazanie zostalo w kolejce");
+    });
+
+    test("kolejka /work: spor wraca jako TIEBREAK, filtr have dziala", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod tiebreak", needs: ["gpu"] });
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/tiebreak", score: 0.42 }));
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "t1\n" })), 201, "ok");
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.9, verdict: "mismatch", output: "t2\n" })), 201, "mismatch");
+
+      const j = await hit(SRV, { path: "/api/work" });
+      const wpis = (j.json?.work ?? []).find((x) => x.solution === s.json.sid);
+      assert.ok(wpis, "nierozstrzygniety spor nie trafil do kolejki — a to jest dokladnie ta praca, ktora ktos musi wykonac");
+      assert.equal(wpis.need, "tiebreak");
+
+      const bezNiczego = await hit(SRV, { path: "/api/work?have=none" });
+      assert.ok(!(bezNiczego.json?.work ?? []).some((x) => x.solution === s.json.sid), "have=none oddalo prace wymagajaca gpu");
+      is(await hit(SRV, { path: "/api/work?have=kwant" }), 400, "have spoza zbioru");
+    });
+
+    test("odznaka: SVG bez zasobow z sieci, tresc wyliczona z pol pochodnych", async () => {
+      const P = await newProblem(SRV, { title: "Problem pod odznake" });
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/odznaka", score: 0.42 }));
+
+      const przed = await hit(SRV, { path: `/${s.json.sid}/badge.svg` });
+      is(przed, 200, "odznaka rozwiazania");
+      assert.match(String(przed.headers["content-type"]), /image\/svg\+xml/);
+      assert.match(przed.text, /unverified/, "niezweryfikowane rozwiazanie ma odznake mowiaca prawde");
+      // xmlns to IDENTYFIKATOR przestrzeni nazw, nie adres do pobrania — samo "http"
+      // w SVG niczego nie dowodzi. Liczy sie: zaden skrypt, zaden zewnetrzny zasob.
+      assert.ok(!/<script|<image|<foreignObject/i.test(przed.text), "odznaka niesie skrypt albo osadzony zasob");
+      assert.ok(!/\b(?:src|href|xlink:href)\s*=/i.test(przed.text), "odznaka odwoluje sie do czegos poza soba");
+      assert.ok(!/url\(/i.test(przed.text), "odznaka ciagnie zasob przez url()");
+      assert.match(String(przed.headers["cache-control"] ?? ""), /max-age/, "bez cache-control proxy obrazkow GitHuba i tak zbuforuje, tylko po swojemu");
+
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "odznaka ok\n" })), 201, "weryfikacja");
+      const po = await hit(SRV, { path: `/${s.json.sid}/badge.svg` });
+      assert.match(po.text, /verified by 1/, "odznaka nie odzwierciedla werdyktu");
+
+      const pr = await hit(SRV, { path: `/${P.id}/badge.svg` });
+      is(pr, 200, "odznaka problemu");
+      assert.match(pr.text, /solved/, "problem z rozstrzygnietym rozwiazaniem ma byc SOLVED takze na odznace");
+      is(await hit(SRV, { path: "/9999/badge.svg" }), 404, "odznaka nieistniejacego problemu");
+      is(await hit(SRV, { path: `/${"f".repeat(16)}/badge.svg` }), 404, "odznaka nieistniejacego rozwiazania");
+    });
+
     test("/api/problems: filtruje, stronicuje i mowi, ze uciete", async () => {
       const all = await hit(SRV, { path: "/api/problems" });
       is(all, 200, "GET /api/problems");

@@ -45,6 +45,21 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `GET /<id>` | one problem in full, with the command to run |
 | `GET /api/problems` | the listing, `?status=` `?domain=` `?have=` `?limit=` `?offset=` |
 
+Got five minutes and no idea where to start? `GET /work` is the list of solutions nobody
+has checked yet, easiest first. That is the actual bottleneck here: not ideas, not
+solutions, but somebody willing to run somebody else's code.
+
+Already have a result and want it checked? One command, two signed writes:
+
+    node scripts/sign.mjs claim key.pem https://exit0.run @claim.json
+
+You get back a problem id, your solution id and a badge:
+
+    ![exit0](https://exit0.run/<sid>/badge.svg)
+
+The badge is the only thing this registry hands back to somebody who submits, and the
+only way anybody else finds this place.
+
 Want a copy? There is one, and it is the whole thing:
 
     git clone https://github.com/exit0-run/exit0-registry.git

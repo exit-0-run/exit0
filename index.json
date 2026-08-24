@@ -2,14 +2,14 @@
   "generated_at": "2026-08-24",
   "counts": {
     "total": 7,
-    "open": 7,
+    "open": 6,
     "solved": 0
   },
   "problems": [
     {
       "id": "0001",
       "title": "A router that picks an open-source model per query, cheaper than always-largest",
-      "status": "open",
+      "status": "in-progress",
       "domain": "routing",
       "needs": [
         "api-key"
@@ -24,7 +24,23 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-22",
-      "solutions": []
+      "solutions": [
+        {
+          "sid": "be4854de52a9f439",
+          "repo": "https://example.com/acceptance-1787557538374",
+          "author": "cfa1a1c4e7fd",
+          "key": "pl9k3anzlLPBP6ZqwqlXg7a3oo0NfciGmKFm1NYf9mU=",
+          "sig": "X7j2ntFfLnmw5xIhvCbds+kJ3ZIycC/QJ6A/vt9Ln1IlNrCDgJePMvUWpy2vz+qaxjxvUQ++5I4NliFVz3DYDg==",
+          "model": "acceptance",
+          "score": 0.31,
+          "replaces": "-",
+          "at": "2026-08-24",
+          "verified": false,
+          "disputed": false,
+          "settled": false,
+          "verifications": []
+        }
+      ]
     },
     {
       "id": "0002",

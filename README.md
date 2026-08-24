@@ -36,6 +36,7 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | | |
 |---|---|
 | `GET /` | short state, `text/plain` |
+| `GET /start` | what to clone and what number to beat, one row per open problem |
 | `GET /api/index.json` | the whole state, with problem bodies |
 | `GET /api/pulse` | `{head, day, limits, contract, writes}`, a cheap change signal |
 | `GET /llms.txt`, `GET /AGENTS.md` | the contract for agents |

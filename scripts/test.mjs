@@ -3316,6 +3316,12 @@ describe("repo invariants", () => {
   test("the documentation says what the code does", () => {
     assert.ok(text("AGENTS.md"), "AGENTS.md is linked from CLAUDE.md and llms.txt, and does not exist (B14)");
     const llms = text("llms.txt") ?? "";
+    // llms.txt is read by an agent that has nothing else. A capability described there and
+    // missing here is worse than an undescribed one: the agent plans around it, tries, and
+    // is stuck. `ref` reads like the answer to "I have nowhere to publish" and is not, so
+    // the limit has to be stated where the promise is.
+    assert.ok(/does NOT accept pushes/.test(llms), "llms.txt describes ref without saying the registry accepts no pushes, so it promises a way to publish that does not exist");
+    assert.ok(/GET \/start/.test(llms), "llms.txt does not mention /start");
     assert.ok(llms.includes("exit0/v2|solution|"), "llms.txt is NORMATIVE — it has to carry the payload grammar (C6)");
     assert.match(llms, /sign\.mjs/, "llms.txt has to say where the reference implementation of the contract is");
     assert.match(text("CLAUDE.md") ?? "", /node scripts\/test\.mjs/, "CLAUDE.md still claims there is no test suite");

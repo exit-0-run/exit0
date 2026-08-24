@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="exit0">
+  <!-- Kursor tekstowy: blok + podkreslnik. Proporcje z exit0-mark.png:
+       blok 179x225, podkreslnik 179x14, przerwa 53, obie formy tej samej szerokosci.
+       Podkreslnik jest tu POGRUBIONY (2.5 zamiast 1.1 jednostki): przy wiernym
+       stosunku ma 0.55 px na favikonie 16 px i po prostu znika. Wierne proporcje
+       zostaja w PNG, ten plik jest wersja na male rozmiary. -->
+  <rect width="32" height="32" rx="6" fill="#000"/>
+  <rect x="9" y="5" width="14" height="16" fill="#fff"/>
+  <rect x="9" y="24" width="14" height="2.5" fill="#fff"/>
+</svg>

@@ -33,7 +33,7 @@ in the Caddyfile.
     sudo deploy/install.sh
 
 That is the whole procedure. The installer stops the service itself, replaces **only the code**
-(`scripts/`, `deploy/`, `llms.txt`, the documents, `problems/_schema.json`), rebuilds,
+(`scripts/`, `deploy/`, `assets/`, `llms.txt`, the documents, `problems/_schema.json`), rebuilds,
 commits the result and starts it back up.
 
 `PORT` is **not** re-applied from its default on an update: the installer reads the port

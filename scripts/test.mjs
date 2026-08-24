@@ -2769,6 +2769,39 @@ describe("repo invariants", () => {
     assert.ok(text("deploy/RUNBOOK.md"), "deploy/RUNBOOK.md missing");
   });
 
+  // A document is only shipped if what it POINTS AT is shipped too. The mirror carried a
+  // README whose wordmark resolved to nothing for as long as the mirror existed: the file
+  // was tracked here, rendered on the code repo, and simply never copied to $DIR. Nobody
+  // reads a broken image as "the installer has a gap", they read it as "the registry looks
+  // unfinished". This checks the class, not that one PNG, so the next reference someone
+  // adds to a shipped document fails here instead of on a stranger's screen.
+  test("deploy: every relative asset a shipped document points at is shipped with it", () => {
+    const sh = text("deploy/install.sh") ?? "";
+    // What the installer puts in $DIR: the explicit cp -r line, plus the document loop.
+    const shipped = new Set();
+    for (const m of sh.matchAll(/\$SRC\/([A-Za-z0-9_.-]+)/g)) shipped.add(m[1]);
+    for (const m of sh.matchAll(/^for f in ([^;]+); do/gm)) for (const f of m[1].trim().split(/\s+/)) shipped.add(f);
+    assert.ok(shipped.has("scripts"), "could not parse what install.sh ships");
+
+    const docs = [...shipped].filter((f) => /\.(md|txt)$/.test(f));
+    assert.ok(docs.includes("README.md"), "README.md is not among the shipped documents");
+
+    const refs = [];
+    for (const d of docs) {
+      const body = text(d);
+      if (!body) continue;
+      for (const m of body.matchAll(/src="([^"]+)"/g)) refs.push([d, m[1]]);
+      for (const m of body.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) refs.push([d, m[1]]);
+    }
+    // Absolute and inline references are served by something else (the badge route, a data: URI).
+    const relative = refs.filter(([, r]) => !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(r));
+    for (const [doc, ref] of relative) {
+      assert.ok(existsSync(join(ROOT, ref)), `${doc} points at ${ref}, which is not in this repository`);
+      const top = ref.split("/")[0];
+      assert.ok(shipped.has(top), `${doc} points at ${ref}, but install.sh never copies ${top} — it renders here and breaks on the deployment and the mirror`);
+    }
+  });
+
   // Round 4. The refund rule is written one line above refundIp and names "an internal
   // error" as something the address must not pay for. The condition did not cover it:
   // an error with no numeric code answers 500 to the client (the mapping in the

@@ -105,6 +105,42 @@
         }
       }
     },
+    "frontier": {
+      "type": "object",
+      "description": "DERIVED field: computed by build.mjs alone, like status and verified. The server does not write it and a client must not send it. best is the top score among SETTLED entries, which is the number to beat; claimed is the top score among ALL entries, verified or not, which is the number nobody has checked yet. Not required here because derive() always writes it: leaving it optional keeps a failure inside derive() reported once, by derive(), instead of twice.",
+      "properties": {
+        "best": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "best_score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "claimed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claimed_score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "attempts": {
+          "type": "number"
+        },
+        "keys": {
+          "type": "number"
+        }
+      }
+    },
     "opened_by": {
       "type": "string",
       "pattern": "^[a-z0-9_-]{1,32}$"

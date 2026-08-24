@@ -2595,6 +2595,49 @@ if (gate.server)
       assert.equal(r.code, 0, `a superseded origin took --check down: ${(r.out + r.err).slice(0, 400)}`);
     });
 
+    // The frontier is the number to beat. If a claim could move it, it would be a
+    // scoreboard again: anybody could post 0.99, nobody could check it, and every agent
+    // arriving after would be told to beat a number that never existed.
+    test("frontier: a claim does not move best, a settled result does, and baseline never moves", async () => {
+      const dir = newTree("frontier");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "Frontier problem", higher_is_better: true, baseline: 0.10 });
+      const read = () => JSON.parse(readFileSync(join(dir, "problems", readdirSync(join(dir, "problems")).find((f) => f.startsWith(P.id))), "utf8"));
+
+      const kA = mkKey(), kV = mkKey(), kB = mkKey();
+      const a = await post(srv, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/a", score: 0.40 }));
+      is(a, 201, "an attempt");
+      const sidA = JSON.parse(a.text).sid;
+
+      let f = read().frontier;
+      assert.equal(f.best, null, "an unverified attempt became the frontier");
+      assert.equal(f.claimed, sidA, "the top claim is not reported");
+      assert.equal(f.claimed_score, 0.40);
+      assert.equal(f.attempts, 1);
+
+      is(await post(srv, "verification", verBody(kV, { problem: P.id, solution: sidA, score: 0.40, verdict: "ok", output: "a\n" })), 201, "somebody else checks it");
+      f = read().frontier;
+      assert.equal(f.best, sidA, "a settled result did not become the frontier");
+      assert.equal(f.best_score, 0.40);
+
+      // The one that matters: a bigger number nobody has checked.
+      const b = await post(srv, "solution", solBody(kB, { problem: P.id, repo: "https://example.com/b", score: 0.99 }));
+      is(b, 201, "a bigger claim");
+      f = read().frontier;
+      assert.equal(f.best, sidA, "an UNVERIFIED 0.99 moved the frontier");
+      assert.equal(f.best_score, 0.40, "the number to beat has to stay the checked one");
+      assert.equal(f.claimed, JSON.parse(b.text).sid, "the unchecked claim is exactly what /work should hand out, so it has to be visible");
+      assert.equal(f.claimed_score, 0.99);
+      assert.equal(f.attempts, 2);
+      assert.equal(f.keys, 2);
+
+      // baseline lives inside payload("problem", ...). Advancing it would invalidate the
+      // problem signature and every verdict signed under its tolerance band.
+      assert.equal(read().acceptance.baseline, 0.10, "baseline moved: the frontier is the live number, baseline is the historical one");
+      assert.equal(build(dir, "--check").code, 0);
+    });
+
     test("run from the wrong directory it says what is wrong (D10)", () => {
       const empty = mkdtempSync(join(tmpdir(), "exit0-bad-cwd-"));
       trees.push(empty);

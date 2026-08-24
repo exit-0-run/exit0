@@ -84,6 +84,45 @@ const derive = (p) => {
     if (s.verified) s.verified_by = oks[0].verifier;
     else delete s.verified_by;
   }
+  // The frontier: what to clone and what number to beat. Derived here and nowhere else
+  // (invariant 7), so it cannot be asserted by a client or written by the server.
+  //
+  // `best` counts SETTLED entries only. An unverified score is a claim, and a frontier a
+  // claim can move is a scoreboard again.
+  //
+  // The plan this came from also asked for a `verified_best` over entries that are
+  // verified and not disputed, described as a cheaper signal. It is the opposite:
+  // verified && !disputed means oks >= 1 and mismatches == 0, which IMPLIES
+  // oks > mismatches, so it is a strict SUBSET of settled and could only ever be lower.
+  // The field that actually adds something is the top CLAIM, verified or not: it is the
+  // number nobody has checked yet, which is the same thing as saying it is the work
+  // /work exists to hand out.
+  const hib = !!(p.acceptance && p.acceptance.higher_is_better);
+  const better = (a, b) => (hib ? a.score > b.score : a.score < b.score);
+  // Deterministic to the last element: ties go to the earlier date, then the lower sid.
+  // Without this the frontier could differ between two clones of the same commit.
+  const pick = (list) =>
+    list.reduce((acc, s) => {
+      if (!acc) return s;
+      if (better(s, acc)) return s;
+      if (s.score !== acc.score) return acc;
+      const at = String(s.at ?? ""), aat = String(acc.at ?? "");
+      if (at !== aat) return at < aat ? s : acc;
+      return s.sid < acc.sid ? s : acc;
+    }, null);
+
+  const settled = p.solutions.filter((s) => s.settled);
+  const best = pick(settled);
+  const claimed = pick(p.solutions);
+  p.frontier = {
+    best: best ? best.sid : null,
+    best_score: best ? best.score : null,
+    claimed: claimed ? claimed.sid : null,
+    claimed_score: claimed ? claimed.score : null,
+    attempts: p.solutions.length,
+    keys: new Set(p.solutions.map((s) => { try { return keyId(s.key); } catch { return s.author; } })).size,
+  };
+
   if (p.status === "dead") return p;
   p.status = p.solutions.some((s) => s.settled) ? "solved" : p.solutions.length ? "in-progress" : "open";
   return p;
@@ -470,7 +509,7 @@ const ordered = (o, keys) => {
 };
 
 const shape = (p) => {
-  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "opened_by", "opened_at", "key", "sig", "solutions"]);
+  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
     const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
@@ -517,7 +556,14 @@ const rows = listed.slice(0, ROWS).map((p) => {
       ? `${sols.length} submitted, 0 verified`
       : "—";
   const needs = (Array.isArray(p.needs) ? p.needs : []).join(", ") || "—";
-  return `| ${p.id} | ${cell(p.title)} | ${cell(p.domain)} | ${cell(needs)} | ${badge[p.status]} | ${link}${sporne ? ` (${sporne} disputed)` : ""} |`;
+  // "solved" on its own reads like a closed door. A problem with a frontier is a floor:
+  // somebody hit a number and it is there to be beaten. The number comes from a derived
+  // field, never from user content, so it needs no cell() - but it goes through one
+  // anyway, because the day somebody makes it a string is the day that reasoning rots.
+  const state = p.frontier && p.frontier.best_score !== null && p.frontier.best_score !== undefined
+    ? `${badge[p.status]} best ${cell(String(p.frontier.best_score))}, beat it`
+    : badge[p.status];
+  return `| ${p.id} | ${cell(p.title)} | ${cell(p.domain)} | ${cell(needs)} | ${state} | ${link}${sporne ? ` (${sporne} disputed)` : ""} |`;
 });
 
 const table = [

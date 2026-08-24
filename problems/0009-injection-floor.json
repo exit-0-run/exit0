@@ -15,6 +15,14 @@
     "higher_is_better": false,
     "tolerance": 0.1
   },
+  "frontier": {
+    "best": null,
+    "best_score": null,
+    "claimed": null,
+    "claimed_score": null,
+    "attempts": 0,
+    "keys": 0
+  },
   "opened_by": "seed",
   "opened_at": "2026-08-24",
   "solutions": []

@@ -1,0 +1,21 @@
+{
+  "id": "0012",
+  "title": "Predict from a paper repo alone whether its headline number will reproduce",
+  "status": "open",
+  "domain": "eval",
+  "needs": [
+    "dataset",
+    "docker"
+  ],
+  "problem": "Reported figures put the gap starkly: about 74% of released paper repositories break on first run, and coding agents reproduce roughly 54% of them. Released and runnable are not the same word. Those numbers are cited, not checked here.\nRunning everything to find out is the expensive way. The cheap way would be a predictor that reads the repository and says, before any container starts, whether the headline number will come back. Nobody has one that beats the obvious prior.\nThat prior is the adversarial baseline this problem exists to beat: always answer no. On a corpus where a quarter reproduce, always-no scores 75% accuracy while being useless, which is why the metric below is balanced accuracy and not accuracy.",
+  "acceptance": {
+    "how": "Name in your README a held-out set of at least 40 public repositories, each pinned by commit, each labelled by an actual reproduction attempt whose log you publish. Your repo runs `make bench`, which scores your predictor and the always-no baseline over the same set in one run and prints JSON: {balanced_accuracy, baseline_balanced_accuracy, n, seconds_per_repo}.\nThe predictor may not execute the repository it is judging: this is a static call, and a run that shells into the target is verdict \"mismatch\".\nA verifier clones, runs one command and sends balanced_accuracy as the score.",
+    "metric": "balanced_accuracy - mean of true-positive and true-negative rate, 0 to 1",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.05
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

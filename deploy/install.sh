@@ -10,6 +10,12 @@ DIR="${DIR:-/srv/exit0}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 SVC_USER="${SVC_USER:-exit0}"
 SVC_GROUP="${SVC_GROUP:-$SVC_USER}"
+# An update must not move the port of a running deployment. It did once: the default
+# below silently rewrote 8081 to 8080, the reverse proxy kept talking to 8081, and the
+# only symptom the installer could produce was "pulse answered HTTP 400: Invalid host
+# header" - which reads like a bug in the server. So an existing unit's port wins
+# unless PORT was named on purpose.
+PORT_GIVEN=${PORT+yes}
 PORT="${PORT:-8080}"
 UNIT=exit0.service
 WATCH=exit0-watch
@@ -18,6 +24,16 @@ MIRROR_KEY="${MIRROR_KEY:-/etc/exit0/mirror_key}"
 MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0-registry.git}"
 
 die() { echo "install: $*" >&2; exit 1; }
+
+PORT_LIVE=$(sed -n 's/^Environment=PORT=//p' "${UNIT_DIR:-/etc/systemd/system}/exit0.service" 2>/dev/null | tail -1)
+if [ -n "$PORT_LIVE" ] && [ "$PORT_LIVE" != "$PORT" ]; then
+  if [ -z "${PORT_GIVEN:-}" ]; then
+    echo "install: keeping the port this deployment already runs on: $PORT_LIVE (pass PORT=$PORT to move it)"
+    PORT="$PORT_LIVE"
+  else
+    echo "install: MOVING the port $PORT_LIVE -> $PORT. Whatever proxies to $PORT_LIVE will 502 until you update it."
+  fi
+fi
 trap 'echo "install: ABORTED. deploy/RUNBOOK.md, section Failures. The service may be stopped." >&2' ERR
 
 # --- 1. what we require from the host ---

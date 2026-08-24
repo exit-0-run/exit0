@@ -1,0 +1,18 @@
+{
+  "id": "0013",
+  "title": "Halve the install footprint of a popular npm package with its tests unchanged",
+  "status": "open",
+  "domain": "infra",
+  "needs": [],
+  "problem": "Install size is paid on every clean CI run by everyone who depends on a package, and it is almost never anybody's job. The usual answers are cheating: drop a feature, move a dependency to peer and let the consumer carry it, or ship less and call it lighter.\nTake a package with a real install footprint and a real test suite, and halve the bytes on disk with the public API and the test results unchanged.\nThis is one of the very few problems here that needs nothing but node, git and a network connection, which is the whole reason it is in the registry.",
+  "acceptance": {
+    "how": "Name in your README a public package, a pinned version and its upstream repo. Your repo runs `make bench`, which installs both arms into clean directories on the same machine in the same run and prints JSON: {megabytes, baseline_megabytes, tests_run, tests_passed, exports_missing}.\ntests_run and tests_passed must equal the baseline arm exactly, and exports_missing must be 0: every name the package exported before still has to be there. Either one off, and the verdict is \"mismatch\" whatever the size says.\nA verifier clones, runs one command and sends megabytes as the score.",
+    "metric": "megabytes - bytes on disk after a clean production install, in MB",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

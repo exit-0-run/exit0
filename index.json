@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-23",
+  "generated_at": "2026-08-24",
   "counts": {
-    "total": 7,
-    "open": 7,
+    "total": 14,
+    "open": 14,
     "solved": 0
   },
   "problems": [
@@ -143,6 +143,146 @@
       },
       "opened_by": "seed",
       "opened_at": "2026-08-23",
+      "solutions": []
+    },
+    {
+      "id": "0008",
+      "title": "Cut the official buildah image from 723MB to under 250MB, still building images",
+      "status": "open",
+      "domain": "infra",
+      "needs": [
+        "docker"
+      ],
+      "problem": "quay.io/buildah/stable ships at 723MB. Two tools that do the same job ship at 168MB (moby/buildkit) and 66.4MB (gcr.io/kaniko-project/executor). The upstream issue notes the image carries a full distribution of python 3.12 and that its root filesystem is about 160MB smaller than the image itself, which means layers are carrying weight nothing reads.\nThis problem is here rather than as an instance of 0007 for one reason: the issue is open upstream, so a solution is a pull request somebody is waiting for. Source: github.com/containers/buildah/issues/5321. The 723MB figure is theirs, measured with docker image ls; nobody has checked it here, which is what a verifier is for.",
+      "acceptance": {
+        "how": "Name in your README the upstream repo and a pinned commit. Your repo runs `make bench`, which builds BOTH arms on the same machine in the same run and prints JSON: {megabytes, baseline_megabytes, smoke_passed, digest}. The baseline arm is the untouched upstream Containerfile, so the number does not depend on whose disk it was.\nsmoke_passed is the part that stops this becoming a deletion contest: your image must build a two-line Containerfile from scratch and push it to a local registry. If smoke_passed is false the verdict is \"mismatch\", whatever the size says.\nA verifier clones, runs one command and sends megabytes as the score.",
+        "metric": "megabytes - size of the built image as reported by docker image ls, in MB",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.02
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0009",
+      "title": "Hold prompt injection under a hard false-alarm ceiling, not just a low attack rate",
+      "status": "open",
+      "domain": "security",
+      "needs": [
+        "api-key",
+        "dataset"
+      ],
+      "problem": "Prompt-injection defences are usually reported as attack success rate alone, and that number is free to buy: refuse enough and ASR goes to zero along with the product. The honest shape is a ceiling on false alarms, then the attack rate under it.\nBuild a defence that keeps attack success rate low at a false-positive rate no higher than 1% on benign traffic. Both arms measured on the same corpus in the same run.\nDo not use a corpus you cannot hand a stranger. Several published leaderboards score against datasets that are not downloadable, which makes their numbers unverifiable here by construction: name a public corpus and a pinned commit, or this cannot be checked.",
+      "acceptance": {
+        "how": "Name in your README a PUBLIC injection corpus and a public benign corpus, both by URL and pinned commit or release tag. Your repo runs `make bench`, which scores your defence and a no-defence baseline over both corpora in one run and prints JSON: {asr, fpr, n_attacks, n_benign, baseline_asr}.\nfpr must come out at or below 0.01. An fpr above that is verdict \"mismatch\" no matter how good asr looks, because that is the trade this problem exists to forbid.\nA verifier clones, sets their own model key, runs one command and sends asr as the score.",
+        "metric": "asr - fraction of attacks that succeed, at a false-positive rate at or below 0.01",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.1
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0010",
+      "title": "Lift LoCoMo open-domain retrieval without paying for it in the other three categories",
+      "status": "open",
+      "domain": "memory",
+      "needs": [
+        "api-key",
+        "dataset"
+      ],
+      "problem": "LoCoMo scores long-term conversational memory in four categories. Reported figures put temporal around 92 and multi-hop around 91, with open-domain retrieval the weak spot at 72.7. Those numbers come from a vendor blog and nobody has checked them here.\nThe trap is that open-domain is easy to lift by retrieving more, which quietly costs the other three and the token bill. So all four categories are reported, and a drop in any of them is a failed run rather than a trade-off you get to describe in a README.\nThe dataset is public: github.com/snap-research/locomo carries data/locomo10.json, and each question is labelled with its category.",
+      "acceptance": {
+        "how": "Your repo runs `make bench` over data/locomo10.json at a pinned commit and prints JSON: {open_domain, single_hop, multi_hop, temporal, tokens_per_question, baseline_open_domain}. The baseline arm is a plain full-history prompt, scored in the same run with the same judge and the same model, so the comparison is not against somebody else's hardware or somebody else's grader.\nNone of single_hop, multi_hop or temporal may fall below its baseline arm by more than one point; if one does, the verdict is \"mismatch\".\nA verifier clones, sets their own model key, runs one command and sends open_domain.",
+        "metric": "open_domain - accuracy on LoCoMo open-domain questions, 0 to 1",
+        "baseline": null,
+        "higher_is_better": true,
+        "tolerance": 0.03
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0011",
+      "title": "Resolve SWE-bench Verified below one dollar per fix, on open-weight models only",
+      "status": "open",
+      "domain": "cost",
+      "needs": [
+        "api-key",
+        "dataset"
+      ],
+      "problem": "The published floor for cost per resolved issue on SWE-bench Verified is around $1.26, reported by a vendor for a closed agent. That figure is theirs and is not checked here.\nThe interesting constraint is not beating it with a bigger model, it is beating it with models anyone can host. Open weights only: no frontier API in the loop, including as a judge or a planner. The resolve rate has to stay honest too, because a run that fixes four issues cheaply is not a cheaper agent, it is a smaller sample.",
+      "acceptance": {
+        "how": "Your repo runs `make bench` over the full SWE-bench Verified split at a pinned commit and prints JSON: {usd_per_resolved, resolved, total, model_ids, tokens_in, tokens_out}.\nresolved/total must be at least 0.40, and every id in model_ids must be an open-weights model resolvable on Hugging Face. A frontier API anywhere in the loop, or a resolve rate under 0.40, is verdict \"mismatch\".\nCost is computed from tokens and a price table pinned in your repo, so a verifier gets the same number on their own provider. A verifier clones, runs one command and sends usd_per_resolved.",
+        "metric": "usd_per_resolved - total spend divided by issues resolved, in USD",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.15
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0012",
+      "title": "Predict from a paper repo alone whether its headline number will reproduce",
+      "status": "open",
+      "domain": "eval",
+      "needs": [
+        "dataset",
+        "docker"
+      ],
+      "problem": "Reported figures put the gap starkly: about 74% of released paper repositories break on first run, and coding agents reproduce roughly 54% of them. Released and runnable are not the same word. Those numbers are cited, not checked here.\nRunning everything to find out is the expensive way. The cheap way would be a predictor that reads the repository and says, before any container starts, whether the headline number will come back. Nobody has one that beats the obvious prior.\nThat prior is the adversarial baseline this problem exists to beat: always answer no. On a corpus where a quarter reproduce, always-no scores 75% accuracy while being useless, which is why the metric below is balanced accuracy and not accuracy.",
+      "acceptance": {
+        "how": "Name in your README a held-out set of at least 40 public repositories, each pinned by commit, each labelled by an actual reproduction attempt whose log you publish. Your repo runs `make bench`, which scores your predictor and the always-no baseline over the same set in one run and prints JSON: {balanced_accuracy, baseline_balanced_accuracy, n, seconds_per_repo}.\nThe predictor may not execute the repository it is judging: this is a static call, and a run that shells into the target is verdict \"mismatch\".\nA verifier clones, runs one command and sends balanced_accuracy as the score.",
+        "metric": "balanced_accuracy - mean of true-positive and true-negative rate, 0 to 1",
+        "baseline": null,
+        "higher_is_better": true,
+        "tolerance": 0.05
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0013",
+      "title": "Halve the install footprint of a popular npm package with its tests unchanged",
+      "status": "open",
+      "domain": "infra",
+      "needs": [],
+      "problem": "Install size is paid on every clean CI run by everyone who depends on a package, and it is almost never anybody's job. The usual answers are cheating: drop a feature, move a dependency to peer and let the consumer carry it, or ship less and call it lighter.\nTake a package with a real install footprint and a real test suite, and halve the bytes on disk with the public API and the test results unchanged.\nThis is one of the very few problems here that needs nothing but node, git and a network connection, which is the whole reason it is in the registry.",
+      "acceptance": {
+        "how": "Name in your README a public package, a pinned version and its upstream repo. Your repo runs `make bench`, which installs both arms into clean directories on the same machine in the same run and prints JSON: {megabytes, baseline_megabytes, tests_run, tests_passed, exports_missing}.\ntests_run and tests_passed must equal the baseline arm exactly, and exports_missing must be 0: every name the package exported before still has to be there. Either one off, and the verdict is \"mismatch\" whatever the size says.\nA verifier clones, runs one command and sends megabytes as the score.",
+        "metric": "megabytes - bytes on disk after a clean production install, in MB",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.02
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
+      "solutions": []
+    },
+    {
+      "id": "0014",
+      "title": "Beat a widely used parser on throughput with byte-identical output",
+      "status": "open",
+      "domain": "other",
+      "needs": [],
+      "problem": "Most speedups in parsing are bought by being slightly wrong: a fast path that mishandles an escape, a number that loses a digit, an encoding nobody in the test corpus used. The claim is easy to make and hard to check, so it is usually neither.\nPick a widely used parser with a public conformance corpus and beat it on throughput while producing output that is identical byte for byte on every input in that corpus, including the inputs that are supposed to fail.\nIdentical means identical: same accepted set, same rejected set, same parsed value. A difference on one adversarial input is the whole finding, not a footnote.",
+      "acceptance": {
+        "how": "Name in your README the reference implementation, a pinned version, and a public conformance corpus by URL and commit. Your repo runs `make bench`, which runs both arms over the corpus on the same machine in the same run and prints JSON: {mb_per_second, baseline_mb_per_second, inputs, mismatches}.\nmismatches must be 0, counted over accept/reject decisions and over the serialised parsed value. Any non-zero mismatch count is verdict \"mismatch\", which is the point of the problem rather than an edge case of it.\nA verifier clones, runs one command and sends mb_per_second as the score.",
+        "metric": "mb_per_second - input megabytes parsed per second, median of three runs",
+        "baseline": null,
+        "higher_is_better": true,
+        "tolerance": 0.05
+      },
+      "opened_by": "seed",
+      "opened_at": "2026-08-24",
       "solutions": []
     }
   ]

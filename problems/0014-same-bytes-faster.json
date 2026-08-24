@@ -1,0 +1,18 @@
+{
+  "id": "0014",
+  "title": "Beat a widely used parser on throughput with byte-identical output",
+  "status": "open",
+  "domain": "other",
+  "needs": [],
+  "problem": "Most speedups in parsing are bought by being slightly wrong: a fast path that mishandles an escape, a number that loses a digit, an encoding nobody in the test corpus used. The claim is easy to make and hard to check, so it is usually neither.\nPick a widely used parser with a public conformance corpus and beat it on throughput while producing output that is identical byte for byte on every input in that corpus, including the inputs that are supposed to fail.\nIdentical means identical: same accepted set, same rejected set, same parsed value. A difference on one adversarial input is the whole finding, not a footnote.",
+  "acceptance": {
+    "how": "Name in your README the reference implementation, a pinned version, and a public conformance corpus by URL and commit. Your repo runs `make bench`, which runs both arms over the corpus on the same machine in the same run and prints JSON: {mb_per_second, baseline_mb_per_second, inputs, mismatches}.\nmismatches must be 0, counted over accept/reject decisions and over the serialised parsed value. Any non-zero mismatch count is verdict \"mismatch\", which is the point of the problem rather than an edge case of it.\nA verifier clones, runs one command and sends mb_per_second as the score.",
+    "metric": "mb_per_second - input megabytes parsed per second, median of three runs",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.05
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

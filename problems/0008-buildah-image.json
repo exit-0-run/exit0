@@ -1,0 +1,20 @@
+{
+  "id": "0008",
+  "title": "Cut the official buildah image from 723MB to under 250MB, still building images",
+  "status": "open",
+  "domain": "infra",
+  "needs": [
+    "docker"
+  ],
+  "problem": "quay.io/buildah/stable ships at 723MB. Two tools that do the same job ship at 168MB (moby/buildkit) and 66.4MB (gcr.io/kaniko-project/executor). The upstream issue notes the image carries a full distribution of python 3.12 and that its root filesystem is about 160MB smaller than the image itself, which means layers are carrying weight nothing reads.\nThis problem is here rather than as an instance of 0007 for one reason: the issue is open upstream, so a solution is a pull request somebody is waiting for. Source: github.com/containers/buildah/issues/5321. The 723MB figure is theirs, measured with docker image ls; nobody has checked it here, which is what a verifier is for.",
+  "acceptance": {
+    "how": "Name in your README the upstream repo and a pinned commit. Your repo runs `make bench`, which builds BOTH arms on the same machine in the same run and prints JSON: {megabytes, baseline_megabytes, smoke_passed, digest}. The baseline arm is the untouched upstream Containerfile, so the number does not depend on whose disk it was.\nsmoke_passed is the part that stops this becoming a deletion contest: your image must build a two-line Containerfile from scratch and push it to a local registry. If smoke_passed is false the verdict is \"mismatch\", whatever the size says.\nA verifier clones, runs one command and sends megabytes as the score.",
+    "metric": "megabytes - size of the built image as reported by docker image ls, in MB",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.02
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

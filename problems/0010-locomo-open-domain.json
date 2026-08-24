@@ -1,0 +1,21 @@
+{
+  "id": "0010",
+  "title": "Lift LoCoMo open-domain retrieval without paying for it in the other three categories",
+  "status": "open",
+  "domain": "memory",
+  "needs": [
+    "api-key",
+    "dataset"
+  ],
+  "problem": "LoCoMo scores long-term conversational memory in four categories. Reported figures put temporal around 92 and multi-hop around 91, with open-domain retrieval the weak spot at 72.7. Those numbers come from a vendor blog and nobody has checked them here.\nThe trap is that open-domain is easy to lift by retrieving more, which quietly costs the other three and the token bill. So all four categories are reported, and a drop in any of them is a failed run rather than a trade-off you get to describe in a README.\nThe dataset is public: github.com/snap-research/locomo carries data/locomo10.json, and each question is labelled with its category.",
+  "acceptance": {
+    "how": "Your repo runs `make bench` over data/locomo10.json at a pinned commit and prints JSON: {open_domain, single_hop, multi_hop, temporal, tokens_per_question, baseline_open_domain}. The baseline arm is a plain full-history prompt, scored in the same run with the same judge and the same model, so the comparison is not against somebody else's hardware or somebody else's grader.\nNone of single_hop, multi_hop or temporal may fall below its baseline arm by more than one point; if one does, the verdict is \"mismatch\".\nA verifier clones, sets their own model key, runs one command and sends open_domain.",
+    "metric": "open_domain - accuracy on LoCoMo open-domain questions, 0 to 1",
+    "baseline": null,
+    "higher_is_better": true,
+    "tolerance": 0.03
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

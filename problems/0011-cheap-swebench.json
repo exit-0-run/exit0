@@ -1,0 +1,21 @@
+{
+  "id": "0011",
+  "title": "Resolve SWE-bench Verified below one dollar per fix, on open-weight models only",
+  "status": "open",
+  "domain": "cost",
+  "needs": [
+    "api-key",
+    "dataset"
+  ],
+  "problem": "The published floor for cost per resolved issue on SWE-bench Verified is around $1.26, reported by a vendor for a closed agent. That figure is theirs and is not checked here.\nThe interesting constraint is not beating it with a bigger model, it is beating it with models anyone can host. Open weights only: no frontier API in the loop, including as a judge or a planner. The resolve rate has to stay honest too, because a run that fixes four issues cheaply is not a cheaper agent, it is a smaller sample.",
+  "acceptance": {
+    "how": "Your repo runs `make bench` over the full SWE-bench Verified split at a pinned commit and prints JSON: {usd_per_resolved, resolved, total, model_ids, tokens_in, tokens_out}.\nresolved/total must be at least 0.40, and every id in model_ids must be an open-weights model resolvable on Hugging Face. A frontier API anywhere in the loop, or a resolve rate under 0.40, is verdict \"mismatch\".\nCost is computed from tokens and a price table pinned in your repo, so a verifier gets the same number on their own provider. A verifier clones, runs one command and sends usd_per_resolved.",
+    "metric": "usd_per_resolved - total spend divided by issues resolved, in USD",
+    "baseline": null,
+    "higher_is_better": false,
+    "tolerance": 0.15
+  },
+  "opened_by": "seed",
+  "opened_at": "2026-08-24",
+  "solutions": []
+}

@@ -1743,6 +1743,10 @@ if (gate.server)
       const pr = await hit(SRV, { path: `/${P.id}/badge.svg` });
       is(pr, 200, "the problem badge");
       assert.match(pr.text, /solved/, "a problem with a settled solution has to be SOLVED on the badge too");
+      // The floor belongs on the badge too, or it still reads like a closed door. The
+      // status word stays: a badge is twenty pixels tall and carries facts, while the
+      // invitation to beat the number lives where there is room for a sentence.
+      assert.match(pr.text, /best 0\.42/, "a solved problem does not show the number to beat");
       is(await hit(SRV, { path: "/9999/badge.svg" }), 404, "the badge of a problem that does not exist");
       is(await hit(SRV, { path: `/${"f".repeat(16)}/badge.svg` }), 404, "the badge of a solution that does not exist");
     });
@@ -2636,6 +2640,43 @@ if (gate.server)
       // problem signature and every verdict signed under its tolerance band.
       assert.equal(read().acceptance.baseline, 0.10, "baseline moved: the frontier is the live number, baseline is the historical one");
       assert.equal(build(dir, "--check").code, 0);
+    });
+
+    // The two views this whole change exists for: a list that answers "where do I start"
+    // and a problem page that shows what was built on what.
+    test("/start and the lineage view answer where to begin", async () => {
+      const dir = newTree("start-view");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "Startable problem", higher_is_better: true });
+      const kA = mkKey(), kV = mkKey(), kB = mkKey();
+
+      // Untouched: /start must say so rather than inventing a number.
+      let t = (await hit(srv, { path: "/start" })).text;
+      assert.match(t, /nothing yet, it is open/, "an untouched problem has to say it is open, not print a blank");
+
+      const a = await post(srv, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/a", score: 0.40 }));
+      const sidA = JSON.parse(a.text).sid;
+      is(await post(srv, "verification", verBody(kV, { problem: P.id, solution: sidA, score: 0.40, verdict: "ok", output: "a\n" })), 201, "checked by a stranger");
+      is(await post(srv, "solution", solBody(kB, { problem: P.id, repo: "https://example.com/b", score: 0.55, builds_on: sidA })), 201, "somebody continues it");
+
+      const j = JSON.parse((await hit(srv, { path: "/api/start" })).text);
+      const row = j.start.find((r) => r.problem === P.id);
+      assert.ok(row, "the problem fell out of /api/start");
+      assert.equal(row.builds_on, sidA, "/start has to hand out the SETTLED sid to build on");
+      assert.equal(row.best_repo, "https://example.com/a");
+      assert.equal(row.best_score, 0.40);
+      assert.equal(row.claimed_score, 0.55, "the unchecked claim above the frontier has to be visible, it is the work");
+      assert.equal(typeof j.more, "boolean");
+      assert.equal(j.open, j.start.length + (j.more ? j.open - j.start.length : 0));
+
+      // Ordering: a problem with code to continue comes before the untouched ones.
+      assert.equal(j.start[0].problem, P.id, "a problem with a frontier is not first");
+
+      const page = (await hit(srv, { path: `/${P.id}` })).text;
+      assert.match(page, /lineage: what was built on what/, "the problem page does not show lineage");
+      assert.ok(page.indexOf(sidA) < page.lastIndexOf("https://example.com/b"), "the child is not rendered under its parent");
+      assert.match(page, new RegExp(`start from ${sidA}`), "the page does not say what to build on");
     });
 
     test("run from the wrong directory it says what is wrong (D10)", () => {

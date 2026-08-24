@@ -26,6 +26,13 @@ MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0.git}"
 die() { echo "install: $*" >&2; exit 1; }
 
 PORT_LIVE=$(sed -n 's/^Environment=PORT=//p' "${UNIT_DIR:-/etc/systemd/system}/exit0.service" 2>/dev/null | tail -1)
+# Same reasoning as the port: a deployment that already publishes its records must not
+# stop doing so just because a deploy did not repeat the value on the command line.
+SOURCE_LIVE=$(sed -n 's/^Environment=SOURCE_URL=//p' "${UNIT_DIR:-/etc/systemd/system}/exit0.service" 2>/dev/null | tail -1)
+if [ -z "${SOURCE_URL:-}" ] && [ -n "$SOURCE_LIVE" ]; then
+  echo "install: keeping the source URL this deployment already publishes: $SOURCE_LIVE"
+  SOURCE_URL="$SOURCE_LIVE"
+fi
 if [ -n "$PORT_LIVE" ] && [ "$PORT_LIVE" != "$PORT" ]; then
   if [ -z "${PORT_GIVEN:-}" ]; then
     echo "install: keeping the port this deployment already runs on: $PORT_LIVE (pass PORT=$PORT to move it)"
@@ -169,6 +176,7 @@ esac
 sed -e "s#^ExecStart=.*#ExecStart=$NODE scripts/server.mjs#" \
     -e "s#^Environment=PATH=.*#Environment=PATH=$SVC_PATH#" \
     -e "s#^Environment=PORT=.*#Environment=PORT=$PORT#" \
+    -e "s#^Environment=SOURCE_URL=.*#Environment=SOURCE_URL=${SOURCE_URL:-}#" \
     -e "s#^User=.*#User=$SVC_USER#" \
     -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
     -e "s#^ReadWritePaths=.*#ReadWritePaths=$DIR#" \

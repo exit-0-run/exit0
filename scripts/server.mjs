@@ -1610,7 +1610,11 @@ const readRoute = (req, res, path, qs) => {
     if (!p)
       return json(req, res, 404, { error: "no such problem", problems: "/api/problems" }, { link: LINK });
     const want = negotiate(req.headers.accept);
-    const body = JSON.stringify(p, null, 2) + "\n";
+    // The detail is where an agent looks at ONE problem, so the link belongs here too and
+    // not only in the listing. Computed, never stored: it depends on where this deployment
+    // publishes, which is not a fact about the record.
+    const want_src = sourceOf(p);
+    const body = JSON.stringify(want_src ? { ...p, source_url: want_src } : p, null, 2) + "\n";
     if (path.startsWith("/api/") || want === "json")
       return cond(req, res, body, "application/json; charset=utf-8", { vary: "accept", link: LINK });
     if (want === "html") return cond(req, res, renderHtml(renderProblem(p)), "text/html; charset=utf-8", { vary: "accept", link: LINK });

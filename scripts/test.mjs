@@ -2780,6 +2780,34 @@ if (gate.server)
         assert.match(txt, /git fetch <repo> <ref> && git checkout FETCH_HEAD/, `${what} names a ref without saying how to fetch it`);
     });
 
+    // A link is worth having only if it goes somewhere. Three ways this feature can be
+    // worse than not having it: a link built from a base nobody checked, a link printed by
+    // a registry that is published nowhere, and a field named like an unrelated one.
+    test("source_url: off by default, validated once, and not the pulse field of the same name", async () => {
+      const dir = newTree("source-url");
+
+      // Unset: no links, because a registry nobody publishes must not print a link to a
+      // page that does not exist.
+      const off = await startServer(dir);
+      assert.ok(off.port, off.why);
+      const P = await newProblem(off, { title: "Linkable problem" });
+      assert.ok(!/^source_url:/m.test((await hit(off, { path: `/${P.id}` })).text), "a server with no SOURCE_URL printed a link anyway");
+      assert.equal(JSON.parse((await hit(off, { path: `/api/problems/${P.id}` })).text).source_url, undefined, "a server with no SOURCE_URL put the field in the detail anyway");
+      off.kill?.();
+
+      const on = await startServer(dir, { SOURCE_URL: "https://example.com/o/r/blob/main/" });
+      assert.ok(on.port, on.why);
+      const txt = (await hit(on, { path: `/${P.id}` })).text;
+      // Trailing slash on the base must not produce a double slash in the link.
+      assert.match(txt, /^source_url: https:\/\/example\.com\/o\/r\/blob\/main\/problems\/\d{4}-[a-z0-9-]+\.json$/m, `bad link: ${txt.slice(0, 400)}`);
+      const j = JSON.parse((await hit(on, { path: `/api/problems/${P.id}` })).text);
+      assert.ok(j.source_url && j.source_url.endsWith(".json"), "the JSON view does not carry source_url");
+      // The collision this field was renamed to avoid: pulse.source means something else.
+      const pulse = JSON.parse((await hit(on, { path: "/api/pulse" })).text);
+      assert.equal(pulse.source_url, undefined, "pulse grew a source_url, which is not what that route's `source` means");
+      on.kill?.();
+    });
+
     test("run from the wrong directory it says what is wrong (D10)", () => {
       const empty = mkdtempSync(join(tmpdir(), "exit0-bad-cwd-"));
       trees.push(empty);

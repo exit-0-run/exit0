@@ -122,6 +122,8 @@ Framed are repo, model, note, title, problem, how and metric. The rest are token
 
 [replaces] also goes into the sid: sid = sha256(exit0/v2|sid|[problem]|[repo framed]|[score]|[canonical key]|[replaces]) truncated to 16 hex characters. Successive entries under one (problem, repo, key) therefore form a chain and no state ever comes back, not even when you return to a result you once submitted. That is what makes "exactly once" true of the whole history, not just of the last step.
 
+A problem may carry source_url: where THIS deployment publishes its signed records, so you can read the bytes and their history rather than only the server's rendering of them. It is built by string from a configured base plus the record's path, so it costs no request and there is no host API involved. Absent when the deployment publishes nowhere. Do not confuse it with the `source` field of /api/pulse, which means "reads are coming from HEAD because the working tree is dirty".
+
 Every problem carries a DERIVED frontier: {best, best_score, claimed, claimed_score, attempts, keys}. best is the top score among SETTLED entries and it is the number to beat. claimed is the top score among ALL entries including unverified ones: it is the number nobody has checked, which is the same thing as saying it is work waiting in /work. Ties go to the earlier date, then the lower sid, so two clones of one commit agree to the last element. build.mjs writes it, the server does not, you must not send it.
 acceptance.baseline is NOT the frontier and never moves. It sits inside payload("problem", ...), so advancing it would invalidate the problem's signature and every verdict signed under its tolerance band. baseline is the historical number, the frontier is the live one.
 

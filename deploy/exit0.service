@@ -24,6 +24,10 @@ Environment=HOST=127.0.0.1
 # This unit has a proxy in front of it and the proxy overwrites X-Forwarded-For. Without
 # that, all traffic lands in one ::ffff:127.0.0.1 bucket and the per-IP limit chokes the deploy.
 Environment=TRUST_PROXY=1
+# Where a reader can browse the signed record: a base URL the problem's file path is
+# appended to. Empty means no links, which is right for a registry nobody publishes.
+# install.sh fills it from SOURCE_URL when it is given, and leaves it empty otherwise.
+Environment=SOURCE_URL=
 ExecStart=/usr/bin/node scripts/server.mjs
 Restart=always
 RestartSec=2

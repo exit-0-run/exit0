@@ -81,6 +81,27 @@ if systemctl is-active --quiet "$UNIT" 2>/dev/null; then
   systemctl stop "$UNIT"
 fi
 
+# --- 5b. one history, two writers: catch up before adding to it ---
+# The code repository and the registry were merged into one, so $SRC is a clone of the very
+# repository this host pushes into. Without this step the installer would commit code that
+# is ALREADY published, under a fresh sha on top of an older parent, and the registry would
+# diverge from the public copy on every single deploy - forcing mirror.sh to merge each
+# time and filling the audit trail with duplicates of the same change.
+# It fetches from $SRC on disk, not from the network: no credentials, no reachability, and
+# nothing to fail on a box where the mirror is not configured at all. An $SRC that is not a
+# clone (a plain copied directory, which is how this used to be deployed) skips it quietly.
+if [ -d "$SRC/.git" ] && [ -d "$DIR/.git" ]; then
+  if [ -n "$(git -C "$DIR" status --porcelain --no-optional-locks)" ]; then
+    echo "install: $DIR has uncommitted changes, not fast-forwarding it" >&2
+  elif git -C "$DIR" fetch --quiet "$SRC" HEAD 2>/dev/null && git -C "$DIR" merge --ff-only FETCH_HEAD >/dev/null 2>&1; then
+    echo "install: $DIR fast-forwarded to $(git -C "$DIR" rev-parse --short HEAD)"
+  else
+    # Not a failure: the registry has commits of its own, which is normal. Say so, because
+    # the next mirror run will merge and a silent divergence is how one goes unnoticed.
+    echo "install: $DIR has commits $SRC does not; mirror.sh will merge them" >&2
+  fi
+fi
+
 # --- 6. code and documents: always fresh ---
 # rm before cp, so no file dropped from the source survives from an older version.
 # .gitattributes is code here, not a preference: without it git rewrites line

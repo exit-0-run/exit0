@@ -2900,6 +2900,22 @@ describe("repo invariants", () => {
     assert.match(m, /status --porcelain --no-optional-locks/, "mirror.sh merges without checking for a write in flight");
   });
 
+  // The other half of the same problem. $SRC is a clone of the repository the registry
+  // pushes into, so unless the installer catches up first it commits already-published code
+  // under a new sha and diverges the registry from the public copy on EVERY deploy.
+  test("deploy: the installer fast-forwards the registry before committing code to it", () => {
+    const sh = text("deploy/install.sh") ?? "";
+    const iFf = sh.search(/^\s*elif git -C "\$DIR" fetch/m);
+    const iCopy = sh.search(/^cp -r "\$SRC\/scripts"/m);
+    assert.ok(iFf > 0, "install.sh never fast-forwards $DIR, so every deploy diverges it from the public copy");
+    assert.ok(iFf < iCopy, "install.sh fast-forwards after copying the code, which is the one order that cannot work");
+    assert.match(sh, /merge --ff-only/, "install.sh reconciles with something other than a fast-forward");
+    // The fetch is from the directory on disk. Reaching for the network here would make the
+    // installer fail on a host that has no mirror key and no business having one.
+    assert.match(sh, /fetch --quiet "\$SRC"/, "install.sh fetches from somewhere other than $SRC, adding a network dependency to the install");
+    assert.ok(!/\bgit -C "\$DIR" (rebase|reset --hard)/.test(sh), "install.sh rewrites or discards registry history");
+  });
+
   // The private key must not sit inside the registry directory: the service user's home
   // IS /srv/exit0, and install.sh runs `git add -A` there. One bad default path and the
   // key rides into the public mirror.

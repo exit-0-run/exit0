@@ -618,14 +618,54 @@ export const cell = (s) =>
 export const mdUrl = (s) =>
   `<${String(s).replace(/[<>\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)}>`;
 
+// How much independent verification a problem carries: distinct keys whose verdict HEAD
+// is ok, anywhere on it. Per KEY and never per record - a verifier who confirmed two
+// entries on one problem is one key (invariant 3), and one who went ok -> mismatch -> ok
+// is counted under the head of their chain (invariant 8). A fold, stored nowhere.
+// Memoised because a comparator is called O(n log n) times and this walks every record.
+const CONFIRMS = new WeakMap();
+export const confirmedKeys = (p) => {
+  const hit = CONFIRMS.get(p);
+  if (hit !== undefined) return hit;
+  const keys = new Set();
+  for (const s of Array.isArray(p.solutions) ? p.solutions : [])
+    for (const v of verdictHeads(Array.isArray(s.verifications) ? s.verifications : []).heads) {
+      if (v.verdict !== "ok") continue;
+      // Never throws: this runs inside build.mjs, where an exception is a crash instead of
+      // an error list. An unreadable key falls back to the stored fingerprint, which is the
+      // cautious side - it can only ever split one key into two rows of the count, never
+      // merge two keys into one.
+      try { keys.add(keyId(v.key)); } catch { keys.add(`raw:${String(v.verifier ?? "")}`); }
+    }
+  CONFIRMS.set(p, keys.size);
+  return keys.size;
+};
+
 // The order of the listing, shared by the server and by the README generator: a rule
-// written twice drifts apart. Open problems first, and inside a status the ones nobody
-// has touched, because that is where a newcomer is worth most. Deterministic down to
-// the last element, or a listing could not be paged.
+// written twice drifts apart. It used to be open problems first and, inside a status, the
+// ones nobody had touched, because that is where a newcomer is worth most. That is still
+// true and it is now GET /start and GET /work saying it - both order work-first and both
+// exist for exactly that question. The front door is an INDEX, and an index leads with
+// what the registry has actually established.
+//
+// So: proven first, attempted next, untouched after, dead last. Status is not consulted at
+// all any more, because it is derived from these same two numbers and would only be a
+// third spelling of them - solved implies a confirmation, in-progress implies an attempt,
+// open implies neither.
+//
+// It also closes an exposure. `open` used to be rank 0, so EVERY open problem preceded
+// every in-progress and solved one, and the text view is capped at PAGE.text rows: enough
+// filed problems, and everything anybody had actually run fell below the cut. Filing costs
+// one write a day and earns no standing, which caps the rate but not the total. Now a
+// problem nobody has verified cannot take the top of the listing away from one somebody
+// has, however many of them arrive.
+//
+// Deterministic down to the last element, or a listing could not be paged.
 export const STATUS_RANK = { open: 0, "in-progress": 1, solved: 2, dead: 3 };
 export const probCmp = (a, b) =>
-  (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9) ||
-  (a.solutions?.length ?? 0) - (b.solutions?.length ?? 0) ||
+  (a.status === "dead" ? 1 : 0) - (b.status === "dead" ? 1 : 0) ||
+  confirmedKeys(b) - confirmedKeys(a) ||
+  (b.solutions?.length ?? 0) - (a.solutions?.length ?? 0) ||
   a.id.localeCompare(b.id);
 
 export const solCmp = (p) => (a, b) => {

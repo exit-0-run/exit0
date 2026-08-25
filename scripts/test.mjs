@@ -860,6 +860,47 @@ if (gate.sign)
       // somebody - and it must not take the rest of the fold down with it.
       assert.equal(sg.verdictStrength([...abc, rec("not a key", "z1", "-", "ok", 1)]).confirms, 1);
     });
+
+    // The listing leads with what somebody has actually run. Before this, `open` was rank 0
+    // and the text view is capped at PAGE.text rows, so enough filed problems pushed every
+    // verified one below the cut - and filing is the cheapest write there is. The order has
+    // to be a fact about verification, and it has to stay total, or paging drops entries.
+    test("the listing is ordered by how much verification a problem carries, dead last", () => {
+      const kA = mkKey();
+      const kB = mkKey();
+      const ver = (pub, vid, replaces, verdict) => ({ key: pub, vid, replaces, verdict, score: 1, at: "2026-08-25" });
+      const P = (id, status, sols) => ({ id, status, solutions: sols });
+
+      const solved = P("0100", "solved", [{ verifications: [ver(kA.pub, "a1", "-", "ok")] }]);
+      const twice = P("0101", "solved", [{ verifications: [ver(kA.pub, "a1", "-", "ok"), ver(kB.pub, "b1", "-", "ok")] }]);
+      const tried = P("0102", "in-progress", [{ verifications: [] }]);
+      const fresh = P("0103", "open", []);
+      const older = P("0002", "open", []);
+      const dead = P("0104", "dead", [{ verifications: [ver(kA.pub, "a1", "-", "ok")] }]);
+
+      const order = [fresh, dead, tried, solved, older, twice].sort(sg.probCmp).map((p) => p.id);
+      assert.deepEqual(order, ["0101", "0100", "0102", "0002", "0103", "0104"],
+        "proven first (most confirmations), then attempted, then untouched by id, and dead last whatever it carries");
+
+      // The point of the change: no number of unverified problems can displace a verified one.
+      const flood = Array.from({ length: 200 }, (_, i) => P(String(2000 + i), "open", []));
+      assert.equal([...flood, solved].sort(sg.probCmp)[0].id, "0100", "a flood of filed problems took the top of the listing from a verified one");
+
+      // Counted per KEY, so one verifier confirming two entries on one problem is not two.
+      const spread = P("0105", "solved", [
+        { verifications: [ver(kA.pub, "a1", "-", "ok")] },
+        { verifications: [ver(kA.pub, "a2", "-", "ok")] },
+      ]);
+      assert.equal(sg.confirmedKeys(spread), 1, "one key confirming two entries counted as two (invariant 3)");
+      assert.equal(sg.confirmedKeys(twice), 2);
+
+      // Total, not merely consistent: equal on every key must fall through to the id, or a
+      // sort is free to reorder ties between calls and a paged listing loses rows.
+      const t1 = P("0200", "open", []);
+      const t2 = P("0201", "open", []);
+      assert.ok(sg.probCmp(t1, t2) < 0 && sg.probCmp(t2, t1) > 0, "two problems alike in everything but id did not compare as opposites");
+      assert.equal(sg.probCmp(t1, t1), 0);
+    });
   });
 
 // =====================================================================

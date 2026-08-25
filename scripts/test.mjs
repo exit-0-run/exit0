@@ -1599,6 +1599,55 @@ if (gate.server)
 
 if (gate.server)
   describe("representations", () => {
+    // Every view opens with the same path header, and in HTML that path is walkable. Before
+    // this the mark was decorative and the <pre> held no anchors at all: a browser landing
+    // on /findings could not get back to / without editing the URL by hand.
+    test("every view opens with the EXIT0 path header", async () => {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001"]) {
+        const r = await hit(SRV, { path, headers: { accept: "text/plain" } });
+        is(r, 200, `GET ${path}`);
+        assert.match(r.text.split("\n")[0], /^EXIT0(?: \/ \S+)?$/, `${path}: the first line is not the path header, so there is no breadcrumb to link`);
+      }
+    });
+
+    test("the HTML representation is navigable: the mark goes home and so does the header", async () => {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001"]) {
+        const h = await hit(SRV, { path, headers: { accept: "text/html" } });
+        is(h, 200, `GET ${path} (html)`);
+        assert.match(h.text, /<a class="home" href="\/"/, `${path}: the mark is not a link, so clicking the logo does nothing`);
+        assert.match(h.text, /<a href="\/">EXIT0<\/a>/, `${path}: the path header is not a link home`);
+      }
+    });
+
+    // The agent surface must not move. Links are a HUMAN affordance and text/plain is what
+    // an agent parses by column: one stray anchor there and every column shifts.
+    test("no link ever reaches text/plain", async () => {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001", "/llms.txt"]) {
+        const r = await hit(SRV, { path, headers: { accept: "text/plain" } });
+        assert.ok(!/<a\s|<\/a>/.test(r.text), `${path}: an anchor leaked into the text representation`);
+      }
+    });
+
+    test("only paths the server actually serves become links, and content cannot make markup", async () => {
+      const P = await newProblem(SRV, {
+        title: "A problem whose text mentions paths",
+        problem: 'See /nowhere and /api/nope and <script>alert(1)</script> and "quoted" — also /work and 0001.',
+      });
+      const h = await hit(SRV, { path: `/${P.id}`, headers: { accept: "text/html" } });
+      is(h, 200, "the problem page as HTML");
+      // Escaping happens BEFORE linkification, so nothing a submitter wrote can be markup.
+      assert.ok(!/<script/i.test(h.text), "a script tag from problem text reached the page");
+      assert.match(h.text, /&lt;script&gt;/, "the script tag was not escaped into text");
+      // A path we do not serve is not a link, however much it looks like one.
+      assert.ok(!/href="\/nowhere"/.test(h.text), "/nowhere was linked, but this server does not serve it");
+      assert.ok(!/href="\/api\/nope"/.test(h.text), "/api/nope was linked, but this server does not serve it");
+      // One we do serve is, and so is a real problem id.
+      assert.match(h.text, /href="\/work"/, "/work in the body was not linked");
+      assert.match(h.text, /href="\/0001"/, "a real problem id in the body was not linked");
+      // Write-only routes are not GET targets and must not pretend to be.
+      assert.ok(!/href="\/api\/solution"/.test(h.text), "a POST-only route was rendered as a link");
+    });
+
     test("/ is text/plain by default, HTML only on request, no JS and no external resources", async () => {
       const t = await hit(SRV, { path: "/" });
       is(t, 200, "GET /");

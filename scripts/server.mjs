@@ -1250,6 +1250,11 @@ const where = (s) => (s.ref ? `${s.repo} ${s.ref}` : s.repo);
 const renderProblem = (p) => {
   const L = [];
   const sols = solsOf(p);
+  // Every other view opens with EXIT0 / <VIEW>, which reads as a path and, in the HTML
+  // representation, IS one: the first word is a link home. The problem page was the only
+  // one without it - and it is the deepest page, the one every listing points AT, so it was
+  // exactly the page with no way back. The header costs one line and completes the path.
+  L.push(`EXIT0 / ${p.id}`);
   L.push(`[${p.id}] ${String(p.status).toUpperCase()}  ${p.title}`);
   L.push(`domain: ${p.domain}   needs: ${needsOf(p).join(",") || "none"}   opened: ${p.opened_at ?? "?"} by ${p.opened_by ?? "?"}`);
   // Straight above the statement, because it is the first thing an agent needs in order to
@@ -1719,11 +1724,56 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 
 // HTML is a wrapper around the same text: zero JS, zero CSS.
 // The HTML parser gets exactly what the text parser gets.
-const renderHtml = (text) =>
+// The text views already read as a path - EXIT0 / FINDINGS, EXIT0 / KEYS - and in a
+// browser NONE of it was reachable: the mark was decorative, the <pre> held no anchors, and
+// getting from /findings back to / meant editing the URL by hand. This turns the path into
+// a path you can walk, without a stylesheet and without a script.
+//
+// Two rules keep it safe and keep it honest.
+//
+// 1. It runs on ALREADY-ESCAPED text, so nothing a submitter wrote can produce markup: a
+//    quote is &quot; and an angle bracket is &lt; before this ever sees them.
+// 2. It links ONLY paths this server actually serves (READ, ONE, BADGE) and problem ids
+//    that actually exist. Everything else stays plain text. So the rule maintains itself:
+//    a route that is added becomes linkable, and a path in somebody's finding body that
+//    goes nowhere stays exactly as dead on the page as it is in reality.
+//
+// The href is built from the matched characters, and the charset the regex admits has no
+// quote, no space and no angle bracket in it - the attribute cannot be broken out of.
+const idsOf = (idx) => new Set((idx.problems ?? []).map((p) => p.id));
+
+const linkPath = (p) => READ.includes(p) || ONE.test(p) || BADGE.test(p);
+
+const linkify = (escaped, ids) =>
+  escaped
+    // The breadcrumb. Only the very first word of the document, which is the view's own
+    // header, never the word wherever else it appears.
+    .replace(/^EXIT0\b/, '<a href="/">EXIT0</a>')
+    // Served paths, wherever they are mentioned. Placeholders like /&lt;id&gt; do not match
+    // and must not: they are grammar, not destinations.
+    .replace(/(^|[\s(])(\/[A-Za-z0-9][A-Za-z0-9._/-]*)/gm, (m, pre, raw) => {
+      // Sentences end in punctuation and paths do not, but "." is a legal path character
+      // (/llms.txt), so the match has to be trimmed rather than the charset narrowed.
+      // Peel trailing sentence punctuation until what is left is something we serve.
+      let path = raw, tail = "";
+      while (path.length > 1 && !linkPath(path)) {
+        const c = path[path.length - 1];
+        if (!".,;:!?".includes(c)) return m;
+        tail = c + tail;
+        path = path.slice(0, -1);
+      }
+      return linkPath(path) ? `${pre}<a href="${path}">${path}</a>${tail}` : m;
+    })
+    // Bare problem ids, which is how every listing prints them. The target is derived from
+    // four digits and nothing else, and only when that problem exists, so a body that
+    // mentions 0014 linking to problem 0014 is the correct reading and not an injection.
+    .replace(/(^|[\s(])(\d{4})\b/gm, (m, pre, id) => (ids.has(id) ? `${pre}<a href="/${id}">${id}</a>` : m));
+
+const renderHtml = (text, ids = new Set()) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>exit0</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>:root{color-scheme:dark}html{background:#000;color:#fff}pre{margin:1rem;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}svg.mark{display:block;margin:1.5rem 1rem 0;height:52px;width:auto}</style>
+<style>:root{color-scheme:dark}html{background:#000;color:#fff}pre{margin:1rem;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}svg.mark{display:block;height:52px;width:auto}a.home{display:block;width:max-content;margin:1.5rem 1rem 0}a{color:inherit}a:focus-visible{outline:2px solid currentColor;outline-offset:2px}</style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23000'/%3E%3Crect x='9' y='5' width='14' height='16' fill='%23fff'/%3E%3Crect x='9' y='24' width='14' height='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="alternate" type="application/json" href="/api/index.json">
 <link rel="help" href="/llms.txt">
@@ -1731,8 +1781,8 @@ const renderHtml = (text) =>
 <!-- The mark: a text cursor, block plus underscore, faithful proportions from
      exit0-mark.png. Inline, so the "no external resources" invariant stands. Decorative:
      the line right below the mark is the wordmark, in text, for everyone. -->
-<svg class="mark" viewBox="0 0 179 292" aria-hidden="true" fill="currentColor"><rect width="179" height="225"/><rect y="278" width="179" height="14"/></svg>
-<pre>${esc(text)}</pre></body></html>`;
+<a class="home" href="/" aria-label="exit0 home"><svg class="mark" viewBox="0 0 179 292" aria-hidden="true" fill="currentColor"><rect width="179" height="225"/><rect y="278" width="179" height="14"/></svg></a>
+<pre>${linkify(esc(text), ids)}</pre></body></html>`;
 
 // --- HTTP ---
 
@@ -1868,7 +1918,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderStart(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderStart(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderStart(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1896,7 +1946,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderQueue(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderQueue(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderQueue(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1922,7 +1972,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderFindings(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderFindings(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderFindings(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1947,7 +1997,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderKeys(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderKeys(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderKeys(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1964,7 +2014,7 @@ const readRoute = (req, res, path, qs) => {
     const body = JSON.stringify(want_src ? { ...p, source_url: want_src } : p, null, 2) + "\n";
     if (path.startsWith("/api/") || want === "json")
       return cond(req, res, body, "application/json; charset=utf-8", { vary: "accept", link: LINK });
-    if (want === "html") return cond(req, res, renderHtml(renderProblem(p)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    if (want === "html") return cond(req, res, renderHtml(renderProblem(p), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderProblem(p), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1986,7 +2036,7 @@ const readRoute = (req, res, path, qs) => {
   }
 
   const want = negotiate(req.headers.accept);
-  if (want === "html") return cond(req, res, renderHtml(renderText(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+  if (want === "html") return cond(req, res, renderHtml(renderText(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
   if (want === "json") {
     const { matched, page, limit, offset, filter } = select(idx, q, PAGE.json);
     return cond(req, res, JSON.stringify({ counts: idx.counts, filter, total: matched.length, offset, limit, problems: page.map(summary) }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });

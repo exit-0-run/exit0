@@ -716,9 +716,10 @@ const USAGE = [
   "stdout carries the complete body with the key and sig fields; stderr carries commentary only.",
   "",
   "claim is for the common case the rest of this CLI makes awkward: you already HAVE a",
-  "result and you want somebody to check it. It opens the problem and files your solution",
-  "under it, in that order, because the problem id is assigned by the server and your",
-  "solution signature covers it. Two signed writes, one command.",
+  "result and you want somebody to check it. It opens the problem, pushes your code and files your",
+  "solution under it, in that order: the problem id is assigned by the server, your solution",
+  "signature covers it, and the solution names the ref the push returned. THREE signed",
+  "writes, one command. The body needs `bundle` (a path) and `slug` besides repo and score.",
   "",
   "ask is the other half of that: somebody ELSE published a number and you want to know",
   "whether it holds. It signs a problem and nothing else, because the figure is not yours",
@@ -970,19 +971,36 @@ const claim = async (pem, base, raw) => {
     throw bad(400, `the third argument is not valid JSON: ${e.message}`);
   }
   if (!x.repo || x.score === undefined) throw bad(400, "a claim needs repo and score: it is a result looking for a check");
+  // Since the code has to live in the registry, a claim is THREE writes, not two, and the
+  // bundle is as required as the score. Checked before the first write: a claim that dies
+  // after opening the problem has spent the whole daily budget of one problem per key.
+  if (!x.bundle) throw bad(400, 'a claim needs "bundle": the PATH to a git bundle of your code (git bundle create x.bundle HEAD). The registry hosts the code now, so a solution that points nowhere it can fetch is not one.');
+  if (!x.slug) throw bad(400, 'a claim needs "slug": the short name your attempt lives under, e.g. "first-try"');
 
   // What the caller is holding when a step fails. The problem limit is ONE per key per
   // day, so a claim that dies on the second write has spent the whole daily budget and
   // left a problem open - and saying only "HTTP 400" leaves them to discover both by
   // running the same command again tomorrow.
   let opened = null;
+  let pushed = null;
   const stranded = () => {
     if (!opened) return;
     console.error("");
     console.error(`problem ${opened} IS open in the registry and your solution is NOT filed under it.`);
     console.error("You have spent your daily budget of 1 problem per key, so do not re-run claim.");
-    console.error("Fix the body and file the solution alone:");
-    console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":...,"score":...,"replaces":"-"}'`);
+    // Three writes means two places to strand, and the recovery differs. Handing over a
+    // solution command with no ref would be handing over a command that 422s: the registry
+    // hosts the code now, so the solution names the ref the push returned.
+    if (pushed) {
+      console.error(`Your code IS pushed, at ${pushed}. Fix the body and file the solution alone:`);
+      console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":...,"score":...,"ref":"${pushed}","replaces":"-"}'`);
+      console.error(`  curl -sS -X POST ${base}/api/solution -H 'content-type: application/json' -d @-`);
+      return;
+    }
+    console.error("Your code is NOT pushed. Push it, then file the solution with the ref that comes back:");
+    console.error(`  node scripts/sign.mjs sign ${pem} attempt '{"problem":"${opened}","slug":"...","bundle":"x.bundle"}'`);
+    console.error(`  curl -sS -X POST ${base}/api/attempt -H 'content-type: application/json' -d @-`);
+    console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":...,"score":...,"ref":"<the ref>","replaces":"-"}'`);
     console.error(`  curl -sS -X POST ${base}/api/solution -H 'content-type: application/json' -d @-`);
   };
 
@@ -1019,10 +1037,23 @@ const claim = async (pem, base, raw) => {
   // Everything from here on can fail with the problem already open, and not only over
   // HTTP: canonBody and payload refuse a value the grammar cannot carry, and they
   // refuse it BEFORE anything is sent. Both roads have to end at the same explanation.
+  // The attempt goes in BEFORE the solution, because the solution names its ref and the
+  // server checks that the ref resolves. Its own signed write, on its own budget.
+  let att;
+  try {
+    att = await send("attempt", canonBody("attempt", { ...x, problem: p.id }, []));
+    pushed = att.ref;
+    console.error(`attempt at ${att.ref}`);
+  } catch (e) {
+    console.error(`attempt: ${e?.message ?? e}`);
+    stranded();
+    process.exit(1);
+  }
+
   let sol;
   try {
     const solChanged = [];
-    const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-" }, solChanged);
+    const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-", ref: att.ref }, solChanged);
     for (const [label, before, after] of solChanged)
       console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     sol = await send("solution", solOut);

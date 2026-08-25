@@ -830,15 +830,32 @@ const solution = (b) => {
   verifySig(b, msg, f);
 
   const author = fingerprint(b.key);
+  // THE CODE LIVES HERE. `ref` used to be optional and the ordinary case was a repository
+  // of your own; that made this a registry of LINKS, and a link is only as durable as
+  // somebody else's account. A solved record whose repo is deleted points at nothing: the
+  // evidence bytes stay in git forever while the code that produced them is gone, so the
+  // one thing the registry exists to make checkable stops being checkable. Since Phase 3
+  // there is somewhere to put it, so now there is no excuse not to.
+  if (f.ref === "-")
+    throw bad(422, "a solution has to point at code hosted here: push it with POST /api/attempt and pass the ref that comes back", {
+      info: {
+        why: "a link to somebody else's host is only as durable as that account, and a verifier who cannot fetch the code cannot check the claim",
+        how: "git bundle create x.bundle HEAD  ->  sign.mjs sign key.pem attempt '{\"problem\":\"" + p.id + "\",\"slug\":\"...\",\"bundle\":\"x.bundle\"}'  ->  POST /api/attempt",
+        then: "put the ref it returns in this body as `ref`, and this registry's clone URL in `repo`",
+      },
+    });
+
   // The shape of the ref was checked while building the payload. What is checked here is
   // the CLAIM inside it: the problem it names and the fingerprint it sits under. Without
   // this anybody could file a solution pointing at a ref in somebody else's namespace, and
   // the namespace would stop meaning "this is mine" the moment it started meaning anything.
-  if (f.ref !== "-") {
-    const seg = f.ref.split("/");
-    if (seg[2] !== p.id) throw bad(400, `ref names problem ${seg[2]}, this submission is for ${p.id}`);
-    if (seg[3] !== author) throw bad(403, "ref sits under another key's fingerprint", { info: { yours: author } });
-  }
+  const seg = f.ref.split("/");
+  if (seg[2] !== p.id) throw bad(400, `ref names problem ${seg[2]}, this submission is for ${p.id}`);
+  if (seg[3] !== author) throw bad(403, "ref sits under another key's fingerprint", { info: { yours: author } });
+  // And it has to EXIST. Checking the shape without checking the object is how a record
+  // ends up naming a ref nobody can fetch, which is the exact failure this rule replaces.
+  try { git("rev-parse", "--verify", `${f.ref}^{commit}`); }
+  catch { throw bad(404, `${f.ref} does not exist here yet: push the attempt first, then submit`, { info: { push: "POST /api/attempt" } }); }
   const sid = solutionId(p.id, f.repo, f.score, b.key, f.replaces, f.ref);
   const sols = Array.isArray(p.solutions) ? p.solutions : [];
   // The chain is per (problem, repo, ref, key). ref belongs in it because attempts hosted
@@ -1147,7 +1164,7 @@ const finding = (b) => {
 // state lives in git, not that every write is a commit on one branch), and refs/attempts/*
 // is not fetched by a normal clone, so "there is no solution code in main" stays true and
 // the clone stays small.
-const ATTEMPT_MAX = 96 * 1024;
+const ATTEMPT_MAX = 512 * 1024;
 
 const attempt = (b) => {
   const p = readProblem(problemFile(b.problem));
@@ -2862,17 +2879,25 @@ const readRoute = (req, res, path, qs) => {
 
 const TOO_BIG = `body > ${MAX_BODY / 1024}KB, link to the output instead of pasting it`;
 
-const readBody = (req) =>
+// One route reads bigger than the rest, and only one. An attempt carries a git bundle as
+// base64, which inflates by 4/3, so a 512KB bundle needs about 700KB of body before the
+// JSON around it. Raising MAX_BODY globally to cover that would also raise the ceiling on
+// evidence, and problems/evidence/ is the only part of this repository that grows with
+// traffic - so the cap moves for the one path that needs it and nowhere else.
+const bodyCap = (action) => (action === "attempt" ? 1024 * 1024 : MAX_BODY);
+
+const readBody = (req, cap = MAX_BODY) =>
   new Promise((resolve, reject) => {
+    const tooBig = cap === MAX_BODY ? TOO_BIG : `body > ${cap / 1024}KB`;
     const declared = Number(req.headers["content-length"]);
-    if (Number.isFinite(declared) && declared > MAX_BODY) return reject(bad(413, TOO_BIG));
+    if (Number.isFinite(declared) && declared > cap) return reject(bad(413, tooBig));
     let n = 0;
     let done = false;
     const chunks = [];
     req.on("data", (c) => {
       if (done) return;
       n += c.length;
-      if (n > MAX_BODY) { done = true; reject(bad(413, TOO_BIG)); return; }
+      if (n > cap) { done = true; reject(bad(413, tooBig)); return; }
       chunks.push(c);
     });
     req.on("end", () => { if (!done) resolve(Buffer.concat(chunks).toString("utf8")); });
@@ -3023,7 +3048,7 @@ const handler = async (req, res) => {
     if (actions[action]) {
       if (req.method !== "POST")
         return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow: "POST" });
-      const raw = await readBody(req);
+      const raw = await readBody(req, bodyCap(action));
       const out = await withWriteLock(() => doWrite(req, action, raw));
       return json(req, res, out.code, out.body);
     }

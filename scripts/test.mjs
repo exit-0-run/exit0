@@ -204,8 +204,15 @@ const hit = (srv, opts = {}) =>
     req.end();
   });
 
-const post = (srv, action, obj, headers) =>
-  hit(srv, { method: "POST", path: `/api/${action}`, body: typeof obj === "string" ? obj : JSON.stringify(obj), headers });
+// The code lives in the registry now, so a solution names a ref that has to RESOLVE in the
+// repository the server is serving. Tests run against many trees, so the ref is materialised
+// here, against srv.dir, rather than at the 87 call sites that build a body: post() is the
+// only place that knows which server a body is actually going to.
+const post = (srv, action, obj, headers) => {
+  if (action === "solution" && obj && typeof obj === "object" && typeof obj.ref === "string" && obj.ref.startsWith("refs/attempts/"))
+    ensureRefIn(srv.dir, obj.ref);
+  return hit(srv, { method: "POST", path: `/api/${action}`, body: typeof obj === "string" ? obj : JSON.stringify(obj), headers });
+};
 
 const is = (res, code, why) =>
   assert.equal(res.status, code, `${why}: expected ${code}, got ${res.status}${res.err ? ` [${res.err}]` : ""} — ${res.text.slice(0, 400)}`);
@@ -240,13 +247,53 @@ const b64alts = (pub) => {
   return out;
 };
 
+// The code lives in the registry now, so every solution needs a ref that RESOLVES. These
+// fixtures write git objects directly (hash-object / mktree / commit-tree) rather than
+// going through POST /api/attempt: it is far faster, it spends no daily quota, and above
+// all it never touches the working tree - a dirty tree puts the server into read-only mode
+// (invariant 11) and every write test after it would 503.
+//
+// The slug is derived from the repo string each test passes, so two "different repos" stay
+// two different chain keys. That is what those tests are actually about, and it survives
+// the rule change without any of them being rewritten.
+const attemptRefs = new Set();
+const gitIn = (dir, args, input) =>
+  execFileSync("git", ["-C", dir, ...args], {
+    input, encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "a@b.c", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "a@b.c" },
+  }).trim();
+
+// Where a fixture attempt WOULD be. Pure: the sid is a function of the ref STRING, so the
+// path has to be decided before the body is signed, while the objects can appear later.
+// The slug is derived from the repo each test passes, so "two different repos" stay two
+// different chain keys - which is what those tests are about, and it is why none of them
+// had to be rewritten when the rule changed.
+const fixtureRef = (k, problem, repo) =>
+  `refs/attempts/${problem}/${sg.fingerprint(k.pub)}/t${createHash("sha256").update(String(repo ?? "-")).digest("hex").slice(0, 12)}`;
+
+// Objects written straight into the object database: no checkout, no add, no commit on a
+// branch. That matters more than the speed - touching the working tree would leave it dirty
+// and put the server into read-only mode (invariant 11), and every write test after it
+// would 503 for a reason nobody would look for here.
+const ensureRefIn = (dir, ref) => {
+  const memo = `${dir}|${ref}`;
+  if (attemptRefs.has(memo)) return ref;
+  try { gitIn(dir, ["rev-parse", "--verify", `${ref}^{commit}`]); attemptRefs.add(memo); return ref; } catch {}
+  const blob = gitIn(dir, ["hash-object", "-w", "--stdin"], "MIT\n");
+  const tree = gitIn(dir, ["mktree"], `100644 blob ${blob}\tLICENSE\n`);
+  const commit = gitIn(dir, ["commit-tree", tree, "-m", "fixture attempt"]);
+  gitIn(dir, ["update-ref", ref, commit]);
+  attemptRefs.add(memo);
+  return ref;
+};
+
 // replaces defaults to "-": a new submission under (problem, repo, key).
 // A correction of your own entry names the sid it is replacing (D1).
 const solBody = (k, o) =>
   signBody(k, "solution", {
     problem: o.problem, repo: o.repo, score: o.score,
     model: o.model ?? "?", note: o.note ?? "", replaces: o.replaces ?? "-",
-    builds_on: o.builds_on ?? "-", ref: o.ref ?? "-",
+    builds_on: o.builds_on ?? "-", ref: o.ref ?? fixtureRef(k, o.problem, o.repo),
   });
 
 // tolerance is SIGNED but not sent: the server takes it from the problem. A body that
@@ -1076,8 +1123,18 @@ if (gate.sign)
       assert.ok(srv.port, srv.why);
       const dir = mkTree("claim-half-cli");
       assert.equal(run(dir, "scripts/sign.mjs", ["keygen"]).code, 0);
-      // score 0.1 + 0.2 is outside the numToken grammar, so the problem write goes in
-      // and the solution write is refused: exactly the half-finished case.
+      // score 0.1 + 0.2 is outside the numToken grammar, so the problem and attempt writes
+      // go in and the SOLUTION write is refused: exactly the half-finished case. With three
+      // writes there are two ways to strand, and this is the one where the code is already
+      // pushed - so the recovery it hands over has to carry the ref, or it is a command
+      // that 422s.
+      const src = mkdtempSync(join(tmpdir(), "exit0-halfsrc-"));
+      trees.push(src);
+      gitIn(src, ["init", "-q"]);
+      writeFileSync(join(src, "LICENSE"), "MIT\n");
+      gitIn(src, ["add", "-A"]);
+      gitIn(src, ["commit", "-q", "-m", "half"]);
+      gitIn(src, ["bundle", "create", join(src, "x.bundle"), "HEAD"]);
       const body = JSON.stringify({
         title: "A claim that dies halfway",
         problem: "A problem statement long enough to pass the minimum-length validation.",
@@ -1087,6 +1144,8 @@ if (gate.sign)
         needs: [],
         repo: "https://example.com/half",
         score: 0.1 + 0.2,
+        slug: "half-try",
+        bundle: join(src, "x.bundle"),
       });
       const r = run(dir, "scripts/sign.mjs", ["claim", "identity.pem", `http://127.0.0.1:${srv.port}`, body]);
       assert.notEqual(r.code, 0, "a claim whose solution was refused must not report success");
@@ -1094,6 +1153,7 @@ if (gate.sign)
       assert.ok(id, `the failure has to name the problem that is now open: ${JSON.stringify(r.err.slice(0, 400))}`);
       assert.match(r.err, /sign\.mjs sign/, "the failure has to hand over the exact command that files the solution against it");
       assert.match(r.err, /1 problem|per day|budget/i, "the failure has to say the daily problem budget is spent");
+      assert.match(r.err, /refs\/attempts\//, "the code was pushed and the recovery command does not carry its ref, so following it verbatim returns 422");
       is(await hit(srv, { path: `/${id}` }), 200, "the problem really is open in the registry");
       await stop(srv, "SIGKILL");
     });
@@ -1205,7 +1265,7 @@ if (gate.server)
       const r = await post(SRV, "solution", solBody(kA, { problem: "0001", repo, score: 0.42, model: "opus-5" }));
       is(r, 201, "submitting a solution");
       assert.match(r.json?.sid ?? "", /^[0-9a-f]{16}$/, "a 201 has to return the sid — otherwise a verification cannot be addressed");
-      assert.equal(r.json.sid, sg.solutionId("0001", repo, 0.42, kA.pub, "-"));
+      assert.equal(r.json.sid, sg.solutionId("0001", repo, 0.42, kA.pub, "-", fixtureRef(kA, "0001", repo)), "ref is part of the sid, so the expected id has to carry the ref the body did");
       state.sid = r.json.sid;
       assert.equal(commits(TREE), c0 + 1, "an accepted write is a commit");
       const s = problemAt(TREE, "0001").solutions.find((x) => x.sid === state.sid);
@@ -3163,10 +3223,15 @@ if (gate.server)
       assert.notEqual(sidB, sidA);
 
       // Self-parent, computed by the submitter who can work out their own sid.
-      const selfSid = sg.solutionId(P.id, "https://example.com/self", 0.2, mkKey().pub, "-", "-");
+      // The ref is part of the sid, so a self-parent has to be computed with the SAME ref
+      // the body will carry - fixtureRef is what solBody puts there. Without this the id
+      // names nothing and the server answers "no such parent" (404) instead of "that is
+      // yourself" (400), and the test passes for the wrong reason or fails for one.
+      const selfRepo = "https://example.com/self";
       const kS = mkKey();
-      const selfOwn = sg.solutionId(P.id, "https://example.com/self", 0.2, kS.pub, "-", "-");
-      is(await post(srv, "solution", solBody(kS, { problem: P.id, repo: "https://example.com/self", score: 0.2, builds_on: selfOwn })), 400, "an entry naming itself as its own origin");
+      const selfSid = sg.solutionId(P.id, selfRepo, 0.2, mkKey().pub, "-", "-");
+      const selfOwn = sg.solutionId(P.id, selfRepo, 0.2, kS.pub, "-", fixtureRef(kS, P.id, selfRepo));
+      is(await post(srv, "solution", solBody(kS, { problem: P.id, repo: selfRepo, score: 0.2, builds_on: selfOwn })), 400, "an entry naming itself as its own origin");
       assert.ok(selfSid !== selfOwn, "sid has to depend on the key, or the case above is not what it claims");
 
       // Now the correction that used to be the trap: A's author replaces A, so sidA is
@@ -4013,11 +4078,23 @@ if (gate.server)
     test("the author of a published figure can file the conditions under their own key", async () => {
       const dir = mkTree("ask-own-figure");
       assert.equal(run(dir, "scripts/sign.mjs", ["keygen"]).code, 0);
+      // Since the registry hosts the code, `claim` is three writes and the bundle is as
+      // required as the score. This is the author's own code, bundled the documented way.
+      const src = mkdtempSync(join(tmpdir(), "exit0-claimsrc-"));
+      trees.push(src);
+      gitIn(src, ["init", "-q"]);
+      writeFileSync(join(src, "LICENSE"), "MIT\n");
+      gitIn(src, ["add", "-A"]);
+      gitIn(src, ["commit", "-q", "-m", "mine"]);
+      const bundle = join(src, "x.bundle");
+      gitIn(src, ["bundle", "create", bundle, "HEAD"]);
       const body = JSON.stringify(question({
         title: "My own published figure, filed for a stranger to check",
         problem: "I published this number myself. Filing the conditions here is the only way it stops being an unreproduced claim.",
         repo: SUBJECT,
         score: 3.2,
+        slug: "my-own-figure",
+        bundle,
       }));
       const r = run(dir, "scripts/sign.mjs", ["claim", "identity.pem", `http://127.0.0.1:${SRV.port}`, body]);
       assert.equal(r.code, 0, `nothing may block the author of a figure from filing it: ${r.err}`);

@@ -7,11 +7,12 @@
 //   node deploy/acceptance.mjs                      # http://127.0.0.1:8080
 //   node deploy/acceptance.mjs https://exit0.run    # writes to a PUBLIC registry
 //
-// It WRITES: one solution and three verifications, under fresh keys. Against a public
-// registry that is real content, so at the end it prints the exact revert commands.
+// It WRITES: one attempt, one solution and three verifications, under fresh keys. Against
+// a public registry that is real content, so at the end it prints the exact revert commands.
 // Nothing here is skipped silently: every check prints PASS or FAIL with the evidence.
 
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync, sign as edSign, createHash } from "node:crypto";
@@ -120,12 +121,48 @@ if (!check("the registry has a problem to submit against", !!problem, "no live p
 const PID = problem.id;
 const TOL = problem.acceptance.tolerance ?? 0.02;
 
-const solFields = { problem: PID, repo: `https://example.com/acceptance-${Date.now()}`, score: 0.31, model: "acceptance", note: "", replaces: "-" };
+// --- 4. the code, before the claim about it ---
+// A solution names code this registry hosts, so the push comes FIRST and the ref it
+// returns is what the solution signs. Nothing here is hard-coded: the ref is read off
+// the 201, so this stays a test of the flow rather than of a string. That distinction
+// is the reason this file exists at all - the suite in scripts/ builds bodies by hand
+// and would go on passing while the documented path was broken for a stranger.
+const gitIn = (d, ...a) =>
+  String(execFileSync("git", ["-C", d, ...a], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "acceptance", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "acceptance", GIT_COMMITTER_EMAIL: "a@example.com" },
+  })).trim();
+
+const src = mkdtempSync(join(tmpdir(), "exit0-acc-src-"));
+gitIn(src, "init", "-q");
+// A LICENSE at the tree root is a gate on the far side: a verifier has to be allowed
+// to run this. Acceptance publishes real code into a real registry, so it carries a
+// real licence rather than a file named like one.
+writeFileSync(join(src, "LICENSE"), "MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software.\n");
+writeFileSync(join(src, "run.sh"), "#!/bin/sh\necho 0.31\n");
+gitIn(src, "add", "-A");
+gitIn(src, "commit", "-q", "-m", "acceptance attempt");
+const bundlePath = join(src, "attempt.bundle");
+gitIn(src, "bundle", "create", bundlePath, "HEAD");
+const bundle = readFileSync(bundlePath);
+
+const attFields = { problem: PID, slug: `acceptance-${Date.now()}`.slice(0, 40), bundle_sha256: sha256(bundle) };
+const att = await post("attempt", { ...attFields, bundle: bundle.toString("base64"), key: A.pub, sig: sigOf(A, sg.payload("attempt", attFields)) });
+if (!check("code with nowhere of its own to live is pushed here and comes back as a ref", att.status === 201 && typeof att.json?.ref === "string" && /^[0-9a-f]{40}$/.test(att.json?.sha ?? ""), `HTTP ${att.status}: ${att.text.slice(0, 300)}`)) process.exit(1);
+const REF = att.json.ref;
+
+const solFields = { problem: PID, repo: att.json.repo ?? `${BASE}/`, score: 0.31, model: "acceptance", note: "", replaces: "-", ref: REF };
 const solBody = { ...solFields, key: A.pub, sig: sigOf(A, sg.payload("solution", solFields)) };
 
-// --- 4. the write path ---
+// --- 5. the write path ---
 const tampered = await post("solution", { ...solBody, score: 0.99 });
 check("a score swapped after signing is refused with the payload the server verified", tampered.status === 403 && typeof tampered.json?.expected_payload === "string", `HTTP ${tampered.status}: ${tampered.text.slice(0, 200)}`);
+
+// A solution that points nowhere this registry can fetch is not a solution: the whole
+// reason the push above exists is that a link is only as durable as somebody's account.
+const linkOnly = { ...solFields, ref: "-" };
+const noRef = await post("solution", { ...linkOnly, key: B.pub, sig: sigOf(B, sg.payload("solution", linkOnly)) });
+check("a solution that points at no hosted code is refused, and the answer says how to push it", noRef.status === 422 && /attempt/.test(noRef.json?.how ?? noRef.text), `HTTP ${noRef.status}: ${noRef.text.slice(0, 200)}`);
 
 const sol = await post("solution", solBody);
 if (!check("a signed solution is accepted", sol.status === 201 && /^[0-9a-f]{16}$/.test(sol.json?.sid ?? ""), `HTTP ${sol.status}: ${sol.text.slice(0, 300)}`)) process.exit(1);
@@ -160,7 +197,7 @@ check("correcting your own verdict has to name the verdict it replaces", noRepla
 const v2 = await post("verification", ver(B, { score: 0.9, verdict: "mismatch", output: "acceptance: run 2\n", replaces: VID }));
 check("a correction that names it is accepted", v2.status === 201, `HTTP ${v2.status}: ${v2.text.slice(0, 300)}`);
 
-// --- 5. derived state, read back over HTTP ---
+// --- 6. derived state, read back over HTTP ---
 const after = await hit("/api/index.json");
 const entry = (after.json?.problems ?? []).find((p) => p.id === PID)?.solutions?.find((s) => s.sid === SID);
 check("the head of the chain is what counts: an ok corrected to mismatch leaves the entry unverified", entry && entry.verified === false && entry.disputed === true && entry.settled === false, JSON.stringify(entry && { verified: entry.verified, disputed: entry.disputed, settled: entry.settled }));
@@ -302,4 +339,9 @@ console.log(`\nThis run left records in the registry. To undo them there:`);
 console.log(`  git -C <registry> log --oneline -4`);
 console.log(`  git -C <registry> revert --no-edit <the commits of ${SID}>`);
 console.log(`  git -C <registry> status --porcelain    # must come out empty`);
+// The attempt is not one of those commits and revert will not touch it: a ref update is
+// its own durable write, on purpose. Saying so here is the difference between a clean
+// instance and one carrying an acceptance branch nobody can account for.
+console.log(`\nAnd the pushed code, which is a ref and NOT a commit, so no revert reaches it:`);
+console.log(`  git -C <attempts> update-ref -d ${REF}`);
 process.exit(fails.length ? 1 : 0);

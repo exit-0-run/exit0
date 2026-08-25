@@ -46,6 +46,7 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `GET /<id>` | one problem in full, with the command to run |
 | `GET /api/problems` | the listing, `?status=` `?domain=` `?have=` `?limit=` `?offset=` |
 | `GET /keys` | who did the work: solved, checked, filed. A fold over git, stored nowhere |
+| `GET /gap` | every claim a stranger reran: what was claimed, what they got. Also a fold |
 | `POST /api/finding` | what you ran that did not become a solution. Needs standing |
 
 Got five minutes and no idea where to start? `GET /work` is the list of solutions nobody

@@ -1234,6 +1234,75 @@ const summary = (p) => ({
   problem: `/api/problems/${p.id}`,
 });
 
+// --- the gap: a claim against what a stranger got when they ran it ---
+// A fold over records already in git, on the same terms as tally(): it stores nothing, it
+// adds no field to any problem file, and any clone recomputes it from the same bytes.
+// Nothing it returns reaches status, frontier or a verdict. A registry whose headline can
+// narrow by an order of magnitude and show it nowhere is asking to be taken on trust,
+// which is the one thing this place does not sell - but the narrowing is arithmetic over
+// two signed numbers, not a report about an entry, so it never becomes a vote either
+// (invariants 15 and 16).
+//
+// Heads only, never every record and never the last element of the array: a verifier who
+// went ok -> mismatch -> ok reported ONE number, and verdictHeads() is the only thing here
+// that decides which one (invariant 8).
+const gapOf = (s, hib) => {
+  const heads = verdictHeads(Array.isArray(s.verifications) ? s.verifications : []).heads;
+  const got = heads.map((v) => v.score).filter((x) => typeof x === "number" && Number.isFinite(x));
+  const claimed = s.score;
+  if (!got.length || typeof claimed !== "number" || !Number.isFinite(claimed)) return null;
+  // best and worst in the METRIC's direction, not numerically: where lower wins, the
+  // smallest number a stranger got is the best one they got.
+  const best = hib ? Math.max(...got) : Math.min(...got);
+  const worst = hib ? Math.min(...got) : Math.max(...got);
+  // Measured against the WORST run, and signed so that a negative number always means the
+  // same thing: the claim was better than what came back. Against the best it would
+  // flatter every claim that happened to be checked twice.
+  const gap = hib ? worst - claimed : claimed - worst;
+  return {
+    claimed, best, worst, gap,
+    checks: heads.length,
+    spread: Math.max(...got) - Math.min(...got),
+    // Relative to the claim, and null rather than Infinity at a claim of 0: a percentage
+    // of nothing is not a number a reader can act on.
+    change: claimed === 0 ? null : gap / Math.abs(claimed),
+    mismatch: heads.some((v) => v.verdict === "mismatch"),
+    // The predicate behind frontier.caveat, at ENTRY scope. build.mjs stays the only thing
+    // that decides what the frontier is, and the listing still reads its flag: this is not
+    // a second opinion about the same entry, it is the only way to say the same thing about
+    // an entry the frontier does not name. It is a column beside the gap and never folded
+    // into it - see gapMoved.
+    conditions: heads.some((v) => v.verdict === "ok" && v.note),
+  };
+};
+
+// "Did not survive contact" is arithmetic, never a reading of anybody's prose: the number
+// came back different, or a stranger filed mismatch. Conditions sit beside it and are
+// deliberately NOT folded in - a claim reproduced to the digit under a stated condition
+// did reproduce, and saying otherwise would be the registry paraphrasing a signed sentence
+// into a verdict of its own.
+const gapMoved = (g) => g.gap !== 0 || g.mismatch;
+
+// Trimmed for DISPLAY, never for a comparison: 65.41 - 72.4 is -6.989999999999995 in
+// binary floating point and nothing above rounds. Both representations print through this,
+// so the text view and the JSON cannot disagree about the same subtraction.
+const numText = (x) => Number(Number(x).toFixed(6));
+
+// The share of the claim, as a percentage, to two places. Six would be false precision
+// about a ratio of two measurements, and it does not fit a column either. The unrounded
+// ratio is in /api/gap for anybody who wants to do their own arithmetic on it.
+const changeText = (c) => (c === null ? "-" : `${c > 0 ? "+" : ""}${Number((c * 100).toFixed(2))}%`);
+
+// The entry the registry is putting FORWARD, and only that one: the settled frontier, or
+// the top claim while nothing is settled. The widest gap anywhere on the problem would be
+// a number nobody is claiming, picked because it reads worst.
+const frontGap = (p) => {
+  const fr = p.frontier ?? {};
+  const sid = fr.best ?? fr.claimed;
+  const s = sid ? solsOf(p).find((x) => x.sid === sid) : null;
+  return s ? gapOf(s, !!(p.acceptance && p.acceptance.higher_is_better)) : null;
+};
+
 const listLine = (p) => {
   const sols = solsOf(p);
   const ver = sols.filter((x) => x.verified).length;
@@ -1243,6 +1312,9 @@ const listLine = (p) => {
   // A column, not a line per solution: this view stays a constant size no matter how big
   // the registry gets, so the count rides on a row that already exists.
   const keys = bestKeys(p);
+  // Two numbers, on the row where a reader meets the claim. One per problem, never one per
+  // solution, so this line is the same size at ten problems and at ten thousand.
+  const g = frontGap(p);
   return [
     `[${p.id}]`,
     String(p.status).toUpperCase().padEnd(11),
@@ -1258,6 +1330,9 @@ const listLine = (p) => {
     // constant-size line can usefully do. The word, not the sentence: paraphrasing a
     // signed claim into a listing would be the registry speaking for a verifier.
     p.frontier && p.frontier.caveat ? "CONDITIONS " : "",
+    // Printed only when the number actually moved: "72.4->72.4" is noise, and the row
+    // already says how many entries were verified. The full list is GET /gap.
+    g && g.gap !== 0 ? `${numText(g.claimed)}->${numText(g.worst)} ` : "",
     p.title,
   ].join(" ");
 };
@@ -1326,6 +1401,19 @@ const renderProblem = (p) => {
     // who did not get the sentence explaining what the number means. It is signed content
     // like any other and goes through the same escaping on the HTML path.
     if (s.note) L.push(`      note: ${s.note}`);
+    // The claim against what came back, spelled out rather than left as a subtraction
+    // between two lines. This page already printed both numbers; a reader who did not do
+    // the arithmetic read an unqualified score, which is exactly how a headline that has
+    // been narrowed by an order of magnitude goes on reading like the original headline.
+    // It is stated for an exact reproduction too: "a stranger got your numbers" is the
+    // sentence this whole registry is built to be able to print.
+    const g = gapOf(s, !!(p.acceptance && p.acceptance.higher_is_better));
+    if (g)
+      L.push(
+        `      claimed ${numText(g.claimed)}, ${g.checks === 1 ? "a stranger got" : `${g.checks} strangers got`} ` +
+        `${g.checks === 1 || g.best === g.worst ? numText(g.worst) : `${numText(g.best)}..${numText(g.worst)}`}` +
+        (g.gap === 0 ? ": the claim reproduced exactly" : `: ${g.gap > 0 ? "+" : ""}${numText(g.gap)}${g.change === null ? "" : ` (${changeText(g.change)})`} against the claim`)
+      );
     // How much independent evidence this entry rests on, before the verdicts themselves.
     // The marker on the line above is OK whether one key ran it or four, and one run on one
     // machine is a data point: the first confirmation here came with a note saying the same
@@ -1661,6 +1749,108 @@ const renderFindings = (idx, q) => {
   return L.join("\n") + "\n";
 };
 
+// Every claim a stranger has actually rerun, worst first. The route exists because the
+// most credible event this registry can produce - a headline narrowing after somebody else
+// ran it - lived on one detail page, under a heading that says findings change nothing.
+// The heading is right and the placement was wrong: "changes nothing derived" is not the
+// same sentence as "shows nowhere".
+const gapRows = (idx, q) => {
+  const problem = q.get("problem");
+  if (problem !== null && !/^\d{4}$/.test(problem)) throw bad(400, 'problem: 4 digits, e.g. "0001"');
+  const domain = q.get("domain");
+  if (domain !== null && !DOMAINS.includes(domain)) throw bad(400, `domain: one of ${DOMAINS.join(", ")}`);
+  // The default carries everything, including the claims that reproduced to the digit:
+  // a list of only the ones that moved would be a cut nobody declared, and the rows that
+  // did NOT move are the evidence that the ones that did mean something.
+  const only = q.get("moved");
+  if (only !== null && only !== "yes" && only !== "no") throw bad(400, "moved: yes or no");
+  const out = [];
+  for (const p of idx.problems ?? []) {
+    if (problem !== null && p.id !== problem) continue;
+    if (domain !== null && p.domain !== domain) continue;
+    const hib = !!(p.acceptance && p.acceptance.higher_is_better);
+    for (const s of solsOf(p)) {
+      const g = gapOf(s, hib);
+      if (!g) continue;
+      if (only === "yes" && !gapMoved(g)) continue;
+      if (only === "no" && gapMoved(g)) continue;
+      out.push({ p, s, g });
+    }
+  }
+  // A claim a stranger refused outright leads, then the widest move as a share of the
+  // claim, then the absolute move, then the ids. A reader who stops after one row has seen
+  // the strongest case that this registry checks itself. Deterministic to the last
+  // element, or paging would silently drop a row.
+  out.sort(
+    (a, b) =>
+      (b.g.mismatch ? 1 : 0) - (a.g.mismatch ? 1 : 0) ||
+      Math.abs(b.g.change ?? 0) - Math.abs(a.g.change ?? 0) ||
+      Math.abs(b.g.gap) - Math.abs(a.g.gap) ||
+      a.p.id.localeCompare(b.p.id) ||
+      a.s.sid.localeCompare(b.s.sid)
+  );
+  return out;
+};
+
+// Counted through gapRows, never through a second loop over the same records: two
+// implementations of one fold is how a headline count and the list under it start
+// disagreeing, and this pair is printed on the front door and on /gap at the same time.
+const gapTotals = (idx) => {
+  const rows = gapRows(idx, new URLSearchParams());
+  return { reruns: rows.length, moved: rows.filter((r) => gapMoved(r.g)).length };
+};
+
+// With one check there is one number and no range to print; with several, best..worst is
+// one cell that carries best, worst and the spread between them.
+const gotText = (g) => (g.checks === 1 || g.best === g.worst ? String(numText(g.worst)) : `${numText(g.best)}..${numText(g.worst)}`);
+
+const renderGap = (idx, q) => {
+  const rows = gapRows(idx, q);
+  const limit = intParam(q.get("limit"), PAGE.text, PAGE.max);
+  const offset = intParam(q.get("offset"), 0, 1e9);
+  const page = rows.slice(offset, offset + limit);
+  const t = gapTotals(idx);
+  const L = [];
+  L.push("EXIT0 / GAP");
+  L.push("what a claim was worth when a stranger reran it. None of this changes a status.");
+  L.push("");
+  L.push(`${t.reruns} rerun by a stranger   ${t.moved} moved   ${rows.length} shown   filter: ?moved=yes ?problem= ?domain=`);
+  L.push("");
+  if (!rows.length) {
+    L.push(t.reruns
+      ? "nothing matches that filter. Everything: GET /gap"
+      : "no claim here has been rerun by a stranger yet. That is the whole bottleneck: GET /work");
+    return L.join("\n") + "\n";
+  }
+  L.push("problem  solution          claimed      got          gap          change    checks  flags");
+  for (const { p, s, g } of page)
+    L.push(
+      [
+        p.id.padEnd(8),
+        s.sid.padEnd(17),
+        String(numText(g.claimed)).padEnd(12),
+        gotText(g).padEnd(12),
+        `${g.gap > 0 ? "+" : ""}${numText(g.gap)}`.padEnd(12),
+        changeText(g.change).padEnd(9),
+        String(g.checks).padEnd(7),
+        [g.mismatch ? "MISMATCH" : "", g.conditions ? "CONDITIONS" : ""].filter(Boolean).join(" "),
+      ].join(" ")
+    );
+  L.push("");
+  if (offset || offset + page.length < rows.length)
+    L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
+  L.push("");
+  L.push("claimed  the number the author signed.");
+  L.push("got      what a stranger got. Several checks print best..worst, in the direction of the metric.");
+  L.push("gap      the LEAST favourable run against the claim. Negative: the claim did not fully reproduce.");
+  L.push("change   the same gap as a share of the claim.");
+  L.push("flags    MISMATCH a run landed outside the signed band. CONDITIONS a run agreed and said what under.");
+  L.push("");
+  L.push("A gap is arithmetic over two signed numbers, not a verdict: it moves no status and no frontier.");
+  L.push("The claim, the command and every verdict in full: GET /<problem>. Contract: /llms.txt");
+  return L.join("\n") + "\n";
+};
+
 const renderQueue = (idx, q) => {
   const rows = needsCheck(idx, q);
   // The same paging as the front listing and as /api/work: a text reader who hits the
@@ -1813,6 +2003,12 @@ const renderText = (idx, q) => {
   if (!filtered) L.push("the registry where SOLVED means: a stranger ran your code and got your numbers");
   L.push("");
   L.push(`state: ${idx.counts.total} problems, ${idx.counts.open} open, ${idx.counts.solved} solved`);
+  // The line the whole place is for. counts.solved says how many claims a stranger has
+  // confirmed; this says how many the stranger's own run MOVED, which is the part that
+  // cannot be produced by trusting anybody. It counts rows and never prints them, so the
+  // front door stays the same size at ten problems and at ten thousand.
+  const gt = gapTotals(idx);
+  L.push(`rerun by a stranger: ${gt.reruns} ${gt.reruns === 1 ? "claim" : "claims"}, ${gt.moved} moved off the claimed number   GET /gap`);
   L.push(`head: ${headOf(idx)}   UTC day: ${today()}`);
   L.push("");
   if (!filtered) {
@@ -1826,6 +2022,7 @@ const renderText = (idx, q) => {
   // One line, not a column on every row: this view is a constant size no matter how big
   // the registry gets, and that is a property, not a preference.
   L.push("KEYS       GET /keys   who did the work, and which keys may POST /api/finding");
+  L.push("GAP        GET /gap    every claim a stranger reran: what was claimed, what they got");
   L.push("NOTES      GET /findings  what others ran and did not solve. Changes nothing (?kind= ?problem=)");
   L.push("FULL       /llms.txt   signature contract: /sign.mjs");
   // Where the signed records live, named ONCE. Not per row: this view is a constant size
@@ -2059,7 +2256,7 @@ const negotiate = (raw) => {
   return "text";
 };
 
-const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/keys", "/api/keys", "/findings", "/api/findings", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
+const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/keys", "/api/keys", "/findings", "/api/findings", "/gap", "/api/gap", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
 // /0001 and /api/problems/0001 are the same record. Four digits is unambiguous against
 // every other route, so the short form costs an agent nothing to guess.
 const ONE = /^\/(?:api\/problems\/)?(\d{4})$/;
@@ -2196,6 +2393,45 @@ const readRoute = (req, res, path, qs) => {
     if (negotiate(req.headers.accept) === "html")
       return cond(req, res, renderHtml(renderFindings(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderFindings(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+  }
+
+  if (path === "/gap" || path === "/api/gap") {
+    const rows = gapRows(idx, q);
+    if (path === "/api/gap" || negotiate(req.headers.accept) === "json") {
+      const limit = intParam(q.get("limit"), PAGE.json, PAGE.max);
+      const offset = intParam(q.get("offset"), 0, 1e9);
+      const page = rows.slice(offset, offset + limit);
+      const t = gapTotals(idx);
+      return cond(req, res, JSON.stringify({
+        head: headOf(idx),
+        reruns: t.reruns,
+        moved: t.moved,
+        total: rows.length,
+        limit,
+        offset,
+        // The same fence /api/findings carries, and for the same reason: this is a surface
+        // an agent reads in bulk, and it is exactly where a pile of arithmetic could be
+        // mistaken for something the registry derived from it. It derives nothing.
+        changes_nothing: true,
+        // claimed, best and worst are the signed numbers themselves. The three derived
+        // values are rounded through the same helper the text view prints with, so the two
+        // representations cannot disagree about one subtraction - redo it from claimed and
+        // worst if you want it exact.
+        gaps: page.map(({ p, s, g }) => ({
+          problem: p.id, status: p.status, domain: p.domain,
+          solution: s.sid, key: s.author,
+          claimed: g.claimed, best: g.best, worst: g.worst,
+          spread: numText(g.spread), gap: numText(g.gap),
+          change: g.change === null ? null : numText(g.change),
+          checks: g.checks, mismatch: g.mismatch, conditions: g.conditions, moved: gapMoved(g),
+          how: `/api/problems/${p.id}`,
+        })),
+        more: offset + page.length < rows.length,
+      }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
+    }
+    if (negotiate(req.headers.accept) === "html")
+      return cond(req, res, renderHtml(renderGap(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderGap(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
   if (path === "/keys" || path === "/api/keys") {

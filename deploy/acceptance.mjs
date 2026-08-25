@@ -231,6 +231,24 @@ check(
 const boardText = await hit("/keys", { headers: { accept: "text/plain" } });
 check("the text board explains its columns", boardText.status === 200 && /^solved\s/m.test(boardText.text) && /^standing\s/m.test(boardText.text), `HTTP ${boardText.status}`);
 
+// The same shape one route over: a fold over records already in git, so the only thing a
+// deployment can break is the route not being wired up. The entry above was claimed at
+// 0.31 and the head of the verifier's chain says 0.9, so this instance has a claim that
+// did not survive contact and has to be able to say so.
+const gap = await hit("/api/gap");
+const gapRow = (gap.json?.gaps ?? []).find((x) => x.solution === SID);
+check(
+  "the gap fold reports this claim against what the stranger got, and derives nothing from it",
+  gap.status === 200 && !!gapRow && gapRow.claimed === 0.31 && gapRow.worst === 0.9 && gapRow.moved === true && gapRow.mismatch === true && gap.json.changes_nothing === true && !("verdict" in gapRow),
+  `HTTP ${gap.status}: ${JSON.stringify(gapRow ?? gap.text.slice(0, 300))}`
+);
+const gapText = await hit("/gap", { headers: { accept: "text/plain" } });
+check(
+  "the text gap view explains its columns and flags the refusal",
+  gapText.status === 200 && /^claimed\s/m.test(gapText.text) && /^gap\s/m.test(gapText.text) && /MISMATCH/.test(gapText.text),
+  `HTTP ${gapText.status}: ${gapText.text.slice(0, 300)}`
+);
+
 // Standing is the whole reason findings are not a comment box. A deployment where an
 // unknown key can file one has lost the property, not just a test.
 const stranger = await hit("/api/finding", {

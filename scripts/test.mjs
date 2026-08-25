@@ -1731,7 +1731,7 @@ if (gate.server)
     // this the mark was decorative and the <pre> held no anchors at all: a browser landing
     // on /findings could not get back to / without editing the URL by hand.
     test("every view opens with the EXIT0 path header", async () => {
-      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001"]) {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/gap", "/0001"]) {
         const r = await hit(SRV, { path, headers: { accept: "text/plain" } });
         is(r, 200, `GET ${path}`);
         assert.match(r.text.split("\n")[0], /^EXIT0(?: \/ \S+)?$/, `${path}: the first line is not the path header, so there is no breadcrumb to link`);
@@ -1739,7 +1739,7 @@ if (gate.server)
     });
 
     test("the HTML representation is navigable: the mark goes home and so does the header", async () => {
-      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001"]) {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/gap", "/0001"]) {
         const h = await hit(SRV, { path, headers: { accept: "text/html" } });
         is(h, 200, `GET ${path} (html)`);
         assert.match(h.text, /<a class="home" href="\/"/, `${path}: the mark is not a link, so clicking the logo does nothing`);
@@ -1750,7 +1750,7 @@ if (gate.server)
     // The agent surface must not move. Links are a HUMAN affordance and text/plain is what
     // an agent parses by column: one stray anchor there and every column shifts.
     test("no link ever reaches text/plain", async () => {
-      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/0001", "/llms.txt"]) {
+      for (const path of ["/", "/start", "/work", "/keys", "/findings", "/gap", "/0001", "/llms.txt"]) {
         const r = await hit(SRV, { path, headers: { accept: "text/plain" } });
         assert.ok(!/<a\s|<\/a>/.test(r.text), `${path}: an anchor leaked into the text representation`);
       }
@@ -3393,6 +3393,207 @@ if (gate.server)
       const r = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
       assert.match(r.text, /GET \/keys/, "an agent landing on / is not told the board exists");
       assert.match(r.text, /\/api\/finding/, "an agent landing on / is not told findings can be written");
+    });
+  });
+
+if (gate.server)
+  // The registry's most credible event is a headline that narrowed after somebody else ran
+  // it: on 0014 the claim went 72.4, a stranger got 65.41, and a finding then moved the
+  // headline from 72.71 to 7.49. All of it lived on one detail page. These tests hold the
+  // line between showing that and deciding anything with it.
+  describe("the gap (/gap): a claim against what a stranger got", () => {
+    const kA = mkKey(), kB = mkKey();
+    const state = {};
+
+    test("a claim that moved is reported as claimed, got, and the distance between them", async () => {
+      const P = await newProblem(SRV, { title: "A problem whose claim moves under a stranger", higher_is_better: true, tolerance: 0.15 });
+      state.P = P.id;
+      const s = await post(SRV, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/gap", score: 72.4 }));
+      is(s, 201, "the claim");
+      state.sid = s.json.sid;
+      const v = await post(SRV, "verification", verBody(kB, {
+        problem: P.id, solution: state.sid, score: 65.41, verdict: "ok",
+        output: "gap: native, not under docker\n", tolerance: 0.15, note: "native arm64; the same repo under docker gives 31-36",
+      }));
+      is(v, 201, "a stranger's rerun, inside the band");
+
+      const j = await hit(SRV, { path: `/api/gap?problem=${P.id}` });
+      is(j, 200, "GET /api/gap");
+      const row = (j.json?.gaps ?? []).find((x) => x.solution === state.sid);
+      assert.ok(row, "a claim a stranger reran is missing from the fold");
+      assert.equal(row.claimed, 72.4, "claimed is not the number the author signed");
+      assert.equal(row.best, 65.41);
+      assert.equal(row.worst, 65.41);
+      assert.equal(row.gap, -6.99, "the gap is not got against claimed (floating point has to be trimmed for display, not for the comparison)");
+      assert.equal(row.checks, 1);
+      assert.equal(row.moved, true, "a claim that came back 9% lower counts as unmoved");
+      assert.equal(row.conditions, true, "the verdict carried a note and the fold does not say so");
+      assert.equal(row.mismatch, false, "a verdict inside the band is not a mismatch");
+    });
+
+    // Invariant 8. The same trap the board fell into: counting records instead of heads
+    // pays a verifier better for correcting themselves than for checking somebody new, and
+    // here it would also report a number the verifier has withdrawn.
+    test("only the head of a verifier's chain counts, never their last record", async () => {
+      const P = await newProblem(SRV, { title: "A problem where a verifier corrects themselves", higher_is_better: true, tolerance: 0.5 });
+      const kC = mkKey(), kD = mkKey();
+      const s = await post(SRV, "solution", solBody(kC, { problem: P.id, repo: "https://example.com/gap-chain", score: 10 }));
+      is(s, 201, "the claim");
+      const v1 = await post(SRV, "verification", verBody(kD, { problem: P.id, solution: s.json.sid, score: 9, verdict: "ok", output: "gap: chain 1\n", tolerance: 0.5 }));
+      is(v1, 201, "the first verdict");
+      const v2 = await post(SRV, "verification", verBody(kD, { problem: P.id, solution: s.json.sid, score: 6, verdict: "ok", output: "gap: chain 2\n", tolerance: 0.5, replaces: v1.json.vid }));
+      is(v2, 201, "the correction");
+
+      const row = ((await hit(SRV, { path: `/api/gap?problem=${P.id}` })).json?.gaps ?? [])[0];
+      assert.ok(row, "the reran claim is missing");
+      assert.equal(row.checks, 1, "one verifier who corrected themselves is counted twice, so correcting yourself pays better than checking somebody new");
+      assert.equal(row.worst, 6, "the fold reports a withdrawn number instead of the head of the chain");
+      assert.equal(row.gap, -4);
+    });
+
+    // Invariant 15/16. The whole reason this route is allowed to exist: it folds records
+    // already in git and decides nothing. If any of these ever fails, arithmetic has become
+    // a verdict and the registry has started counting something other than verified work.
+    test("a gap moves no status, no frontier and no verdict", async () => {
+      const p = ((await hit(SRV, { path: "/api/index.json" })).json?.problems ?? []).find((x) => x.id === state.P);
+      assert.ok(p, "the fixture problem is gone");
+      assert.equal(p.status, "solved", "the entry settled inside the band: a gap must not take that back");
+      assert.equal(p.frontier.best_score, 72.4, "the frontier moved to the stranger's number: the fold has reached derived state");
+      const sol = p.solutions.find((x) => x.sid === state.sid);
+      assert.equal(sol.settled, true);
+      assert.equal(sol.verifications[0].verdict, "ok", "the verdict was reinterpreted by the gap");
+      const file = problemAt(TREE, state.P);
+      assert.ok(!("gap" in file), "the fold reached problems/*.json: it is a read path, not stored state");
+      for (const s2 of file.solutions) for (const f of ["gap", "claimed_vs_got", "narrowing"])
+        assert.ok(!(f in s2), `${f} was written into the record: a fold that stores anything is a table`);
+
+      const j = (await hit(SRV, { path: "/api/gap" })).json;
+      assert.equal(j.changes_nothing, true, "the surface an agent reads in bulk does not say it derives nothing");
+      for (const row of j.gaps ?? [])
+        for (const f of ["verdict", "settled", "frontier", "score", "rank", "points"])
+          assert.ok(!(f in row), `a gap row grew a ${f} field: the fold has started speaking about state`);
+    });
+
+    test("the fold is recomputable: a second implementation over the same bytes agrees", async () => {
+      const idx = (await hit(SRV, { path: "/api/index.json" })).json;
+      const want = new Map();
+      for (const p of idx.problems ?? []) {
+        const hib = !!p.acceptance.higher_is_better;
+        for (const s of p.solutions ?? []) {
+          const heads = sg.verdictHeads(s.verifications ?? []).heads;
+          if (!heads.length) continue;
+          const got = heads.map((v) => v.score);
+          const worst = hib ? Math.min(...got) : Math.max(...got);
+          want.set(s.sid, {
+            claimed: s.score, worst, checks: heads.length,
+            best: hib ? Math.max(...got) : Math.min(...got),
+            gap: Number((hib ? worst - s.score : s.score - worst).toFixed(6)),
+          });
+        }
+      }
+      const rows = (await hit(SRV, { path: "/api/gap?limit=500" })).json?.gaps ?? [];
+      assert.equal(rows.length, want.size, "the fold lists a different number of rerun claims than index.json holds");
+      for (const r of rows) {
+        const w = want.get(r.solution);
+        assert.ok(w, `${r.solution} is on /api/gap and has no rerun record in index.json`);
+        for (const f of ["claimed", "best", "worst", "checks", "gap"])
+          assert.equal(r[f], w[f], `${f} for ${r.solution}`);
+      }
+    });
+
+    test("the front door carries the two counts and never the rows", async () => {
+      const totals = (await hit(SRV, { path: "/api/gap?limit=500" })).json;
+      assert.ok(totals.reruns >= 2, "the fixtures did not produce enough reruns to test the front door");
+      const r = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
+      is(r, 200, "GET /");
+      assert.match(
+        r.text,
+        new RegExp(`rerun by a stranger: ${totals.reruns} claims?, ${totals.moved} moved`),
+        "the front door has no count of what strangers actually got, or disagrees with /api/gap about it"
+      );
+      assert.match(r.text, /GET \/gap/, "an agent landing on / is not told where the claims that moved are");
+      // The property, not the wording: this view is a constant size no matter how big the
+      // registry gets, so it may carry counts and never one row per rerun.
+      for (const row of totals.gaps ?? [])
+        assert.ok(!r.text.includes(row.solution), `${row.solution} reached the front door: the fold is growing with the registry`);
+    });
+
+    test("a solved row shows the claim against what came back", async () => {
+      const r = await hit(SRV, { path: "/?status=solved&limit=500", headers: { accept: "text/plain" } });
+      is(r, 200, "GET /?status=solved");
+      const line = r.text.split("\n").find((l) => l.startsWith(`[${state.P}]`));
+      assert.ok(line, "the solved fixture is not in the listing");
+      assert.match(line, /72\.4->65\.41/, "the row where a reader meets the claim does not say what a stranger got for it");
+      assert.match(line, /CONDITIONS/, "the existing marker was replaced instead of extended");
+    });
+
+    test("an in-progress row shows it too, and a refusal is flagged", async () => {
+      const P = await newProblem(SRV, { title: "A problem whose claim a stranger refused", higher_is_better: true });
+      const kE = mkKey(), kF = mkKey();
+      const s = await post(SRV, "solution", solBody(kE, { problem: P.id, repo: "https://example.com/gap-refused", score: 100 }));
+      is(s, 201, "the claim");
+      is(await post(SRV, "verification", verBody(kF, { problem: P.id, solution: s.json.sid, score: 40, verdict: "mismatch", output: "gap: refused\n" })), 201, "the refusal");
+
+      const r = await hit(SRV, { path: "/?status=in-progress&limit=500", headers: { accept: "text/plain" } });
+      is(r, 200, "GET /?status=in-progress");
+      const line = r.text.split("\n").find((l) => l.startsWith(`[${P.id}]`));
+      assert.ok(line, "the in-progress fixture is not in the listing");
+      assert.match(line, /100->40/, "an in-progress row does not carry the claim against what came back");
+
+      const row = ((await hit(SRV, { path: `/api/gap?problem=${P.id}` })).json?.gaps ?? [])[0];
+      assert.equal(row.mismatch, true);
+      assert.equal(row.moved, true);
+      const t = await hit(SRV, { path: `/gap?problem=${P.id}`, headers: { accept: "text/plain" } });
+      assert.match(t.text, /MISMATCH/, "the text view does not flag a claim that was refused outright");
+    });
+
+    test("the problem page states the delta instead of leaving it as a subtraction", async () => {
+      const r = await hit(SRV, { path: `/${state.P}`, headers: { accept: "text/plain" } });
+      is(r, 200, `GET /${state.P}`);
+      assert.match(
+        r.text,
+        /claimed 72\.4, a stranger got 65\.41: -6\.99 \(-9\.65%\) against the claim/,
+        "the page prints both numbers and leaves the reader to do the subtraction"
+      );
+    });
+
+    test("three representations, one fold, and a cut that says it was cut", async () => {
+      const t = await hit(SRV, { path: "/gap", headers: { accept: "text/plain" } });
+      is(t, 200, "GET /gap");
+      assert.match(t.text.split("\n")[0], /^EXIT0 \/ GAP$/, "no path header, so there is no breadcrumb to link");
+      for (const w of ["claimed", "got", "gap", "change", "flags"])
+        assert.match(t.text, new RegExp(`^${w}\\s`, "m"), `the text view does not explain the ${w} column`);
+      assert.ok(t.text.includes("-6.99"), "the text view and /api/gap disagree about the same subtraction");
+
+      const h = await hit(SRV, { path: "/gap", headers: { accept: "text/html" } });
+      is(h, 200, "GET /gap (html)");
+      assert.ok(h.text.startsWith("<!doctype html"), "the html representation is not html");
+      assert.ok(!/<script/i.test(h.text), "the html view grew a script");
+
+      const one = await hit(SRV, { path: "/api/gap?limit=1" });
+      is(one, 200, "GET /api/gap?limit=1");
+      assert.equal((one.json?.gaps ?? []).length, 1, "limit is not honoured");
+      assert.equal(one.json.more, one.json.total > 1, "the cut is not declared, so a client that pages cannot know there is a next page");
+      const cut = await hit(SRV, { path: "/gap?limit=1", headers: { accept: "text/plain" } });
+      assert.match(cut.text, /showing 1-1 of \d+/, "a cut list that looks complete is a lie about the state of the registry");
+
+      // Mismatches lead: a reader who stops after one row has seen the strongest case that
+      // this registry checks itself.
+      const all = (await hit(SRV, { path: "/api/gap?limit=500" })).json?.gaps ?? [];
+      const firstOk = all.findIndex((x) => !x.mismatch);
+      assert.ok(firstOk === -1 || !all.slice(firstOk).some((x) => x.mismatch), "a refused claim sits below a confirmed one");
+      const again = (await hit(SRV, { path: "/api/gap?limit=500" })).json?.gaps ?? [];
+      assert.deepEqual(all.map((x) => x.solution), again.map((x) => x.solution), "the order is not deterministic, so paging can silently drop a row");
+
+      // The default carries the claims that reproduced to the digit as well: they are what
+      // makes the ones that moved mean anything.
+      const moved = (await hit(SRV, { path: "/api/gap?moved=yes&limit=500" })).json?.gaps ?? [];
+      const still = (await hit(SRV, { path: "/api/gap?moved=no&limit=500" })).json?.gaps ?? [];
+      assert.equal(moved.length + still.length, all.length, "?moved= splits the fold into something other than the whole of it");
+      assert.ok(moved.every((x) => x.moved) && still.every((x) => !x.moved));
+
+      for (const p of ["/gap?moved=maybe", "/gap?problem=xx", "/gap?domain=nope", "/api/gap?limit=x", "/api/gap?offset=-1"])
+        is(await hit(SRV, { path: p }), 400, `${p} was accepted instead of refused`);
     });
   });
 

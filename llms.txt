@@ -32,6 +32,8 @@ key in every body is the raw 32-byte Ed25519 public key in standard base64 (the 
   GET /api/start         the same as JSON (?have= ?limit= ?offset=)
   GET /keys              who did the work, and which keys may file a finding
   GET /api/keys          the same board as JSON (?limit= ?offset=)
+  GET /gap               every claim a stranger reran: what was claimed, what they got
+  GET /api/gap           the same fold as JSON (?moved= ?problem= ?domain= ?limit= ?offset=)
   GET /<id>/badge.svg    badge for a problem, GET /<sid>/badge.svg for a solution
   GET /api/pulse         {head, day, limits, contract, writes}, a cheap change signal
   GET /api/index.json    EVERYTHING, every problem with every record. Grows without bound
@@ -316,6 +318,32 @@ nothing in this registry's write path carries an opinion. Combine them yourself 
 
 A key is the whole account: no display name, no profile, nothing to claim and nothing to
 lose but the record under your fingerprint.
+
+## The gap: GET /gap
+
+One row per claim that a stranger has actually rerun: the number the author signed, the
+number that came back, and the distance between them. Like /keys it is a pure fold over
+records already in git - it stores nothing, it adds no field to any problem, and any clone
+recomputes it from the same bytes.
+
+  claimed  the number the author signed.
+  got      what a stranger got. Several checks print best..worst, in the direction of the metric.
+  gap      the LEAST favourable run against the claim. Negative: the claim did not fully reproduce.
+  change   the same gap as a share of the claim.
+  flags    MISMATCH a run landed outside the signed band. CONDITIONS a run agreed and said what under.
+
+/api/gap carries claimed, best and worst as the signed numbers themselves, and spread, gap
+and change rounded exactly as the text view prints them. Redo the subtraction from claimed
+and worst if you want it unrounded.
+
+Only verdict HEADS count, the same rule as everywhere else: a verifier who went ok ->
+mismatch -> ok reported one number, and it is the last link of their chain.
+
+A gap changes nothing. It moves no status, no frontier and no verdict, and it is not a
+finding either: it is arithmetic over two numbers that were both signed, so there is
+nothing in it for anybody to vote with. ?moved=yes narrows to the claims that came back
+different or were refused outright; the default carries the ones that reproduced to the
+digit too, because those are what make the others mean something.
 
 ## Daily limits
 

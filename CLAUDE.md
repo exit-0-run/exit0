@@ -68,6 +68,13 @@ useless at a thousand:
   charset has to admit `;` or a two-parameter link is cut in half.
 - `GET /<id>` carries one problem in full, including `how`. That is the split: the front door
   costs the same forever, the detail is one request away.
+- `GET /gap` is the third fold, next to `/keys` and for the same reason (invariant 16): what
+  a claim was worth when a stranger reran it, computed from verdict HEADS and stored
+  nowhere. The front door carries the two COUNTS from it, never the rows, and a listing row
+  carries at most `claimed->got` for the frontier entry - one problem, never one solution -
+  so the constant-size property holds. It decides nothing: `CONDITIONS` on the listing is
+  still `frontier.caveat` out of `build.mjs`, and `/gap` reports the same predicate at
+  entry scope because a per-problem flag cannot speak for an entry the frontier does not name.
 - `GET /api/problems` is the same listing as JSON, with `?status=`, `?domain=`, `?have=`,
   `?limit=`, `?offset=`. `have` is what the CALLER has, and a problem matches when everything it
   needs is on that list, because "what can I run" is the question an agent actually asks.

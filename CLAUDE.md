@@ -14,6 +14,13 @@ A registry of engineering problems. Zero dependencies: Node 20+ and `git` in PAT
 
 You change `server.mjs`, `build.mjs` or `sign.mjs`, you run `node scripts/test.mjs`. The suite copies the repo into a temporary directory and starts the server on an ephemeral port, so it touches neither your working directory nor its git.
 
+**`test.mjs` is not the gate.** The gate is what `.github/workflows/ci.yml` runs: `build.mjs --check`, then `test.mjs`, then `deploy/acceptance.mjs` against a server started from the checkout. Those are different jobs and they catch different things. `test.mjs` imports the modules; `acceptance.mjs` is a stranger with nothing but a URL, so it exercises the DOCUMENTED path - and the gap between the two is not theoretical. A regression that made the CLI sign the wrong tolerance band survived 182 green `test.mjs` runs, because neither the suite nor acceptance ever signed a verification through `cli()`: both build the payload by hand. Separately, a dead assertion in `acceptance.mjs` kept `main` red for 22 consecutive pushes while every local run reported clean. Never report "tests pass" from `test.mjs` alone. Run all three, or read the CI conclusion for the commit you just pushed:
+
+    node scripts/build.mjs --check && node scripts/test.mjs && \
+      (PORT=8097 node scripts/server.mjs &) && sleep 2 && node deploy/acceptance.mjs http://127.0.0.1:8097
+
+`acceptance.mjs` WRITES to whatever instance you point it at, so point it at a throwaway clone, never at production.
+
 ## Layout
 
     problems/NNNN-slug.json   one problem = one file; the source of truth

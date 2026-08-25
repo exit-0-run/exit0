@@ -748,7 +748,15 @@ const cli = (argv) => {
     }
     const changed = [];
     const out = canonBody(action, parsed, changed);
-    const msg = payload(action, out);
+    // The band travels BESIDE the body, never inside it. canonBody drops tolerance on
+    // purpose - it is signed and not sent - but building the payload from that same
+    // stripped object made tolT() see undefined and sign 0.02 whatever the caller passed.
+    // It failed SILENTLY: the printed body verifies locally and only the server disagrees,
+    // with a 403 that costs an attempt, in the one field llms.txt warns hardest about.
+    // Only `verification` is special-cased: payload("problem") reads a tolerance canonBody
+    // does keep, so widening the spread would put a raw value over a canonical one.
+    // `claim` below never signs a verification, so its own call site stays as it is.
+    const msg = payload(action, action === "verification" ? { ...out, tolerance: parsed.tolerance } : out);
     out.key = pub;
     out.sig = sign(null, Buffer.from(msg, "utf8"), priv).toString("base64");
     for (const [label, before, after] of changed)

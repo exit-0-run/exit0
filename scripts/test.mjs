@@ -862,6 +862,33 @@ if (gate.sign)
     // signature is computed from the object the CLI assembled, so a missing field still
     // verifies. The submission lands, and the author's lineage and published ref are
     // simply gone. This was real, caught while filing the first attempt by hand.
+    // The band is signed and NOT sent, so it is the one field where the two halves can
+    // drift apart in silence: the printed body verifies locally and only the server
+    // disagrees, with a 403 that costs an attempt against the address budget.
+    // This survived 182 green tests because NOTHING in the suite, and nothing in
+    // acceptance.mjs, ever signed a verification through cli(). Both build the payload by
+    // hand. The suite was testing the library while the documentation described the CLI.
+    test("sign verification signs the band it was GIVEN, not the default", () => {
+      for (const tol of [0, 0.15, 0.5]) {
+        const req = { problem: "0014", solution: "e2c43b145970c1ef", score: 65.41, verdict: "ok", output: "x", tolerance: tol };
+        const r = sgn(["sign", "identity.pem", "verification", JSON.stringify(req)]);
+        assert.equal(r.code, 0, r.err);
+        // Both sides. Asserting only "the payload contains the band" passes on the broken
+        // code whenever the caller happens to pass 0.02, which is how this got through.
+        assert.match(r.err, new RegExp(`\\\\|${String(tol).replace(".", "\\\\.")}\\\\|`), `the CLI did not sign the band it was given (${tol})`);
+        if (tol !== 0.02) assert.ok(!/\|0\.02\|/.test(r.err), `the CLI signed the default instead of ${tol}`);
+        // ...and the body must still not carry it: signed and not sent, both true at once.
+        assert.ok(!("tolerance" in JSON.parse(r.out)), "tolerance reached the wire body");
+      }
+      // A caller who names no band still signs the default, so nothing existing changes.
+      const bare = sgn(["sign", "identity.pem", "verification", JSON.stringify({ problem: "0014", solution: "e2c43b145970c1ef", score: 1, verdict: "ok", output: "x" })]);
+      assert.equal(bare.code, 0, bare.err);
+      assert.match(bare.err, /\|0\.02\|/, "an absent band no longer signs the documented default");
+      // Out of range is a refusal, never a silent clamp back to the default.
+      const wide = sgn(["sign", "identity.pem", "verification", JSON.stringify({ problem: "0014", solution: "e2c43b145970c1ef", score: 1, verdict: "ok", output: "x", tolerance: 0.9 })]);
+      assert.notEqual(wide.code, 0, "a band outside [0, 0.5] was accepted");
+    });
+
     test("sign carries every signed field, including the ones added last", () => {
       const REF = "refs/attempts/0014/d8f819414c0b/semver-scan";
       const req = { problem: "0014", repo: "https://example.com/r", score: 1, builds_on: "e2c43b145970c1ef", ref: REF };

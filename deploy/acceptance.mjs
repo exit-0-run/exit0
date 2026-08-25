@@ -88,7 +88,20 @@ check(
 );
 check("the instance takes writes right now", pulse.json?.writes === "ok", `writes=${pulse.json?.writes}, reason=${pulse.json?.reason}`);
 check("limits.attempts_left tells this address its own budget", Number.isInteger(pulse.json?.limits?.attempts_left), JSON.stringify(pulse.json?.limits));
-check("the served signer is the one the instance runs", sg.PREFIX === "exit0/v1", `PREFIX=${sg.PREFIX}`);
+// A second pin on exit0/v1 lived here, and it is DELETED rather than bumped. s/v1/v2/
+// would be green and vacuous: sg is imported from the sign.mjs this script downloaded four
+// lines earlier, so the check compares that file with itself and says nothing about the
+// instance. Comparing digests is a tautology too - server.mjs reads SIGN_SRC once, serves
+// those bytes at /sign.mjs and publishes sha16 of them as `contract`, and the Caddyfile is
+// a pure reverse_proxy, so both sides are the same bytes by construction. That swaps a dead
+// bird for a decorative one, which is the same failure wearing a green tick.
+// The property it reached for - the grammar I downloaded is the grammar you enforce - is
+// already covered below by WRITES: a body signed with the served payload() is accepted 201,
+// a swapped score is refused 403, and a verdict signed under a different band is refused 403
+// with the server's expected payload matching one computed locally from the served signer.
+// If the instance ran a different signer, all three fail. A staleness canary comparing a
+// LIVE instance against a clone is a different job and belongs in the deploy path; this
+// script has no copy of the repository, by design.
 
 // --- 2. identity ---
 const mkKey = () => {

@@ -742,9 +742,18 @@ const tally = (idx) => {
       const a = at(s.key);
       if (a) {
         a.attempts++;
-        // solved counts SETTLED entries only, the same rule the frontier uses. Anything
-        // else would put "submitted a lot" and "was proved right" in one column.
-        if (s.settled) a.solved++;
+        // solved counts SETTLED entries on a problem that is still standing. Two rules in
+        // one line, and both were paid for:
+        //   settled only - or "submitted a lot" and "was proved right" share a column.
+        //   not dead - or this column contradicts counts.solved on the front page, which
+        //   excludes dead problems. That was live for a few minutes: the front door read
+        //   "0 solved" while the board credited a key with 1, about a retired entry.
+        // Note the asymmetry with attempts/checked/filed below, which count a dead
+        // problem's records too. Those columns record WORK SOMEBODY DID, and retiring a
+        // problem does not undo it - erasing them would also revoke the standing that work
+        // bought, and standing is a fact about the moment you wrote (invariant 15).
+        // This column records an OUTCOME, and an outcome on a retired problem is not one.
+        if (s.settled && p.status !== "dead") a.solved++;
       }
       // Heads, not records: a verifier who went ok -> mismatch -> ok did one piece of
       // work and gets one credit, or correcting yourself would pay better than checking

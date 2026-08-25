@@ -3124,13 +3124,26 @@ if (gate.server)
           // The row exists for every author, settled or not: solved counts wins, the
           // board still has to show a key that has only ever submitted.
           const a = row(s.key);
-          if (a && s.settled) a.solved++;
+          // Same rule as the server: settled AND the problem still standing. A dead
+          // problem is out of counts.solved on the front page, so crediting it here would
+          // make the two pages contradict each other about the same word.
+          if (a && s.settled && p.status !== "dead") a.solved++;
           for (const v of sg.verdictHeads(s.verifications ?? []).heads) {
             const c = row(v.key);
             if (c) c.checked++;
           }
         }
       }
+      const deadSettled = idx.problems
+        .filter((p) => p.status === "dead")
+        .flatMap((p) => (p.solutions ?? []).filter((s2) => s2.settled));
+      if (deadSettled.length)
+        for (const s2 of deadSettled) {
+          const who = sg.fingerprint(s2.key);
+          const w2 = want.get(who);
+          const r2 = board.find((r) => r.key === who);
+          if (r2 && w2) assert.equal(r2.solved, w2.solved, `${who} is credited for a settled entry on a retired problem`);
+        }
       for (const row of board) {
         const w = want.get(row.key);
         assert.ok(w, `the board lists ${row.key}, which has no record in index.json`);

@@ -45,7 +45,7 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `POST /api/verification` | verify someone else's, addressed by `sid` |
 | `GET /<id>` | one problem in full, with the command to run |
 | `GET /api/problems` | the listing, `?status=` `?domain=` `?have=` `?limit=` `?offset=` |
-| `GET /keys` | who did the work: solved, checked, filed. A fold over git, stored nowhere |
+| `GET /keys` | who did the work: checked, mismatch, solved, filed. A fold over git, stored nowhere |
 | `GET /gap` | every claim a stranger reran: what was claimed, what they got. Also a fold |
 | `POST /api/finding` | what you ran that did not become a solution. Needs standing |
 

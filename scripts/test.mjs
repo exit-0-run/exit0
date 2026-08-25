@@ -3373,7 +3373,7 @@ if (gate.server)
       const row = (key) => {
         if (typeof key !== "string") return null;
         const who = sg.fingerprint(key);
-        if (!want.has(who)) want.set(who, { solved: 0, checked: 0, filed: 0 });
+        if (!want.has(who)) want.set(who, { solved: 0, checked: 0, mismatch: 0, filed: 0 });
         return want.get(who);
       };
       for (const p of idx.problems) {
@@ -3389,7 +3389,12 @@ if (gate.server)
           if (a && s.settled && p.status !== "dead") a.solved++;
           for (const v of sg.verdictHeads(s.verifications ?? []).heads) {
             const c = row(v.key);
-            if (c) c.checked++;
+            if (c) {
+              c.checked++;
+              // mismatch is folded over the same heads, so it can never exceed checked and
+              // a verifier who corrected one away is not still credited with it.
+              if (v.verdict === "mismatch") c.mismatch++;
+            }
           }
         }
       }
@@ -3408,6 +3413,7 @@ if (gate.server)
         assert.ok(w, `the board lists ${row.key}, which has no record in index.json`);
         assert.equal(row.solved, w.solved, `solved for ${row.key}`);
         assert.equal(row.checked, w.checked, `checked for ${row.key}`);
+        assert.equal(row.mismatch, w.mismatch, `mismatch for ${row.key}`);
         assert.equal(row.filed, w.filed, `filed for ${row.key}`);
       }
     });
@@ -3416,8 +3422,46 @@ if (gate.server)
       const board = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board;
       for (const row of board)
         assert.ok(row.solved <= row.attempts, `${row.key}: more solved than submitted, so solved is counting claims`);
-      const sorted = [...board].sort((a, b) => b.solved - a.solved || b.checked - a.checked || b.filed - a.filed || a.key.localeCompare(b.key));
+      const sorted = [...board].sort((a, b) => b.checked - a.checked || b.mismatch - a.mismatch || b.solved - a.solved || b.filed - a.filed || a.key.localeCompare(b.key));
       assert.deepEqual(board.map((r) => r.key), sorted.map((r) => r.key), "the board order is not deterministic to the last element, so paging can drop rows");
+    });
+
+    // The point of the column: a mismatch is the most expensive verdict to reach and the
+    // only one nothing else in the system rewards. It is a SUBSET of checked, folded over
+    // the same heads, so a verifier who went mismatch -> ok holds one verdict and it is
+    // the one they hold now. Counting records instead would leave the retracted mismatch
+    // standing forever and make "I was wrong" the profitable move.
+    test("mismatch counts verdict heads, so retracting one takes it back", async () => {
+      const P = await newProblem(SRV, { title: "A problem for the mismatch column" });
+      const author = mkKey();
+      const s = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/mismatch-column", score: 0.42 }));
+      is(s, 201, "the solution under test");
+      const sid = s.json.sid;
+      const v = mkKey();
+      const who = sg.fingerprint(v.pub);
+      const find = async () => (await hit(SRV, { path: "/api/keys?limit=500" })).json.board.find((r) => r.key === who);
+
+      const v1 = await post(SRV, "verification", verBody(v, { problem: P.id, solution: sid, score: 0.9, verdict: "mismatch", output: "out-mismatch" }));
+      is(v1, 201, "a mismatch verdict");
+      const after1 = await find();
+      assert.equal(after1.checked, 1, "the mismatch is not counted as work");
+      assert.equal(after1.mismatch, 1, "the mismatch column did not see a mismatch verdict");
+
+      const v2 = await post(SRV, "verification", verBody(v, { problem: P.id, solution: sid, score: 0.42, verdict: "ok", output: "out-ok", replaces: v1.json.vid }));
+      is(v2, 201, "the same verifier corrects themselves to ok");
+      const after2 = await find();
+      assert.equal(after2.checked, 1, "correcting a verdict paid a second credit for one piece of work");
+      assert.equal(after2.mismatch, 0, "a retracted mismatch still counts, so the column reads records and not heads");
+    });
+
+    test("mismatch never exceeds checked, and never buys standing on its own", async () => {
+      const board = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board;
+      for (const row of board) {
+        assert.ok(row.mismatch <= row.checked, `${row.key}: more mismatches than verdicts, so the two columns are not folded over the same heads`);
+        // The board gained a column; the gate must not have gained a rule. standing stays
+        // exactly attempts or checked, or the board credits work the gate does not count.
+        assert.equal(row.standing, row.attempts > 0 || row.checked > 0, `standing for ${row.key} moved when the mismatch column arrived`);
+      }
     });
 
     test("there is no composite score to game", () => {
@@ -3425,7 +3469,10 @@ if (gate.server)
       // here, /keys has stopped being a fold over facts.
       return hit(SRV, { path: "/api/keys" }).then((r) => {
         for (const row of r.json.board ?? [])
-          for (const f of ["score", "rank", "points", "rating", "reputation"])
+          // "total" is on the list because the mismatch column made one tempting: any sum
+          // over these columns is a weighting, and mismatch is a subset of checked, so a
+          // sum would not even be counting distinct work.
+          for (const f of ["score", "rank", "points", "rating", "reputation", "total"])
             assert.ok(!(f in row), `the board grew a ${f} field: that is a weighting nobody signed`);
       });
     });
@@ -3442,9 +3489,30 @@ if (gate.server)
     test("the text board explains every column and points at the queue", async () => {
       const r = await hit(SRV, { path: "/keys", headers: { accept: "text/plain" } });
       is(r, 200, "GET /keys");
-      for (const w of ["solved", "checked", "filed", "standing"])
+      for (const w of ["solved", "checked", "mismatch", "filed", "standing"])
         assert.match(r.text, new RegExp(`^${w}\\s`, "m"), `the board does not explain the ${w} column`);
       assert.match(r.text, /\/work|\/start/, "the board does not say what to do next");
+      // Verification is the scarce good and the board has to read that way. The header row
+      // is the one line that says which column the page is about.
+      const header = r.text.split("\n").find((l) => /^key\s+\S/.test(l)) ?? "";
+      assert.ok(header.indexOf("checked") > 0 && header.indexOf("checked") < header.indexOf("solved"), `the board leads with solved instead of with the verification work: ${header}`);
+      assert.ok(header.indexOf("mismatch") > 0 && header.indexOf("mismatch") < header.indexOf("solved"), `mismatch is not folded in beside the verdicts it comes from: ${header}`);
+    });
+
+    // "N keys" is true and it reads as N parties. It cannot be: a key costs nothing to
+    // make and this registry has no identity to check one against, so the count is a
+    // ceiling. Saying which keys belong together would need exactly the identity concept
+    // the project refuses to have; saying which way the number errs needs nothing.
+    test("the board says its key count is a ceiling, not a headcount", async () => {
+      const r = await hit(SRV, { path: "/keys", headers: { accept: "text/plain" } });
+      assert.match(r.text, /ceiling/, "the board reports a key count with nothing to stop a reader hearing it as a headcount");
+      assert.match(r.text, /not a person|two parties/, "the board does not say that a key is not a person");
+      // and it must not have grown the concept it is denying
+      for (const w of ["display name", "profile", "operator", "owner of this key"])
+        assert.ok(!r.text.includes(w), `the board grew the word "${w}", which is an identity concept this registry does not have`);
+      const j = (await hit(SRV, { path: "/api/keys" })).json;
+      assert.equal(typeof j.verifiers, "number", "/api/keys reports keys but not how many of them ever filed a verdict");
+      assert.ok(j.verifiers <= j.keys, "more verifiers than keys");
     });
 
     test("the front door advertises the board", async () => {

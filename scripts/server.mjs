@@ -728,7 +728,7 @@ const tally = (idx) => {
     } catch {
       return null;
     }
-    if (!by.has(id)) by.set(id, { who: fingerprint(k), attempts: 0, solved: 0, checked: 0, filed: 0, findings: 0 });
+    if (!by.has(id)) by.set(id, { who: fingerprint(k), attempts: 0, solved: 0, checked: 0, mismatch: 0, filed: 0, findings: 0 });
     return by.get(id);
   };
   for (const p of idx.problems ?? []) {
@@ -757,10 +757,15 @@ const tally = (idx) => {
       }
       // Heads, not records: a verifier who went ok -> mismatch -> ok did one piece of
       // work and gets one credit, or correcting yourself would pay better than checking
-      // somebody new.
+      // somebody new. mismatch is folded over the SAME heads and is a subset of checked,
+      // never a column beside it: a verifier who corrected a mismatch away is holding one
+      // verdict, and it is the one they hold now that counts (invariant 8).
       for (const v of verdictHeads(Array.isArray(s.verifications) ? s.verifications : []).heads) {
         const c = at(v.key);
-        if (c) c.checked++;
+        if (c) {
+          c.checked++;
+          if (v.verdict === "mismatch") c.mismatch++;
+        }
       }
     }
   }
@@ -1696,16 +1701,21 @@ const renderStart = (idx, q) => {
 // zero bytes to the repository.
 //
 // There is NO composite score, and that is the design. Any single number is a weighting,
-// a weighting is an opinion, and the write path here carries no opinions. Three columns
-// stay three columns; a reader who wants them combined can do it from /api/keys with a
+// a weighting is an opinion, and the write path here carries no opinions. The columns stay
+// separate columns; a reader who wants them combined can do it from /api/keys with a
 // weighting they chose themselves rather than one this registry chose for them.
 //
-// Order: solved, then checked, then filed, then fingerprint - deterministic to the last
-// element, or paging would silently drop rows.
+// Order: checked, then mismatch, then solved, then filed, then fingerprint - deterministic
+// to the last element, or paging would silently drop rows. Verification leads because it is
+// the scarce half of the work: a solution is worth what a stranger's minutes say it is
+// worth, and until somebody spends them the entry is a claim. This is a sequence of
+// tie-breaks over columns that are all still printed separately, NOT a weighted total - the
+// distinction invariant 16 draws is between ordering rows and scoring them, and no row here
+// carries a number that the columns beside it do not already say.
 const keyRows = (idx) => {
   const rows = [...tally(idx).values()].map((t) => ({ ...t, standing: standing(t) }));
   rows.sort(
-    (a, b) => b.solved - a.solved || b.checked - a.checked || b.filed - a.filed || a.who.localeCompare(b.who)
+    (a, b) => b.checked - a.checked || b.mismatch - a.mismatch || b.solved - a.solved || b.filed - a.filed || a.who.localeCompare(b.who)
   );
   return rows;
 };
@@ -1720,23 +1730,35 @@ const renderKeys = (idx, q) => {
   const queue = needsCheck(idx, new URLSearchParams());
   const waiting = queue.filter((r) => r.why === "first").length;
   const again = queue.filter((r) => r.why === "second").length;
+  const verifiers = rows.filter((r) => r.checked > 0).length;
   const L = [];
   L.push("EXIT0 / KEYS");
-  L.push("who did the work. A key is an account: no names, no profiles, nothing to claim.");
+  L.push("who did the work. Verification reads first: it is the half this registry is short of.");
   L.push("");
-  L.push(`${rows.length} ${rows.length === 1 ? "key" : "keys"}   ${rows.filter((r) => r.standing).length} with standing`);
+  L.push(`${rows.length} ${rows.length === 1 ? "key" : "keys"}   ${verifiers} ${verifiers === 1 ? "has" : "have"} filed a verdict   ${rows.filter((r) => r.standing).length} with standing`);
   L.push("");
   if (!rows.length) {
     L.push("nobody has written anything yet. GET /start");
     return L.join("\n") + "\n";
   }
-  L.push("key           solved  checked  filed  tries  notes  standing");
+  // The count above is a ceiling and saying so is the point. A key is free to make, this
+  // registry has no identity to check one against, and it therefore cannot tell two parties
+  // from one party holding two keys - so "N keys" is a true sentence that reads as more
+  // independent participation than it can possibly evidence. Naming which keys belong
+  // together would need exactly the identity concept this project refuses to have, and it
+  // would be state outside git besides. Naming the DIRECTION OF THE ERROR needs neither.
+  L.push("A key is not a person, and nothing here proves two keys are two parties: keys cost");
+  L.push(`nothing to make and there is no identity to check one against. So read ${rows.length} as a`);
+  L.push("ceiling on how much independent participation this registry has, never as a floor.");
+  L.push("");
+  L.push("key           checked  mismatch  solved  filed  tries  notes  standing");
   for (const r of page)
     L.push(
       [
         r.who.padEnd(13),
-        String(r.solved).padEnd(7),
         String(r.checked).padEnd(8),
+        String(r.mismatch).padEnd(9),
+        String(r.solved).padEnd(7),
         String(r.filed).padEnd(6),
         String(r.attempts).padEnd(6),
         String(r.findings).padEnd(6),
@@ -1747,8 +1769,11 @@ const renderKeys = (idx, q) => {
   if (offset || offset + page.length < rows.length)
     L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
   L.push("");
-  L.push("solved   your solutions a STRANGER ran and confirmed. Submitting does not count.");
   L.push("checked  verdicts you filed on other keys' solutions. Nobody can verify themselves.");
+  L.push("         The scarce work here: your clone, your sandbox, your minutes, their entry.");
+  L.push("mismatch those of your verdicts that did NOT hold. Part of checked, not a column");
+  L.push("         beside it. It is the hardest verdict to reach and nothing here pays for one.");
+  L.push("solved   your solutions a STRANGER ran and confirmed. Submitting does not count.");
   L.push("filed    problems you opened. It earns no standing: writing a problem is cheap.");
   L.push('standing whether this key may POST /api/finding. Earned by one solution or one verdict.');
   L.push("");
@@ -2523,12 +2548,17 @@ const readRoute = (req, res, path, qs) => {
       return cond(req, res, JSON.stringify({
         head: headOf(idx),
         keys: rows.length,
+        // Distinct keys holding a verdict head. `keys` alone reads as participation and is
+        // only a ceiling on it (see renderKeys); this is the population that does the work
+        // the registry is short of, and it is the number a JSON reader should quote.
+        verifiers: rows.filter((r) => r.checked > 0).length,
         limit,
         offset,
         // No score field, on purpose: see keyRows. Combine these columns with a weighting
-        // you picked, not one the registry picked for you.
+        // you picked, not one the registry picked for you. `mismatch` is a subset of
+        // `checked`, so adding the two counts one verdict twice.
         board: page.map((r) => ({
-          key: r.who, solved: r.solved, checked: r.checked, filed: r.filed,
+          key: r.who, checked: r.checked, mismatch: r.mismatch, solved: r.solved, filed: r.filed,
           attempts: r.attempts, findings: r.findings, standing: r.standing,
         })),
         more: offset + page.length < rows.length,

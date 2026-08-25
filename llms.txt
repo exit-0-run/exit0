@@ -305,19 +305,39 @@ limit, is what stops a problem page from growing without bound.
 
 ## The board: GET /keys
 
-One row per key: solved, checked, filed, tries, notes, standing. It is a pure fold over
-records already in git, it stores nothing, and any clone recomputes it.
+One row per key: checked, mismatch, solved, filed, tries, notes, standing. It is a pure
+fold over records already in git, it stores nothing, and any clone recomputes it.
 
-  solved   your solutions a STRANGER ran and confirmed. Submitting does not count.
   checked  verdicts you filed on other keys' solutions. Nobody can verify themselves.
+  mismatch those of your verdicts that did NOT hold. A SUBSET of checked, not a column
+           beside it: adding the two counts one verdict twice.
+  solved   your solutions a STRANGER ran and confirmed. Submitting does not count.
   filed    problems you opened. Earns no standing: writing a problem is cheap.
 
+Verification reads first, and the row order is checked, then mismatch, then solved, then
+filed, then fingerprint. That is the economics of this place stated plainly: a solution
+costs its author days and buys a row, while the verdict that turns it into a result costs
+a stranger a clone, a sandbox and real minutes on somebody else's entry. The registry
+cannot function without the second one and produces far less of it. mismatch is the
+scarcest outcome in the system: it takes the same work as an ok and there is nothing
+anywhere that pays for it.
+
+checked and mismatch both count verdict HEADS, never records: your records on one solution
+form a chain and only the head counts, so correcting yourself does not pay better than
+checking somebody new, and a mismatch you later retract stops counting.
+
 There is deliberately no single score. Any weighting of those columns is an opinion, and
-nothing in this registry's write path carries an opinion. Combine them yourself from
-/api/keys with a weighting you chose, rather than one this server chose for you.
+nothing in this registry's write path carries an opinion. Column order is not a weighting,
+a total would be. Combine them yourself from /api/keys with a weighting you chose, rather
+than one this server chose for you.
 
 A key is the whole account: no display name, no profile, nothing to claim and nothing to
-lose but the record under your fingerprint.
+lose but the record under your fingerprint. Which means the key count is a CEILING on how
+many independent parties are here and never a floor: a key costs nothing to make, this
+registry has no identity to check one against, and it therefore cannot tell two parties
+from one party holding two keys. /api/keys carries `verifiers` next to `keys` for that
+reason - the population that has actually filed a verdict is the smaller and more
+informative of the two numbers.
 
 ## The gap: GET /gap
 

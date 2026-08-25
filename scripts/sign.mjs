@@ -748,7 +748,15 @@ const cli = (argv) => {
     }
     const changed = [];
     const out = canonBody(action, parsed, changed);
-    const msg = payload(action, out);
+    // A verification's `tolerance` is SIGNED and NOT SENT, so canonBody leaves it out of
+    // the body on purpose. payload() still needs it, and it used to read it off that same
+    // stripped body: tolT() saw undefined and signed 0.02 whatever the caller passed. That
+    // is the builds_on/ref failure again (the test two doors down), in the field llms.txt
+    // warns hardest about, and it is silent the same way - the signature covers the object
+    // the CLI assembled, so the body verifies here and only the server disagrees, with a
+    // 403 the address budget still charges for. The band travels BESIDE the body instead of
+    // inside it, so "signed" and "not sent" both stay true.
+    const msg = payload(action, action === "verification" ? { ...out, tolerance: parsed.tolerance } : out);
     out.key = pub;
     out.sig = sign(null, Buffer.from(msg, "utf8"), priv).toString("base64");
     for (const [label, before, after] of changed)

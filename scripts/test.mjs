@@ -909,6 +909,35 @@ if (gate.sign)
       assert.ok(sg.check(body.key, body.sig, sg.payload("verification", body)));
     });
 
+    // The same failure as builds_on and ref two tests up, in the one field llms.txt warns
+    // hardest about. canonBody leaves `tolerance` out of the verification body on purpose:
+    // it is SIGNED and NOT SENT. But the CLI then built the payload from that same stripped
+    // body, so tolT() saw undefined and fell back to 0.02 whatever the caller passed. Silent
+    // by construction, again: the signature covers the object the CLI assembled, so the body
+    // verifies locally and only the server disagrees. The caller reads the band off /work
+    // correctly, passes it, and gets a 403 they cannot see coming - and the address budget
+    // counts a 403 like any other attempt. Only 9 of the 19 problems in this registry carry
+    // the default band, so this was most of the queue.
+    test("sign verification signs the band it was GIVEN, not the default", () => {
+      const req = { problem: "0014", solution: "33324d8ced8ba6ff", score: 65.41, verdict: "ok", output: '{"speedup":65.41}\n', tolerance: 0.15 };
+      const r = sgn(["sign", "identity.pem", "verification", JSON.stringify(req)]);
+      assert.equal(r.code, 0, r.err);
+      const body = JSON.parse(r.out);
+      assert.equal(body.tolerance, undefined, "tolerance is signed and NOT sent: it must not reach the wire body");
+      assert.ok(sg.check(body.key, body.sig, sg.payload("verification", { ...body, tolerance: 0.15 })), "the CLI did not sign the band it was given");
+      assert.ok(!sg.check(body.key, body.sig, sg.payload("verification", { ...body, tolerance: 0.02 })), "the CLI signed the default band instead of the one it was given");
+      // stderr is where a caller can actually SEE which band went into the signature.
+      assert.match(r.err, /\|0\.15\|/, `the signed payload on stderr has to carry the band: ${r.err.slice(0, 200)}`);
+      // A caller who passes nothing still gets the documented default, or this fix would
+      // change what every existing caller signs.
+      const bare = JSON.parse(sgn(["sign", "identity.pem", "verification", JSON.stringify({ ...req, tolerance: undefined })]).out);
+      assert.ok(sg.check(bare.key, bare.sig, sg.payload("verification", { ...bare, tolerance: 0.02 })), "the default band stopped being 0.02");
+      // Outside [0, 0.5] is a refusal, not a silent clamp back to the default.
+      const wide = sgn(["sign", "identity.pem", "verification", JSON.stringify({ ...req, tolerance: 0.9 })]);
+      assert.notEqual(wide.code, 0, "the CLI signed a band outside [0, 0.5]");
+      assert.match(wide.err, /tolerance/, `the refusal has to name tolerance: ${wide.err.slice(0, 200)}`);
+    });
+
     test("sign reads the body from @file and from stdin", () => {
       const req = JSON.stringify({ problem: "0001", repo: "https://example.com/r", score: 0.42, model: "?" });
       writeFileSync(join(cli, "body.json"), req);

@@ -913,6 +913,44 @@ if (gate.sign)
     const pem = join(cli, "identity.pem");
     const sgn = (args, input) => run(cli, "scripts/sign.mjs", args, input);
 
+    // The attempt path shipped with payload() knowing the action and cli() not knowing it,
+    // and four green tests that all built the body by hand through signBody. That is the
+    // SAME gap CLAUDE.md already names: a tolerance regression survived 182 green runs
+    // because neither the suite nor acceptance ever signed through cli(). So this one goes
+    // through the CLI, exactly as the documentation tells an agent to.
+    test("the CLI signs an attempt, and computes the digest from the bundle FILE", () => {
+      const dir = mkdtempSync(join(tmpdir(), "exit0-cliatt-"));
+      trees.push(dir);
+      const g = (...a) => execFileSync("git", ["-C", dir, ...a], { stdio: "pipe" });
+      g("init", "-q");
+      g("config", "user.email", "a@b.c");
+      g("config", "user.name", "t");
+      writeFileSync(join(dir, "LICENSE"), "MIT\n");
+      g("add", "-A");
+      g("commit", "-q", "-m", "x");
+      const bundle = join(dir, "x.bundle");
+      g("bundle", "create", bundle, "HEAD");
+
+      // Its own identity: this test runs before the keygen test, and depending on another
+      // test's side effect is how an ordering change turns into a mystery failure.
+      const mine = join(dir, "att.pem");
+      assert.equal(sgn(["keygen", mine]).code, 0, "keygen for the attempt test");
+      const r = sgn(["sign", mine, "attempt", JSON.stringify({ problem: "0001", slug: "cli-try", bundle })]);
+      assert.equal(r.code, 0, `the CLI cannot sign an attempt: ${r.err}`);
+      const body = JSON.parse(r.out);
+
+      // The digest is the CLI's, taken from the bytes on disk. A person pasting base64 and
+      // shasumming it separately is two chances to be wrong about the same bytes, and the
+      // server can only ever report the disagreement as a 403 nobody can diagnose.
+      const raw = readFileSync(bundle);
+      assert.equal(body.bundle_sha256, createHash("sha256").update(raw).digest("hex"), "the CLI signed a digest that is not the bundle's");
+      assert.equal(body.bundle, raw.toString("base64"), "the printed body has to be POSTable as it stands");
+
+      // And the signature has to verify against what payload() builds, or the CLI is
+      // signing one grammar while the server checks another.
+      assert.ok(sg.check(body.key, body.sig, sg.payload("attempt", body)), "the CLI's signature does not verify against payload()");
+    });
+
     test("keygen creates an identity and does NOT overwrite it silently", () => {
       const a = sgn(["keygen"]);
       assert.equal(a.code, 0, a.err);

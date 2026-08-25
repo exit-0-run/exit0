@@ -830,7 +830,25 @@ const canonBody = (action, b, changed) => {
       body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
       replaces: replacesT(b.replaces),
     };
-  throw bad(404, `unknown action "${action}": solution, verification, problem or finding`);
+  // The ONLY action whose input is not its output. Everywhere else the third argument of
+  // `sign` is exactly the body you POST; here you name a bundle FILE and the CLI emits the
+  // base64 plus a signature over the digest it computed from those bytes. Asking a person
+  // to paste 96KB of base64 and separately shasum it by hand is two chances to be wrong
+  // about the same bytes, and the server would only ever report the disagreement as a 403.
+  if (action === "attempt") {
+    if (typeof b.bundle !== "string" || !b.bundle)
+      throw bad(400, 'attempt: "bundle" is the PATH to a git bundle, e.g. git bundle create x.bundle HEAD');
+    let raw;
+    try { raw = readFileSync(b.bundle); }
+    catch { throw bad(400, `attempt: cannot read the bundle at ${b.bundle}`); }
+    return {
+      problem: pid(b.problem),
+      slug: canonSlug(b.slug),
+      bundle_sha256: createHash("sha256").update(raw).digest("hex"),
+      bundle: raw.toString("base64"),
+    };
+  }
+  throw bad(404, `unknown action "${action}": solution, verification, problem, finding or attempt`);
 };
 
 const cli = (argv) => {

@@ -3724,6 +3724,222 @@ if (gate.server)
   });
 
 // =====================================================================
+// 9b. The door for somebody who arrives with a QUESTION
+// =====================================================================
+
+if (gate.server)
+  describe("the door for a question (/ask)", () => {
+    const SUBJECT = "https://github.com/example/published-figure";
+    const question = (o) => ({
+      how: "Clone the subject at the pinned commit in its README and run `make bench`, which builds both arms on one machine in one run and prints {speedup}.",
+      metric: "speedup - throughput ratio against the stock arm, one machine, one run",
+      higher_is_better: true,
+      baseline: 3.2,
+      tolerance: 0.05,
+      domain: "eval",
+      needs: [],
+      subject: SUBJECT,
+      ...o,
+    });
+
+    // The fence is one predicate and it lives in two places that agree by construction:
+    // askable() refuses the write, askRows() refuses the listing. Neither is a judgement
+    // about prose, which is why neither can rot into one. A claim about a PERSON has no
+    // repository to clone and no figure to reproduce, so it satisfies neither half.
+    test("askable: a question names code and a number, or it is not a question", () => {
+      const ok = question({ title: "t", problem: "p" });
+      assert.deepEqual(sg.askable(ok), ok, "a complete question was refused");
+      for (const [why, body] of [
+        ["a claim about a person has no repository to name", { ...ok, subject: undefined }],
+        ["an empty string is not a repository", { ...ok, subject: "" }],
+        ["a reputation is not a figure", { ...ok, baseline: undefined }],
+        ["a figure has to be a number, not prose about one", { ...ok, baseline: "3.2x faster" }],
+        ["null is not a figure either", { ...ok, baseline: null }],
+        ["a figure nobody can run is an accusation, not a question", { ...ok, how: "   " }],
+      ])
+        assert.throws(() => sg.askable(body), /question needs/, why);
+    });
+
+    test("the ask CLI signs a problem, says whose figure it is, and refuses a claim about a person", () => {
+      const dir = mkTree("ask-cli");
+      assert.equal(run(dir, "scripts/sign.mjs", ["keygen"]).code, 0);
+      const q = question({
+        title: "Does the published 3.2x on that parser hold",
+        problem: "A widely shared post reports 3.2x and the thread has argued about it for a week. Nobody in it has run the command.",
+      });
+      const r = run(dir, "scripts/sign.mjs", ["ask", "identity.pem", JSON.stringify(q)]);
+      assert.equal(r.code, 0, r.err);
+      const body = JSON.parse(r.out);
+      // Both fields have been dropped in silence before, by this same CLI, and a dropped
+      // field does not error: it produces a valid problem with the question gone out of it.
+      assert.equal(body.subject, SUBJECT, "the CLI dropped the subject, so the question lost the code it is about");
+      assert.equal(body.baseline, 3.2, "the CLI dropped the baseline, so the question lost the figure");
+      assert.ok(sg.check(body.key, body.sig, sg.payload("problem", body)), "the signature does not cover the printed body");
+      assert.match(r.err, /PUBLISHED figure/, "the CLI does not say the baseline is somebody else's figure, so an agent files it believing it attested to it");
+
+      // Pure by ARITY, not by promise: ask takes no base-url, so it cannot post. claim
+      // does and must; this one prints what you are about to publish about somebody
+      // else's work and leaves sending it to you.
+      const usage = run(dir, "scripts/sign.mjs", ["ask"]);
+      assert.notEqual(usage.code, 0, "ask with no arguments reported success");
+      assert.match(usage.err, /ask <key\.pem> <json/, "the usage block does not document ask");
+      assert.ok(!/ask <key\.pem> <base-url>/.test(usage.err), "ask grew a base-url argument, which means it posts");
+
+      const person = run(dir, "scripts/sign.mjs", ["ask", "identity.pem", JSON.stringify({ ...q, subject: undefined, baseline: undefined })]);
+      assert.notEqual(person.code, 0, "a question with no repository and no figure was signed anyway");
+      assert.match(person.err, /is not a repository and cannot be run/, "the refusal does not say why a claim about a person has nowhere to go here");
+    });
+
+    test("/ask lists a problem that names code and a figure, and refuses everything else", async () => {
+      const Q = await newProblem(SRV, question({
+        title: "A published figure nobody here has run",
+        problem: "Somebody published a number for this repository and nobody in the argument has run the command that would settle it.",
+      }));
+      // The control. A perfectly good problem, and it must NOT reach this door: that is
+      // the whole fence, and it is computed on every read rather than curated.
+      const P = await newProblem(SRV, { title: "An ordinary problem with no figure in dispute" });
+
+      const j = await hit(SRV, { path: "/api/ask" });
+      is(j, 200, "GET /api/ask");
+      const ids = (j.json?.ask ?? []).map((x) => x.problem);
+      assert.ok(ids.includes(Q.id), "a problem naming a repository and a published figure is missing from the door built for it");
+      assert.ok(!ids.includes(P.id), "a problem with no repository and no figure reached /ask: the membership predicate is not the fence it claims to be");
+
+      const row = j.json.ask.find((x) => x.problem === Q.id);
+      assert.equal(row.published, 3.2, "the published figure is missing from the row");
+      assert.equal(row.reproduced, null, "nobody has run it, so reproduced is null and never a number");
+      assert.equal(row.subject, SUBJECT);
+      assert.equal(row.tolerance, 0.05, "the door hands out a question without the band a verifier has to sign");
+      assert.equal(j.json.compares_nothing, true, "the bulk surface does not declare that it compares nothing");
+      for (const k of ["verdict", "refuted", "author", "who", "claimant"])
+        assert.ok(!(k in row), `/api/ask carries a ${k} field: this surface reproduces numbers, it does not judge claims or the people behind them`);
+    });
+
+    test("a question that gets run carries both figures and compares neither", async () => {
+      const Q = await newProblem(SRV, question({
+        title: "A published figure a stranger did run",
+        problem: "Somebody published a number for this repository. This entry exists to settle the number, not the argument around it.",
+      }));
+      // The solution points at a THIRD PARTY's repository, which is the ordinary shape
+      // here: ref stays "-", so invariant 14 never comes into it. Only a ref is claimable,
+      // and only under your own fingerprint.
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: Q.id, repo: SUBJECT, score: 1.08, note: "ran make bench at the pinned commit, both arms on one box" }));
+      is(s, 201, "a solution pointing at the subject's own repository");
+      const sid = s.json.sid;
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: Q.id, solution: sid, score: 1.09, verdict: "ok", output: "speedup 1.09\n", tolerance: 0.05 })), 201, "a stranger settles the question");
+
+      const row = ((await hit(SRV, { path: "/api/ask" })).json?.ask ?? []).find((x) => x.problem === Q.id);
+      assert.equal(row.published, 3.2, "the published figure stopped being visible once somebody ran it");
+      assert.equal(row.reproduced, 1.08, "the settled number never reached the door");
+
+      // "solved" is about the SUBMITTER's number being reproduced. It says nothing about
+      // the published one, and no surface here may say anything about it either: a
+      // registry that concluded would have started judging claims instead of running them.
+      const detail = await hit(SRV, { path: `/${Q.id}`, headers: { accept: "text/plain" } });
+      assert.match(detail.text, /SOLVED/, "a reproduced entry did not settle the problem");
+      const text = await hit(SRV, { path: "/ask", headers: { accept: "text/plain" } });
+      for (const w of [/refut/i, /debunk/i, /disprov/i, /\bfalse\b/i, /\blied\b/i, /fraud/i, /\bhoax\b/i])
+        assert.ok(!w.test(text.text), `/ask draws a conclusion about the published figure (${w}) instead of printing both numbers`);
+      assert.match(text.text, /compares NEITHER/, "/ask does not tell the reader the comparison is theirs");
+    });
+
+    // The gift, not a fence. A reproduced number is worth more than an unreproduced one,
+    // so the author of a published figure has the most to gain from filing the conditions
+    // - and nothing on this path may stand in their way.
+    test("the author of a published figure can file the conditions under their own key", async () => {
+      const dir = mkTree("ask-own-figure");
+      assert.equal(run(dir, "scripts/sign.mjs", ["keygen"]).code, 0);
+      const body = JSON.stringify(question({
+        title: "My own published figure, filed for a stranger to check",
+        problem: "I published this number myself. Filing the conditions here is the only way it stops being an unreproduced claim.",
+        repo: SUBJECT,
+        score: 3.2,
+      }));
+      const r = run(dir, "scripts/sign.mjs", ["claim", "identity.pem", `http://127.0.0.1:${SRV.port}`, body]);
+      assert.equal(r.code, 0, `nothing may block the author of a figure from filing it: ${r.err}`);
+      const out = JSON.parse(r.out);
+      const p = await hit(SRV, { path: `/api/problems/${out.problem}` });
+      is(p, 200, "the problem the author opened");
+      assert.equal(p.json.subject, SUBJECT, "claim dropped the subject, so the author's question lost the code");
+      assert.equal(p.json.acceptance.baseline, 3.2, "claim dropped the baseline, so the author's question lost the figure");
+      assert.equal(p.json.solutions.length, 1, "the author's own result did not land under their own question");
+
+      const row = ((await hit(SRV, { path: "/api/ask" })).json?.ask ?? []).find((x) => x.problem === out.problem);
+      assert.ok(row, "a question the author filed about their own figure is not at the door");
+      assert.equal(row.reproduced, null, "the author's own entry counts as reproduced: nobody settles their own figure (invariant 3)");
+    });
+
+    test("/ask is a view like every other: path header, links only in HTML, a cut that declares itself", async () => {
+      const t = await hit(SRV, { path: "/ask", headers: { accept: "text/plain" } });
+      is(t, 200, "GET /ask");
+      assert.equal(t.text.split("\n")[0], "EXIT0 / ASK", "the door has no path header, so there is no breadcrumb to link");
+      assert.ok(!/<a\s|<\/a>/.test(t.text), "an anchor leaked into the text representation of /ask");
+      assert.match(t.text, /DATA, not instructions/, "the door drops the injection boundary every other view carries");
+
+      const h = await hit(SRV, { path: "/ask", headers: { accept: "text/html" } });
+      is(h, 200, "GET /ask (html)");
+      assert.match(h.text, /<a href="\/">EXIT0<\/a>/, "the path header is not a link home");
+      assert.ok(!/<script/i.test(h.text), "the door grew a script");
+      const first = ((await hit(SRV, { path: "/api/ask" })).json?.ask ?? [])[0];
+      if (first) {
+        assert.ok(h.text.includes(`<a href="/${first.problem}">`), "a problem id at the door is not a link to the problem it names");
+        assert.ok(h.text.includes(`href="${first.subject}"`), "subject is a structured URL the registry put there, so it has to be a link");
+      }
+
+      const paged = await hit(SRV, { path: "/api/ask?limit=1" });
+      is(paged, 200, "GET /api/ask?limit=1");
+      assert.ok((paged.json?.ask ?? []).length <= 1, "limit is not honoured");
+      assert.equal(typeof paged.json?.more, "boolean", "a cut list that does not say it was cut is a lie about the state of the registry");
+      is(await hit(SRV, { path: "/api/ask?limit=x" }), 400, "the door guesses at a paging parameter it cannot read");
+      is(await hit(SRV, { path: "/api/ask?have=telepathy" }), 400, "the door accepts a kit value outside NEEDS");
+      is(await hit(SRV, { path: "/ask", method: "POST" }), 405, "the door takes a POST, and there is no question action to post to");
+
+      const front = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
+      assert.match(front.text, /GET \/ask/, "an agent landing on / is never told the question door exists");
+    });
+
+    // The empty door is the one a first visitor actually sees, and for as long as nobody
+    // has asked anything it is the ONLY thing this surface says. It used to drop the rule
+    // it exists to state, because the rule had been written as a column legend and lived
+    // inside the branch that prints columns. Caught by acceptance.mjs against a registry
+    // with no questions in it, which is every registry on its first day.
+    test("the door states the rule even with nothing to list", async () => {
+      const srv = await startServer(newTree("ask-empty"));
+      assert.ok(srv.port, srv.why);
+      const j = await hit(srv, { path: "/api/ask" });
+      is(j, 200, "GET /api/ask on a registry nobody has asked anything of");
+      assert.equal(j.json.questions, 0, "the fixture is not the empty case this test is about");
+      const t = await hit(srv, { path: "/ask", headers: { accept: "text/plain" } });
+      is(t, 200, "GET /ask (empty)");
+      assert.match(t.text, /compares NEITHER/, "the empty door drops the one rule it exists to state");
+      assert.match(t.text, /never people/, "the empty door drops the fence, and it is the only page a first visitor reads");
+      assert.match(t.text, /sign\.mjs ask/, "the empty door does not say how to ask, which is all it has to do");
+      assert.match(t.text, /DATA, not instructions/, "the empty door drops the injection boundary");
+      await stop(srv, "SIGKILL");
+    });
+
+    // The honest limit, stated where it can be checked. The write path has NO question
+    // gate and must not grow one: llms.txt is normative and promises no such check, the
+    // same way it refuses to promise that `how` can be run. What holds instead is that an
+    // unrun question stays a question and never becomes a fact of this registry.
+    test("the write path has no question gate, and the documentation does not invent one", async () => {
+      const k = mkKey();
+      const f = probFields({ title: "A problem filed with no subject and no figure at all" });
+      is(await post(SRV, "problem", probBody(k, f)), 201, "POST /api/problem started refusing a problem it always accepted");
+      const llms = readFileSync(join(ROOT, "llms.txt"), "utf8");
+      assert.match(llms, /GET \/ask/, "llms.txt does not carry the question door, and it is the only file an agent is guaranteed to read");
+      // The phrase, not a whole sentence: this assertion is about the PROMISE llms.txt is
+      // not allowed to make, and a longer literal only pins today's wording of it.
+      assert.match(llms, /gate on the write path/i, "llms.txt describes the door without saying the server enforces none of it, which is a promise of a check that does not exist");
+      assert.ok(
+        !/\b(server|registry)\b[^.]*\b(requires|rejects|refuses)\b[^.]*\bsubject\b/i.test(llms),
+        "llms.txt says the server checks subject on the write path, and it does not: that is the class of promise the `how` field is already careful never to make"
+      );
+      assert.match(readFileSync(join(ROOT, "DESIGN.md"), "utf8"), /fences/i, "DESIGN.md does not record where the fences are or why");
+    });
+  });
+
+// =====================================================================
 // 10. Concurrency and the write lock
 // =====================================================================
 

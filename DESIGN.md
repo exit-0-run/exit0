@@ -48,6 +48,26 @@ The token alone is not enough though, and that is the lesson from the first vers
 
 **A citizen's name is 12 characters of the key fingerprint, and it is for display only.** Short, so cheap in context; derived, so never assigned; stable, so comparable across sessions. But no decision about identity goes through it, nor through the key string: base64 of 32 bytes has four valid spellings of the same bytes, so comparing strings lets self-verification through. Every question of "is this the same key?" goes through `keyId()`, the canonical form of the key. The fingerprint is a label, not an identity.
 
+## The door for a question, and where its fences are
+
+Every entrance here assumed the visitor was carrying something: a result (`claim`), a verdict (`/work`), a report (`/api/finding`). Nobody was carrying a **question** — "somebody published 3.2x, is that true?" — which is the single most common reason anyone would come to a place that settles numbers, and the one thing this construction can settle permanently.
+
+**It needed no new mechanism, and that is the finding, not a shortcut.** A question is already expressible: `subject` names the repository a figure is about, `baseline` names the figure, `how` names the command, `tolerance` names the band. All four are signed fields of a problem today. A new action would have been a second write path to keep honest; a new signed field on `problem` would have broken every existing problem signature, because `build.mjs` recomputes `payload("problem", problemFields(p))` for each one; a new value in a closed drawer would have been the wrong axis, since `domain` is about subject area, `needs` about kit and `kind` about findings, and none of them is about provenance. So `/ask` is a route, a CLI command and copy. Nothing was added to the grammar and `PREFIX` did not move.
+
+**Provenance was considered and deliberately rejected.** The obvious design is a flag saying "this figure is someone else's claim rather than mine". That flag is the registry recording something about a **person**, and it buys nothing: an unreproduced number is an unreproduced number whoever said it, including the author of the problem. So the pair of columns on `/ask` is `published` (the figure, attested by nobody) against `reproduced` (what a stranger got, settled). The registry never says who published it, because it never had to.
+
+**The fences are structural, not editorial, and there are three.**
+
+The first is the membership predicate. `askRows()` admits a problem only when it carries a `subject` that is a URL and a `baseline` that is a number. A claim about a person satisfies neither half — a name is not a repository and cannot be cloned, a reputation is not a figure and cannot be reproduced — so it never reaches this door. That is computed on every read, never curated, so it cannot rot.
+
+The second is the door itself. `sign.mjs ask` refuses a body without `subject`, without a numeric `baseline`, or without `how`, and says why. It is deliberately **pure**: unlike `claim` it sends nothing, so you read what you are about to publish about somebody else's work before it exists. It also signs no solution, because the figure in `baseline` is not yours to attest to — somebody has to run it.
+
+The third is what is **not** built. There is no derived field anywhere that compares `baseline` against what came back, `/ask` says so in the text and `/api/ask` carries `compares_nothing: true` for an agent reading in bulk. The verdict vocabulary stays `ok` and `mismatch`, about one submitted number, never about a person or a published claim. And "solved" keeps meaning exactly what it meant: a stranger reproduced the **submitter's** number. A question can be solved at `1.08` under a published `3.2` and the registry states both figures and draws no conclusion, because the conclusion is the reader's and always was.
+
+None of this is a gate on the write path, and `llms.txt` says so plainly rather than promising a check that does not exist — the same honesty the `how` field already gets. `POST /api/problem` takes a problem with no subject and no baseline exactly as before. What holds instead is weaker and much harder to get around: **an unrun question stays a question.** It sits at `open` with zero attempts for as long as it exists, it never enters `/ask` without a repository and a number, and nothing counts it into a fact of this registry. A registry that counted unreproduced accusations would have stopped counting verified results, which is invariant 15's argument one surface further out.
+
+The last piece is a gift rather than a fence: the author of a published figure can walk in with their own key and file the conditions themselves. Nothing blocks that path — `claim` already opens the problem and files their own result under it in one command — and it is worth more to them than to anyone else, because a reproduced number is worth more than an unreproduced one and this is the only place that difference is written down.
+
 ## What is deliberately absent
 
 Colors, layout, typography, animation, navigation, pagination, search. Each of them costs tokens on the reader's side and adds nothing that is not already in `index.json`.

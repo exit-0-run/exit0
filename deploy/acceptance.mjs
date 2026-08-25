@@ -261,6 +261,38 @@ check("a finding from a key with nothing behind it is refused", [400, 401, 403].
 const front = await hit("/", { headers: { accept: "text/plain" } });
 check("the front door advertises the board and the finding route", /GET \/keys/.test(front.text) && /\/api\/finding/.test(front.text), front.text.slice(0, 400));
 
+// The door for somebody arriving with a QUESTION rather than a result. It stores nothing
+// and its inventory is a predicate over records already in git, so the only thing a
+// deployment can break is the route not being wired up - or the predicate drifting from
+// the one the documentation states, which is what the second check is for. That one is
+// not vacuous on an empty registry: it compares two counts, and 0 against 1 still fails.
+const ask = await hit("/api/ask");
+check(
+  "the question door answers, pages, and declares that it compares nothing",
+  ask.status === 200 && Array.isArray(ask.json?.ask) && ask.json?.compares_nothing === true && typeof ask.json?.more === "boolean",
+  `HTTP ${ask.status}: ${ask.text.slice(0, 300)}`
+);
+const wouldAsk = (idx.json?.problems ?? []).filter(
+  (p) => p.status !== "dead" && typeof p.subject === "string" && p.subject && typeof p.acceptance?.baseline === "number"
+).length;
+check(
+  "the door's inventory IS the membership predicate: a repository and a figure, computed and never curated",
+  ask.json?.questions === wouldAsk,
+  `the door says ${ask.json?.questions}, the index holds ${wouldAsk} live problems naming both a repository and a figure`
+);
+check(
+  "every question at the door names code and a figure, and judges nobody",
+  (ask.json?.ask ?? []).every((r) => /^https?:\/\//.test(String(r.subject)) && typeof r.published === "number" && !("verdict" in r) && !("author" in r)),
+  JSON.stringify(ask.json?.ask?.[0] ?? null)
+);
+const askText = await hit("/ask", { headers: { accept: "text/plain" } });
+check(
+  "the text door explains what a question is made of and refuses to compare the two figures",
+  askText.status === 200 && askText.text.startsWith("EXIT0 / ASK") && /compares NEITHER/.test(askText.text) && /never people/.test(askText.text),
+  `HTTP ${askText.status}: ${askText.text.slice(0, 200)}`
+);
+check("the front door advertises the question door", /GET \/ask/.test(front.text), front.text.slice(0, 600));
+
 const html = await hit("/", { headers: { accept: "text/html" } });
 check("HTML is served only on request, with no scripts and nothing pulled from the network", html.text.startsWith("<!doctype html") && !/<script/i.test(html.text) && !/\b(?:src|href)\s*=\s*["']https?:/i.test(html.text), html.text.slice(0, 120));
 

@@ -643,6 +643,7 @@ const USAGE = [
   "  node scripts/sign.mjs whoami [file.pem]",
   "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding> <json|@file|->",
   "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
+  "  node scripts/sign.mjs ask <key.pem> <json|@file|->",
   "",
   "The third argument of sign is EXACTLY the body you are about to POST.",
   "stdout carries the complete body with the key and sig fields; stderr carries commentary only.",
@@ -651,12 +652,40 @@ const USAGE = [
   "result and you want somebody to check it. It opens the problem and files your solution",
   "under it, in that order, because the problem id is assigned by the server and your",
   "solution signature covers it. Two signed writes, one command.",
+  "",
+  "ask is the other half of that: somebody ELSE published a number and you want to know",
+  "whether it holds. It signs a problem and nothing else, because the figure is not yours",
+  "to sign. subject and baseline are required, and that requirement is the point: a",
+  "question about a person has neither, so it cannot be written down here at all.",
 ].join("\n");
 
 const readArg = (a) => {
   if (a === "-") return readFileSync(0, "utf8");
   if (a.startsWith("@")) return readFileSync(a.slice(1), "utf8");
   return a;
+};
+
+// The two fields that turn a problem into a QUESTION, and the reason the question door
+// needed no new action, no new drawer and no bump of PREFIX: `subject` is where the
+// published figure lives and `baseline` is the figure. Both have been signed fields of a
+// problem all along. Checked BEFORE canonBody, so a missing half is named here instead of
+// arriving as a signed body whose author cannot see what is wrong with it.
+//
+// The requirement is the fence, not a formality. A claim about a PERSON has no repository
+// to clone and no number to reproduce, so it cannot get past these three lines, and the
+// registry never has to judge prose to keep that true. The server does NOT enforce this
+// and must not: there is no "question" action, POST /api/problem takes what it always
+// took. What holds on the write path is weaker and more durable - a question nobody runs
+// stays a question, open with zero attempts, never a fact of this registry.
+export const askable = (b) => {
+  if (b === null || typeof b !== "object" || Array.isArray(b)) throw bad(400, "a question is a JSON object");
+  if (b.subject === undefined || b.subject === null || b.subject === "")
+    throw bad(400, "a question needs `subject`: the repository the published figure is about. A person is not a repository and cannot be run, so there is nothing here to file");
+  if (typeof b.baseline !== "number")
+    throw bad(400, "a question needs `baseline`: the figure that was published, as a JSON number. Without a number a stranger can reproduce there is nothing to settle");
+  if (typeof b.how !== "string" || !b.how.trim())
+    throw bad(400, "a question needs `how`: the command that settles it. A figure nobody can run is not a question, it is an accusation");
+  return b;
 };
 
 // Canonicalization on the client side: the server never fixes anything, so the
@@ -792,6 +821,40 @@ const cli = (argv) => {
     for (const [label, before, after] of changed)
       console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     console.error(`signed: ${msg}`);
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+
+  // The door for arriving with a QUESTION rather than a result. It is `sign ... problem`
+  // with subject and baseline made mandatory, and those two ARE the fence (see askable).
+  // Pure like sign and deliberately not like claim: it prints the body and sends nothing,
+  // so you read what you are about to publish about somebody else's work before it exists.
+  // It signs no solution either, because the figure in baseline is not yours to attest to
+  // - somebody has to RUN it, and that somebody may well be you, one write later.
+  if (cmd === "ask") {
+    const [pem, body] = rest;
+    if (!pem || body === undefined) {
+      console.error(USAGE);
+      process.exit(1);
+    }
+    const priv = createPrivateKey(readFileSync(pem, "utf8"));
+    const pub = pubToB64(createPublicKey(priv));
+    let parsed;
+    try {
+      parsed = JSON.parse(readArg(body));
+    } catch (e) {
+      throw bad(400, `the third argument is not valid JSON: ${e.message}`);
+    }
+    const changed = [];
+    const out = canonBody("problem", askable(parsed), changed);
+    const msg = payload("problem", out);
+    out.key = pub;
+    out.sig = sign(null, Buffer.from(msg, "utf8"), priv).toString("base64");
+    for (const [label, before, after] of changed)
+      console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    console.error(`signed: ${msg}`);
+    console.error(`baseline ${out.baseline} is the PUBLISHED figure. You are not signing that it is true, and neither is this registry.`);
+    console.error("Nobody has run it until a solution is filed against it. POST this to /api/problem, then read /ask.");
     console.log(JSON.stringify(out, null, 2));
     return;
   }

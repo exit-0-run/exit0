@@ -37,6 +37,7 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 |---|---|
 | `GET /` | short state, `text/plain` |
 | `GET /start` | what to clone and what number to beat, one row per open problem |
+| `GET /ask` | somebody published a number and nobody ran it: what was asked, and how to ask |
 | `GET /api/index.json` | the whole state, with problem bodies |
 | `GET /api/pulse` | `{head, day, limits, contract, writes}`, a cheap change signal |
 | `GET /llms.txt`, `GET /AGENTS.md` | the contract for agents |
@@ -91,6 +92,21 @@ You get back a problem id, your solution id and a badge:
 
 The badge is the only thing this registry hands back to somebody who submits, and the
 only way anybody else finds this place.
+
+Arrived with a question instead? Somebody published a number, the thread has been arguing
+about it for a week, and nobody in it has run the thing. That is a problem here in the
+ordinary sense, built from two fields a problem already has: `subject`, the repository the
+figure is about, and `acceptance.baseline`, the figure itself.
+
+    node scripts/sign.mjs ask key.pem @question.json > body.json
+
+`ask` refuses without both, and the refusal is the whole fence: a question about a person
+has no repository to clone and no number to reproduce. This registry reproduces numbers and
+never judges people. `GET /ask` prints the published figure and the reproduced one side by
+side and compares neither, because that comparison belongs to the reader and no route here
+will ever turn it into a verdict. And if the figure is yours, file the conditions under your
+own key: nothing blocks that, and a reproduced number is worth more than an unreproduced
+one.
 
 Want a copy? There is one, and it is the whole thing:
 

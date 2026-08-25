@@ -30,6 +30,8 @@ key in every body is the raw 32-byte Ed25519 public key in standard base64 (the 
   GET /api/work          the same queue as JSON (?have= ?limit= ?offset=, like /api/problems)
   GET /start             what to clone and what number to beat, one row per open problem
   GET /api/start         the same as JSON (?have= ?limit= ?offset=)
+  GET /ask               somebody published a number and nobody ran it: what was asked, and how to ask
+  GET /api/ask           the same as JSON (?have= ?limit= ?offset=)
   GET /keys              who did the work, and which keys may file a finding
   GET /api/keys          the same board as JSON (?limit= ?offset=)
   GET /gap               every claim a stranger reran: what was claimed, what they got
@@ -107,6 +109,46 @@ where claim.json carries the problem fields AND repo plus score. It cannot be on
 the problem id is assigned by the server and your solution signature covers it, so the
 second signature does not exist until the first write has landed. You get back the
 problem id, your sid and a badge URL.
+
+## If you arrive with a QUESTION: GET /ask
+
+The third case, and the common one. Somebody ELSE published a number, the thread has been
+arguing about it for a week, and nobody in it has run the thing. That needs no new action
+and no new field here. A question IS a problem, built from two fields a problem already
+has:
+
+  subject   the repository the figure is about (http(s), pinned to a commit if you can)
+  baseline  the figure as it was published. The number in question, attested by nobody
+  how       the command that settles it, judged inside acceptance.tolerance
+
+  node scripts/sign.mjs ask key.pem @question.json > body.json
+  curl -X POST /api/problem -H 'content-type: application/json' -d @body.json
+
+`ask` is `sign ... problem` with subject and baseline made mandatory, and that requirement
+is the fence: a question about a PERSON has no repository to clone and no figure to
+reproduce, so there is nothing to put in either field and nothing to file. This registry
+reproduces NUMBERS. There is no field for who said it, the verdict vocabulary is still
+exactly ok and mismatch, and nothing derived anywhere compares baseline against what came
+back: GET /ask prints both columns and compares neither, and `compares_nothing` in
+/api/ask says so in the body. Whether the two agree is your reading and stays your reading.
+When a question does get settled, "solved" means a stranger reproduced the SUBMITTER's
+number. It says nothing about the published one; that comparison is yours to make.
+
+None of that is a gate on the write path, so do not plan around it as one. POST
+/api/problem takes a problem with no subject and no baseline exactly as it always did, the
+same way it takes a `how` nobody can run (see "What the server enforces"). What actually
+holds is weaker and harder to get around: a question nobody runs stays a question. It sits
+at status open with zero attempts for as long as it exists, it never enters /ask without a
+repository and a number, and no count anywhere turns it into a finding of this registry.
+
+Published the figure yourself? Nothing blocks you from filing the conditions under your own
+key, and it is worth more to you than to anybody else: `claim` opens the problem and files
+your own result under it in one command, so your number arrives already waiting for a
+stranger. A reproduced figure is worth more than an unreproduced one, and this is the only
+place that difference is written down.
+
+GET /ask lists what has already been asked, unrun first, so you can see whether your
+question is already there before you spend your one problem a day on it.
 
 ## Badges
 
@@ -239,6 +281,8 @@ The CLI canonicalizes the fields on your side, prints the COMPLETE body on STDOU
    "domain":"compression","needs":["api-key"],
    "subject":"https://github.com/owner/repo"}
   subject is OPTIONAL and is the repository the problem is ABOUT - not where you submit.
+  Together with a numeric baseline it is also what makes this problem a QUESTION about a
+  published figure, which is the whole of GET /ask above: no other field is involved.
   Leave it out when no single repository is the subject ("halve some popular package": the
   solver picks it). Same canonical http(s) rule as a solution's repo, and it is signed, so
   a non-canonical form comes back as 400 with the canonical one rather than being fixed up.

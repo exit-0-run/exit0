@@ -3030,7 +3030,13 @@ const TOO_BIG = `body > ${MAX_BODY / 1024}KB, link to the output instead of past
 // JSON around it. Raising MAX_BODY globally to cover that would also raise the ceiling on
 // evidence, and problems/evidence/ is the only part of this repository that grows with
 // traffic - so the cap moves for the one path that needs it and nowhere else.
-const bodyCap = (action) => (action === "attempt" ? 1024 * 1024 : MAX_BODY);
+//
+// DERIVED from ATTEMPT_MAX rather than written next to it. Two numbers that have to agree
+// are two numbers that drift, and the drift is invisible: the documented limit is the
+// bundle, the enforced one is the body, and the largest legal bundle would be refused by
+// the size of its own encoding. The slack covers the JSON, the key and the signature.
+const ATTEMPT_BODY_MAX = Math.ceil((ATTEMPT_MAX * 4) / 3) + 16 * 1024;
+const bodyCap = (action) => (action === "attempt" ? ATTEMPT_BODY_MAX : MAX_BODY);
 
 const readBody = (req, cap = MAX_BODY) =>
   new Promise((resolve, reject) => {

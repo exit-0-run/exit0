@@ -4917,6 +4917,35 @@ describe("repo invariants", () => {
       "the unchanged-head path does not reach publish_attempts");
   });
 
+  // A cap in the proxy that is SMALLER than the server's is worse than no cap at all: the
+  // proxy answers 413 with none of the server's explanation, and the documented limit
+  // becomes a number nobody can reach. That shipped - llms.txt promised 512KB, the server
+  // allowed it, and Caddy refused everything over 128KB - and it was found by pushing a
+  // real attempt at production rather than by anything in this file. This is that test.
+  test("deploy: the proxy never cuts a body the server would have accepted", () => {
+    const srv = text("scripts/server.mjs") ?? "";
+    const num = (re) => { const m = re.exec(srv); return m ? Number(m[1]) : null; };
+    const maxBodyKB = num(/const MAX_BODY = (\d+) \* 1024;/);
+    const attemptMaxKB = num(/const ATTEMPT_MAX = (\d+) \* 1024;/);
+    assert.ok(maxBodyKB && attemptMaxKB, `cannot read the server's caps: MAX_BODY=${maxBodyKB} ATTEMPT_MAX=${attemptMaxKB}`);
+    // Derived in the server, so it cannot drift from ATTEMPT_MAX. Recomputed here the same
+    // way rather than parsed: what this test is about is the PROXY agreeing with it.
+    assert.match(srv, /const ATTEMPT_BODY_MAX = Math\.ceil\(\(ATTEMPT_MAX \* 4\) \/ 3\) \+ \d+ \* 1024;/,
+      "the attempt body cap is no longer derived from ATTEMPT_MAX, so the documented bundle size and the enforced body size can drift apart");
+    const slackKB = num(/const ATTEMPT_BODY_MAX = Math\.ceil\(\(ATTEMPT_MAX \* 4\) \/ 3\) \+ (\d+) \* 1024;/);
+    const attemptBodyKB = Math.ceil((attemptMaxKB * 4) / 3) + slackKB;
+
+    const caddy = text("deploy/Caddyfile") ?? "";
+    const sizes = [...caddy.matchAll(/max_size (\d+)(KB|MB)/g)].map((m) => Number(m[1]) * (m[2] === "MB" ? 1024 : 1));
+    assert.equal(sizes.length, 2, `the Caddyfile has ${sizes.length} body limits and the server has 2 (everything, and the attempt route)`);
+    assert.match(caddy, /@attempt path \/api\/attempt/, "the Caddyfile has no matcher for the attempt route, so one limit applies to both");
+    assert.ok(Math.max(...sizes) >= attemptBodyKB, `the proxy caps an attempt at ${Math.max(...sizes)}KB and the server accepts ${attemptBodyKB}KB: the documented limit cannot be reached`);
+    assert.ok(Math.min(...sizes) >= maxBodyKB, `the proxy caps a body at ${Math.min(...sizes)}KB and the server accepts ${maxBodyKB}KB`);
+
+    // And the number a submitter is TOLD has to be the one that binds.
+    assert.match(text("llms.txt") ?? "", new RegExp(`${attemptMaxKB}KB decoded`), `llms.txt does not name ${attemptMaxKB}KB, so the documented cap and ATTEMPT_MAX have drifted`);
+  });
+
   // GitHub registers a deploy key on ONE repository: the second add is refused with "Key is
   // already in use". Two mirrors therefore need two keys, and a script that reuses one
   // would fail on the second push forever while the message pointed at permissions.

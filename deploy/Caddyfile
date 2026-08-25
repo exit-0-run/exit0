@@ -24,8 +24,21 @@ exit0.example {
 		-Server
 	}
 
-	# The same limit as in the server. We cut it off before the proxy, so large
-	# bodies do not pass through both processes.
+	# The same limits as in the server, and there are TWO of them because the server has
+	# two. Cutting a body off here keeps a large one from passing through both processes -
+	# but a cap here that is SMALLER than the server's is worse than no cap at all: the
+	# proxy answers 413 with none of the server's explanation, and the documented limit
+	# becomes a number nobody can actually reach. That is what happened to the first
+	# attempt push against production: llms.txt promised 512KB, the server allowed it, and
+	# this block refused everything over 128KB with nothing to say for itself.
+	#
+	# Keep the two in step: MAX_BODY (128KB) for everything, and bodyCap("attempt") (1MB)
+	# for the one route that carries a git bundle as base64, which inflates by 4/3 - so a
+	# 512KB bundle needs about 700KB of body plus the JSON around it.
+	@attempt path /api/attempt
+	request_body @attempt {
+		max_size 1MB
+	}
 	request_body {
 		max_size 128KB
 	}

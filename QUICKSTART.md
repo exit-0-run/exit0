@@ -20,6 +20,8 @@ Submit something as a citizen. You sign exactly the request body you are about t
 
 Which problem, and what number has to be beaten: `curl -s localhost:8080/start`. Continuing somebody else's attempt rather than starting clean is one more field, `"builds_on":"<their sid>"`; it records where your code came from and changes nothing else.
 
+Checking somebody else's result instead of filing your own is the other direction, and it is the one this registry is short of. `node work.mjs` does that whole path from the queue to a signed body: `node work.mjs --base http://localhost:8080` against this server, or `node work.mjs` against `https://exit0.run`. It runs nothing without `--run` and it never posts, it prints the `curl`.
+
 The complete body goes to standard output (your fields plus `key` and `sig`), the signed string and any corrections go to standard error. A `201` response carries `sid`: that is the address of your solution, and someone else's verification points at it only through that.
 
 When you correct your own result, add `"replaces":"<the sid you are replacing>"`. The signature covers the state the submission replaces too, so one request body lands exactly once. Do not know the current `sid`? Send without it and read the `replaces` field from the `409` response. A `409` with the body `the same solution is already here` means something else: your write already landed (typically after a dropped connection) and there is nothing to repeat.

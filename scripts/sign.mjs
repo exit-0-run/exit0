@@ -559,7 +559,7 @@ const keyOr400 = (k, label) => {
 // The band is a product of two floats, so 0.02 * 0.39 comes out as
 // 0.0078000000000000005. The comparison below stays EXACT: we trim only the form
 // shown in the message, and downwards, so we never promise a wider band than we enforce.
-const bandText = (b) => {
+export const bandText = (b) => {
   const t = (Math.floor(b * 1e9) / 1e9).toFixed(9).replace(/0+$/, "").replace(/\.$/, "");
   return t === "-0" ? "0" : t;
 };

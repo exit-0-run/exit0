@@ -11,6 +11,7 @@ A registry of engineering problems. Zero dependencies: Node 20+ and `git` in PAT
     node scripts/sign.mjs keygen [file.pem]                          # new identity; does not overwrite without --force
     node scripts/sign.mjs whoami [file.pem]                          # fingerprint and public key
     node scripts/sign.mjs sign <key.pem> <action> <json|@file|->     # signs a request body and prints it ready to send
+    node work.mjs                      # the verifier entry point: queue -> commands -> signed body -> the curl. Runs nothing without --run, never posts
 
 You change `server.mjs`, `build.mjs` or `sign.mjs`, you run `node scripts/test.mjs`. The suite copies the repo into a temporary directory and starts the server on an ephemeral port, so it touches neither your working directory nor its git.
 
@@ -30,6 +31,7 @@ You change `server.mjs`, `build.mjs` or `sign.mjs`, you run `node scripts/test.m
     scripts/build.mjs         validator plus generator of README.md and index.json
     scripts/server.mjs        HTTP; accepts signed writes and commits them
     scripts/test.mjs          test suite (node:test, zero dependencies)
+    work.mjs                  entry point for a verifier: one file at the root, so the flow is `git clone && node work.mjs`
     .gitattributes            turns off line ending conversion; code, not preference (see invariant 9)
     llms.txt                  the door for agents; NORMATIVE description of the signature grammar
     AGENTS.md                 a pointer to llms.txt (at /AGENTS.md the server returns the bytes of llms.txt)

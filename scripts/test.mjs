@@ -25,7 +25,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const NODE = process.execPath;
 // .gitattributes travels with the copy, because without it git rewrites evidence
 // bytes and the server drops into read-only mode (D3).
-const COPY = ["scripts", "problems", "README.md", "llms.txt", ".gitignore", ".gitattributes"];
+const COPY = ["scripts", "problems", "README.md", "llms.txt", ".gitignore", ".gitattributes", "work.mjs"];
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const EMPTY_SHA16 = "e3b0c44298fc1c14";
 // assembled from pieces so this file is not a hit in its own grep
@@ -4408,6 +4408,90 @@ describe("repo invariants", () => {
     assert.equal(r.code, 0, `--check in ${ROOT}: ${r.err || r.out}`);
   });
 });
+
+// =====================================================================
+// 11b. work.mjs: the entry point, from the queue to a signed body
+// =====================================================================
+// This is also the FIRST test in this suite that signs a verification through cli().
+// CLAUDE.md records why that matters: a regression that made the CLI sign the wrong
+// tolerance band survived 182 green runs here, because every other test builds the
+// payload by hand and never walks the documented path.
+
+if (gate.server)
+  describe("work.mjs: the queue to a signed body, and not one step further", () => {
+    const WM = join(TREE, "work.mjs");
+    const scratch = mkdtempSync(join(tmpdir(), "exit0-work-"));
+    trees.push(scratch);
+    const base = () => `http://127.0.0.1:${SRV.port}`;
+    const wm = (...args) => {
+      const r = spawnSync(NODE, [WM, "--base", base(), "--key", join(scratch, "wm.pem"), ...args], { cwd: scratch, encoding: "utf8" });
+      return { code: r.status ?? 1, out: r.stdout ?? "", err: r.stderr ?? "" };
+    };
+    // 0014 carries tolerance 0.15, and that is the whole point of picking it: the CLI
+    // default is 0.02, so a body signed under the default cannot pass here.
+    const kA = mkKey();
+    let sid = null;
+
+    test("a solution waiting for a first verdict", async () => {
+      const r = await post(SRV, "solution", solBody(kA, { problem: "0014", repo: "https://example.com/work-mjs", score: 10 }));
+      is(r, 201, "the fixture solution did not go in");
+      sid = r.json.sid;
+      const q = await hit(SRV, { path: "/api/work" });
+      is(q, 200, "/api/work");
+      assert.ok((q.json.work ?? []).some((w) => w.solution === sid), "the fixture is not in the queue");
+    });
+
+    test("with no flags it picks that entry, runs nothing and offers no body to send", () => {
+      const r = wm();
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /FIRST CHECK/, "the queue entry was not described");
+      assert.match(r.out, /Nothing has been fetched and nothing has been run/);
+      assert.ok(!/-d @/.test(r.out), "a body to POST was offered before anything was run");
+      assert.ok(!existsSync(join(scratch, "checkout")), "something was fetched without --run");
+    });
+
+    test("--score signs through scripts/sign.mjs under the PROBLEM's band, and the server takes it", async () => {
+      const out = join(scratch, "out.txt");
+      writeFileSync(out, "speedup 11\n{\"speedup\": 11, \"mismatches\": 0}\n");
+      // |11 - 10| = 1. Inside 0.15 * 10 = 1.5, outside the CLI default 0.02 * 10 = 0.2.
+      const r = wm("--solution", sid, "--score", "11", "--output", out);
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /verdict {2}ok/, "a difference of 1 inside a band of 1.5 is not a mismatch");
+      assert.match(r.out, /\|verification\|0014\|[0-9a-f]{16}\|11\|ok\|[0-9a-f]{64}\|0\.15\|/, "the signed payload does not carry the problem's tolerance");
+      assert.match(r.out, /Nothing has been sent/);
+      const bodyFile = (/^body {5}(.*)$/m.exec(r.out) ?? [])[1];
+      assert.ok(bodyFile && existsSync(bodyFile), `no body written: ${r.out}`);
+      const sent = await post(SRV, "verification", readFileSync(bodyFile, "utf8"));
+      is(sent, 201, "the server refused a body work.mjs produced");
+      const p = await hit(SRV, { path: "/api/problems/0014" });
+      const mine = (p.json.solutions ?? []).find((x) => x.sid === sid);
+      assert.equal((mine.verifications ?? []).length, 1, "the verdict is not on the entry");
+      assert.equal(mine.verified, true, "a stranger's ok did not settle it");
+    });
+
+    test("it refuses to verify its own entry instead of spending an attempt on a 403", async () => {
+      // A fresh entry: the one above is settled by now and no longer in the queue.
+      const r = await post(SRV, "solution", solBody(kA, { problem: "0014", repo: "https://example.com/work-mjs-own", score: 10 }));
+      is(r, 201, "the second fixture did not go in");
+      const pemOfA = join(scratch, "author.pem");
+      writeFileSync(pemOfA, kA.priv.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+      const w = spawnSync(NODE, [WM, "--base", base(), "--key", pemOfA, "--solution", r.json.sid], { cwd: scratch, encoding: "utf8" });
+      assert.notEqual(w.status, 0, "work.mjs offered to verify the entry its own key filed");
+      assert.match(w.stderr, /nobody verifies themselves/);
+    });
+
+    test("it cannot post, and it is one file with no dependencies", () => {
+      const src = readFileSync(WM, "utf8");
+      assert.ok(!/method:\s*["']POST["']/i.test(src), "work.mjs carries a POST: the send belongs to the caller");
+      for (const m of src.matchAll(/\bfrom\s+["']([^"']+)["']/g))
+        assert.ok(m[1].startsWith("node:") || m[1].startsWith("./"), `work.mjs: import from outside node: -> ${m[1]}`);
+      assert.ok(!CJS.test(src), "a CommonJS call inside an ES module");
+      assert.ok(!/[^\x00-\x7f]/.test(src), "work.mjs: a non-ASCII character in the source");
+      const b = readFileSync(WM);
+      for (let i = 0; i < b.length; i++)
+        assert.ok((b[i] >= 0x20 && b[i] !== 0x7f) || b[i] === 0x09 || b[i] === 0x0a, `work.mjs: control byte 0x${b[i].toString(16)} at offset ${i}`);
+    });
+  });
 
 // =====================================================================
 // 12. Closing

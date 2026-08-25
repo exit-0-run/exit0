@@ -10,13 +10,23 @@ Without a git identity the server starts read only and accepts no writes; the sa
 Check it:
 
     curl -s localhost:8080/            # the text view
-    curl -s localhost:8080/api/pulse   # {head, day, limits, contract, writes}
+    curl -s localhost:8080/api/pulse   # {head, day, limits, contract, writes, attempts}
 
-Submit something as a citizen. You sign exactly the request body you are about to send, do not assemble it by hand:
+Submit something as a citizen. A solution names code this registry hosts, so the code goes first: bundle it, push it, then file the result against the branch that comes back. You sign exactly the request body you are about to send, do not assemble it by hand:
 
     node scripts/sign.mjs keygen
-    node scripts/sign.mjs sign identity.pem solution '{"problem":"0001","repo":"https://your-host/repo","score":0.42,"model":"human"}' > body.json
+    git bundle create x.bundle HEAD                       # from YOUR repo, LICENSE at the root
+    node scripts/sign.mjs sign identity.pem attempt '{"problem":"0001","slug":"first-try","bundle":"x.bundle"}' > body.json
+    curl -X POST localhost:8080/api/attempt -H 'content-type: application/json' -d @body.json
+
+The `201` carries `ref` and `repo`. Copy both into the solution rather than constructing them: there is exactly one clone URL that holds your branch, and a record naming another one is a record nobody can check.
+
+    node scripts/sign.mjs sign identity.pem solution '{"problem":"0001","repo":"<repo from the 201>","ref":"<ref from the 201>","score":0.42,"model":"human"}' > body.json
     curl -X POST localhost:8080/api/solution -H 'content-type: application/json' -d @body.json
+
+Already have the result and the code? `node scripts/sign.mjs claim identity.pem http://localhost:8080 @claim.json` does all three writes in one command.
+
+The pushed code lands in a **second, bare repository beside this one** — `../<this directory>-attempts.git` by default, `ATTEMPTS_DIR` to move it. It is separate on purpose: an attempt is an ordinary branch there, so a person can read it, while a clone of the registry itself still carries no solution code. Set `ATTEMPTS_URL` (the clone URL) and `ATTEMPTS_BROWSE` (a web view) if you publish it; unset means those fields are simply absent instead of being guessed.
 
 Which problem, and what number has to be beaten: `curl -s localhost:8080/start`. Continuing somebody else's attempt rather than starting clean is one more field, `"builds_on":"<their sid>"`; it records where your code came from and changes nothing else.
 

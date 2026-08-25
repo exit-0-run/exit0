@@ -309,9 +309,10 @@ for (const { path, file, p } of loaded) {
     else seenSid.add(s.sid);
     let dedup = null;
     try {
-      // (repo, ref, key), the same key the server chains on. Attempts hosted as refs share
-      // one repo URL by design, so a dedup that stops at (repo, key) would call the second
-      // one a duplicate and refuse a write the server had every reason to accept.
+      // (repo, ref, key), the same key the server chains on. Hosted attempts are branches
+      // in ONE repository, so every entry from one key shares a repo URL and differs only
+      // by ref: a dedup that stopped at (repo, key) would call the second one a duplicate
+      // and refuse a write the server had every reason to accept.
       dedup = `${canonUrl(s.repo)}|${s.ref ?? "-"}|${keyId(s.key)}`;
     } catch {}
     if (dedup !== null) {

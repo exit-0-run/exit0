@@ -17,6 +17,14 @@ set -eu
 
 SRC=${1:-${EXIT0_SRC:-ssh://root@exit0.run/srv/exit0}}
 DST=${2:-${EXIT0_BACKUP:-$HOME/backups/exit0.git}}
+# The SECOND repository, the one that holds pushed code. It is separate state and it is not
+# reachable from the registry's history at all, so a backup of the registry alone silently
+# loses every attempt: the records would survive naming branches that exist nowhere, which
+# is precisely the "points at nothing" failure hosting the code was meant to end. There is
+# nothing to validate in it (it holds no records, so build.mjs has no opinion) - what is
+# checked is that the branches arrived and that they carry a tree.
+ATT_SRC=${EXIT0_ATTEMPTS_SRC:-$SRC-attempts.git}
+ATT_DST=${EXIT0_ATTEMPTS_BACKUP:-${DST%.git}-attempts.git}
 # Optional public mirror, OFF by default. The registry host publishes its own mirror
 # now (deploy/mirror.sh on a timer there), and two pushers is not redundancy: this one
 # pushes --mirror, which carries force semantics, so a run from a machine that has been
@@ -60,6 +68,34 @@ git -C "$DST" archive HEAD | tar -x -C "$TMP" || die "cannot restore the copy"
 PROBLEMS=$(ls "$TMP/problems"/[0-9]*.json 2>/dev/null | wc -l | tr -d ' ')
 EVIDENCE=$(ls "$TMP/problems/evidence" 2>/dev/null | wc -l | tr -d ' ')
 say "OK  branch=$BRANCH  head=$HEAD_SHA  commits=$COMMITS  problems=$PROBLEMS  evidence=$EVIDENCE  ->  $DST"
+
+# The attempts repository. Fast-forward only for the same reason as above: a rewritten
+# history upstream has to stop this script loudly instead of overwriting the only remaining
+# copy of what was there before. An instance that has taken no pushes yet has no such
+# repository, and that is not a failure.
+if [ -d "$ATT_DST" ]; then
+  say "fetch $ATT_SRC -> $ATT_DST"
+  git -C "$ATT_DST" fetch --no-tags --quiet origin "refs/heads/*:refs/heads/*" \
+    || die "attempts fetch rejected. Fast-forward only: either a branch was rewritten upstream, or this copy is ahead. Do NOT force it: git -C $ATT_DST for-each-ref"
+elif git ls-remote --exit-code "$ATT_SRC" >/dev/null 2>&1; then
+  say "first run: mirror $ATT_SRC -> $ATT_DST"
+  mkdir -p "$(dirname "$ATT_DST")"
+  git clone --quiet --mirror "$ATT_SRC" "$ATT_DST" || die "attempts clone failed"
+else
+  say "no attempts repository at $ATT_SRC (nothing has been pushed there yet)"
+fi
+
+if [ -d "$ATT_DST" ]; then
+  # A branch count is not proof the copy is usable. Every branch has to resolve to a tree,
+  # or what came across is a set of names pointing at objects that did not.
+  BRANCHES=$(git -C "$ATT_DST" for-each-ref --format='%(refname)' refs/heads/ | wc -l | tr -d ' ')
+  BROKEN=0
+  for r in $(git -C "$ATT_DST" for-each-ref --format='%(refname)' refs/heads/); do
+    git -C "$ATT_DST" ls-tree --name-only "$r" >/dev/null 2>&1 || { say "WARNING $r does not resolve to a tree"; BROKEN=$((BROKEN + 1)); }
+  done
+  [ "$BROKEN" = "0" ] || die "$BROKEN of $BRANCHES attempt branches did not come across whole"
+  say "OK  attempts=$BRANCHES  ->  $ATT_DST"
+fi
 
 # The public mirror is what makes the registry's own promise true: the evidence bytes
 # behind every `verified` are not served over HTTP at all, so without somewhere to

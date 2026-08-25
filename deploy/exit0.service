@@ -28,6 +28,17 @@ Environment=TRUST_PROXY=1
 # appended to. Empty means no links, which is right for a registry nobody publishes.
 # install.sh fills it from SOURCE_URL when it is given, and leaves it empty otherwise.
 Environment=SOURCE_URL=
+# Pushed code does NOT live in the registry: it lives in a second, bare repository beside
+# it, and an attempt is an ordinary branch there. ATTEMPTS_DIR is where that repository is,
+# ATTEMPTS_URL is the clone URL a verifier fetches from and ATTEMPTS_BROWSE the base of a
+# web view of it. install.sh fills all three; the server derives ATTEMPTS_DIR from the
+# working directory when it is empty. The URLs are never guessed from one another - turning
+# an ssh clone URL into an https browse URL is host-specific string surgery that is wrong
+# the first time somebody is not on GitHub - so an empty value means the field is simply
+# absent rather than misleading.
+Environment=ATTEMPTS_DIR=
+Environment=ATTEMPTS_URL=
+Environment=ATTEMPTS_BROWSE=
 ExecStart=/usr/bin/node scripts/server.mjs
 Restart=always
 RestartSec=2
@@ -62,7 +73,11 @@ LockPersonality=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-ReadWritePaths=/srv/exit0
+# TWO paths, and the second one is not optional. ProtectSystem=strict makes the whole
+# filesystem read-only apart from what is named here, so leaving the attempts repository
+# out means every push fails with EROFS - a storage error on a route that looks like it
+# should only ever touch git.
+ReadWritePaths=/srv/exit0 /srv/exit0-attempts.git
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
 TasksMax=64

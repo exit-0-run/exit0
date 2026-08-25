@@ -22,6 +22,17 @@ WATCH=exit0-watch
 MIRROR_UNIT=exit0-mirror
 MIRROR_KEY="${MIRROR_KEY:-/etc/exit0/mirror_key}"
 MIRROR_URL="${MIRROR_URL:-git@github.com:exit-0-run/exit0.git}"
+# The second repository: pushed code, one branch per attempt. Separate from the registry on
+# purpose, so a clone of the registry carries no solution code at all - not even as refs
+# nobody fetches. The default is the sibling server.mjs computes when ATTEMPTS_DIR is
+# empty, so the two agree without either being told about the other.
+# ATTEMPTS_DIR itself is derived in step 3, after $DIR has been turned into an absolute
+# path: deriving it here would put a relative path into the unit, and systemd rejects that.
+ATTEMPTS_MIRROR_URL="${ATTEMPTS_MIRROR_URL:-git@github.com:exit-0-run/attempts.git}"
+# Its own deploy key: GitHub registers one key on one repository, so the two mirrors need
+# two. Empty is a valid answer - mirror.sh then falls back to the registry's key, which is
+# right for a self-hosted remote and wrong for GitHub.
+ATTEMPTS_KEY="${ATTEMPTS_KEY:-/etc/exit0/attempts_key}"
 
 die() { echo "install: $*" >&2; exit 1; }
 
@@ -33,6 +44,17 @@ if [ -z "${SOURCE_URL:-}" ] && [ -n "$SOURCE_LIVE" ]; then
   echo "install: keeping the source URL this deployment already publishes: $SOURCE_LIVE"
   SOURCE_URL="$SOURCE_LIVE"
 fi
+# Same rule for the two attempts URLs, and it matters more here: they are baked into
+# `repo` on every solution filed after the deploy. An update that silently dropped them
+# would start writing records whose repo field is empty, and those records are signed - so
+# the mistake is permanent rather than something the next install can fix.
+for v in ATTEMPTS_URL ATTEMPTS_BROWSE; do
+  live=$(sed -n "s/^Environment=$v=//p" "${UNIT_DIR:-/etc/systemd/system}/exit0.service" 2>/dev/null | tail -1)
+  if [ -z "${!v:-}" ] && [ -n "$live" ]; then
+    echo "install: keeping $v this deployment already publishes: $live"
+    printf -v "$v" '%s' "$live"
+  fi
+done
 if [ -n "$PORT_LIVE" ] && [ "$PORT_LIVE" != "$PORT" ]; then
   if [ -z "${PORT_GIVEN:-}" ]; then
     echo "install: keeping the port this deployment already runs on: $PORT_LIVE (pass PORT=$PORT to move it)"
@@ -63,6 +85,12 @@ done
 mkdir -p "$DIR" 2>/dev/null || die "cannot create $DIR: run as root"
 [ -w "$DIR" ]      || die "no write permission on $DIR: run as root"
 DIR=$(cd "$DIR" && pwd)   # the unit wants an absolute path, the comparison below an exact one
+ATTEMPTS_DIR="${ATTEMPTS_DIR:-$DIR-attempts.git}"
+case "$ATTEMPTS_DIR" in /*) ;; *) die "ATTEMPTS_DIR has to be an absolute path, systemd will not take $ATTEMPTS_DIR" ;; esac
+# Inside the registry it would be an untracked directory in the working tree, which means
+# a permanently dirty tree, which means the server serves reads from HEAD and refuses every
+# write (invariant 11). Beside it, never under it.
+case "$ATTEMPTS_DIR" in "$DIR"|"$DIR"/*) die "ATTEMPTS_DIR must not live inside $DIR: an untracked directory there leaves the tree dirty and puts the server into read-only mode" ;; esac
 [ "$DIR" != "$SRC" ] || die "the service directory cannot be the source directory: step 6 deletes $DIR/scripts"
 [ -d "$UNIT_DIR" ] || die "directory $UNIT_DIR missing"
 [ -w "$UNIT_DIR" ] || die "no write permission on $UNIT_DIR: run as root"
@@ -161,7 +189,22 @@ fi
 "$NODE" scripts/build.mjs --check
 [ -z "$(git status --porcelain)" ] || die "tree $DIR came out dirty: the server would enter read-only mode"
 
+# --- 8b. the repository that holds pushed code ---
+# Created here rather than left to the server, so ownership and permissions come from the
+# installer and not from whichever request happened to push first. Bare: there is no
+# working tree to dirty, which is why nothing here can put the registry into read-only
+# mode. It is never wiped on an update - it holds other people's code, and a solution
+# record that names a branch which stopped existing is a record nobody can check.
+if [ ! -e "$ATTEMPTS_DIR/HEAD" ]; then
+  mkdir -p "$ATTEMPTS_DIR" || die "cannot create $ATTEMPTS_DIR: run as root"
+  git init -q --bare "$ATTEMPTS_DIR"
+  echo "install: created the attempts repository at $ATTEMPTS_DIR"
+fi
+git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$ATTEMPTS_DIR" \
+  || git config --global --add safe.directory "$ATTEMPTS_DIR"
+
 chown -R "$SVC_USER:$SVC_GROUP" "$DIR"
+chown -R "$SVC_USER:$SVC_GROUP" "$ATTEMPTS_DIR"
 
 # --- 9. unit rendered for this host ---
 # The server calls `node` and `git` by name, so the directory of the detected node must be in
@@ -177,9 +220,12 @@ sed -e "s#^ExecStart=.*#ExecStart=$NODE scripts/server.mjs#" \
     -e "s#^Environment=PATH=.*#Environment=PATH=$SVC_PATH#" \
     -e "s#^Environment=PORT=.*#Environment=PORT=$PORT#" \
     -e "s#^Environment=SOURCE_URL=.*#Environment=SOURCE_URL=${SOURCE_URL:-}#" \
+    -e "s#^Environment=ATTEMPTS_DIR=.*#Environment=ATTEMPTS_DIR=$ATTEMPTS_DIR#" \
+    -e "s#^Environment=ATTEMPTS_URL=.*#Environment=ATTEMPTS_URL=${ATTEMPTS_URL:-}#" \
+    -e "s#^Environment=ATTEMPTS_BROWSE=.*#Environment=ATTEMPTS_BROWSE=${ATTEMPTS_BROWSE:-}#" \
     -e "s#^User=.*#User=$SVC_USER#" \
     -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
-    -e "s#^ReadWritePaths=.*#ReadWritePaths=$DIR#" \
+    -e "s#^ReadWritePaths=.*#ReadWritePaths=$DIR $ATTEMPTS_DIR#" \
     -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
     "$SRC/deploy/$UNIT" > "$UNIT_DIR/.$UNIT.new"
 chmod 644 "$UNIT_DIR/.$UNIT.new"
@@ -227,12 +273,25 @@ if [ "$MIRROR_ENABLE" = "1" ]; then
     chmod 644 "$MIRROR_KNOWN.new"; mv "$MIRROR_KNOWN.new" "$MIRROR_KNOWN"
     echo "install: pinned the host key of $MIRROR_HOST in $MIRROR_KNOWN"
   fi
+  # A missing second key is not fatal here - the registry still publishes - but it has to be
+  # SAID. mirror.sh dies on it every ten minutes otherwise, and a timer that always fails is
+  # a timer whose alerts stop being read, on a host whose watchdog alerts have to keep
+  # meaning something.
+  if [ ! -r "$ATTEMPTS_KEY" ]; then
+    echo "install: WARNING no key at $ATTEMPTS_KEY, so pushed code will NOT be published to $ATTEMPTS_MIRROR_URL" >&2
+    echo "install:   ssh-keygen -t ed25519 -N '' -C exit0-attempts -f $ATTEMPTS_KEY" >&2
+    echo "install:   then add the .pub as a deploy key WITH WRITE ACCESS there (GitHub takes one key per repository," >&2
+    echo "install:   so this cannot be the same key as $MIRROR_KEY)" >&2
+  fi
   sed -e "s#^WorkingDirectory=.*#WorkingDirectory=$DIR#" \
       -e "s#^ExecStart=.*#ExecStart=/bin/sh $DIR/deploy/mirror.sh#" \
       -e "s#^Environment=EXIT0_DIR=.*#Environment=EXIT0_DIR=$DIR#" \
       -e "s#^Environment=EXIT0_MIRROR=.*#Environment=EXIT0_MIRROR=$MIRROR_URL#" \
       -e "s#^Environment=EXIT0_MIRROR_KEY=.*#Environment=EXIT0_MIRROR_KEY=$MIRROR_KEY#" \
       -e "s#^Environment=EXIT0_MIRROR_KNOWN_HOSTS=.*#Environment=EXIT0_MIRROR_KNOWN_HOSTS=$MIRROR_KNOWN#" \
+      -e "s#^Environment=EXIT0_ATTEMPTS_DIR=.*#Environment=EXIT0_ATTEMPTS_DIR=$ATTEMPTS_DIR#" \
+      -e "s#^Environment=EXIT0_ATTEMPTS_MIRROR=.*#Environment=EXIT0_ATTEMPTS_MIRROR=$ATTEMPTS_MIRROR_URL#" \
+      -e "s#^Environment=EXIT0_ATTEMPTS_KEY=.*#Environment=EXIT0_ATTEMPTS_KEY=$ATTEMPTS_KEY#" \
       -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
       "$SRC/deploy/$MIRROR_UNIT.service" > "$UNIT_DIR/.$MIRROR_UNIT.service.new"
   chmod 644 "$UNIT_DIR/.$MIRROR_UNIT.service.new"
@@ -274,6 +333,7 @@ main();
 
 echo
 echo "install: done. $DIR on port $PORT, as $SVC_USER."
+echo "  attempts: $ATTEMPTS_DIR ($(git --git-dir="$ATTEMPTS_DIR" for-each-ref --format=x refs/heads/ | wc -l | tr -d " ") branches)${ATTEMPTS_URL:+ -> $ATTEMPTS_URL}"
 echo "  state:  systemctl status $UNIT"
 echo "  logs:   journalctl -u $UNIT -f"
 echo "  pulse:  curl -s localhost:$PORT/api/pulse"
@@ -284,6 +344,8 @@ if [ "$MIRROR_ENABLE" = "1" ]; then
   echo "  mirror: systemctl list-timers $MIRROR_UNIT.timer   journalctl -u $MIRROR_UNIT -n 20"
 else
   echo "  mirror: OFF. ssh-keygen -t ed25519 -N '' -C exit0-mirror -f $MIRROR_KEY, add the .pub"
-  echo "          as a deploy key WITH WRITE ACCESS on $MIRROR_URL, then run this again."
+  echo "          as a deploy key WITH WRITE ACCESS on $MIRROR_URL **and on**"
+  echo "          $ATTEMPTS_MIRROR_URL (a deploy key is per repository: one key, added twice),"
+  echo "          then run this again."
 fi
 echo "  backup, update, failures: $DIR/deploy/RUNBOOK.md"

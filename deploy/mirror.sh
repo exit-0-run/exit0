@@ -24,6 +24,19 @@ MIRROR=${EXIT0_MIRROR:-git@github.com:exit-0-run/exit0.git}
 KEY=${EXIT0_MIRROR_KEY:-/etc/exit0/mirror_key}
 STATE=${EXIT0_MIRROR_STATE:-/var/lib/exit0/mirrored}
 KNOWN=${EXIT0_MIRROR_KNOWN_HOSTS:-/etc/exit0/known_hosts}
+# The SECOND repository: the one that holds pushed code. It is separate on purpose, so the
+# registry clone carries no attempts at all, and it is published separately for the same
+# reason. Its default is the sibling of $DIR that server.mjs computes when ATTEMPTS_DIR is
+# unset, so the two agree without either of them being told.
+ATT_DIR=${EXIT0_ATTEMPTS_DIR:-$DIR-attempts.git}
+ATT_MIRROR=${EXIT0_ATTEMPTS_MIRROR:-git@github.com:exit-0-run/attempts.git}
+ATT_STATE=${EXIT0_ATTEMPTS_STATE:-/var/lib/exit0/mirrored-attempts}
+# Its OWN key, defaulting to the registry's. GitHub refuses to register one deploy key on
+# two repositories - the second add fails with "key is already in use" - so publishing two
+# repositories needs two keys. The default keeps a single-repository or self-hosted setup
+# working with no extra configuration, and the failure when it is wrong is loud: the push
+# is denied rather than silently landing somewhere else.
+ATT_KEY=${EXIT0_ATTEMPTS_KEY:-$KEY}
 
 say() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { say "FAILED: $*"; exit 1; }
@@ -50,9 +63,16 @@ BRANCH=$($GIT symbolic-ref --quiet --short HEAD) || die "detached HEAD in $DIR, 
 
 # Nothing new is not an event. Without this the timer would republish the same commit
 # every few minutes and the log would say "pushed" often enough to stop meaning it.
+# An unchanged registry head does NOT mean an unchanged set of attempts: a push through
+# POST /api/attempt updates a ref in the other repository and adds no commit here (that is
+# invariant 14's noCommit, and it is deliberate). Returning early on the head alone would
+# leave every attempt unpublished until the next record happened to land, which is exactly
+# how "the ref exists here and nowhere a verifier can reach" happened the first time.
 if [ -r "$STATE" ] && [ "$(cat "$STATE")" = "$HEAD_SHA" ]; then
-  say "nothing to publish, head=$HEAD_SHA"
-  exit 0
+  say "nothing new in the registry, head=$HEAD_SHA"
+  SKIP_HEAD=1
+else
+  SKIP_HEAD=0
 fi
 
 # Validate BEFORE publishing, and validate what would actually be published: HEAD, via
@@ -82,25 +102,59 @@ validate_head() {
 # No --force and no --mirror. --mirror carries force semantics and can delete refs, and
 # a stale pusher would then silently rewind the public copy that people clone to check
 # verdicts.
-# refs/attempts/* goes WITH main, and this is not optional decoration. Phase 3 lets a
-# stranger push an attempt into the registry's own repository, and the solution record then
-# names the MIRROR as its repo. Push only main and the ref exists on this host and nowhere
-# a verifier can reach it: the documented `git fetch <repo> <ref>` returns "ref not found"
-# and the entry is unverifiable. Shipped that way for one afternoon; caught by checking
-# where the refs actually were rather than where the code said they went.
+# refs/attempts/* is HISTORY and is still pushed. Nothing writes there any more - attempts
+# live in their own repository now - but two solution records signed before the move name
+# refs under it, and their documented `git fetch <repo> <ref>` has to keep working forever.
+# The refspec is additive, so it republishes what exists and creates nothing.
 #
-# Still no --force and no --mirror: --mirror carries force semantics and can DELETE refs on
-# the far side, which would let a stale pusher wipe attempts other people have verified.
-# The refspec is explicit and additive, so a ref can be created and advanced and never
-# removed from here. Fast-forward is the far side's rule and ours: without a leading +,
-# git refuses a non-fast-forward attempt ref exactly as the write path does.
-#
-# The clone stays small regardless: a normal `git clone` fetches refs/heads and refs/tags,
-# never refs/attempts/*, which is the measured reason invariant 14 chose that namespace.
+# No --force and no --mirror: --mirror carries force semantics and can DELETE refs on the
+# far side, which would let a stale pusher wipe history other people have verified against.
+# Fast-forward is the far side's rule and ours: without a leading +, git refuses a
+# non-fast-forward exactly as the write path does.
 push_head() {
   GIT_SSH_COMMAND="$SSH" $GIT push --quiet "$MIRROR" \
     "HEAD:refs/heads/$BRANCH" "refs/attempts/*:refs/attempts/*" 2>"$TMP/.push"
 }
+
+# The attempts repository publishes on completely different terms, and conflating the two
+# is what the first version got wrong. There is nothing to validate here: it holds no
+# records, no README and no index, only branches of somebody else's code, so build.mjs has
+# no opinion about it and running --check would be theatre. What IS enforced is the same
+# thing the write path enforces - additive, fast-forward, never forced - and a divergence
+# is NOT reconciled by merging: this host is the only writer, so a rejected push means
+# somebody wrote to the far side directly, and merging branches of unrelated attempts would
+# be an invention rather than a repair. It fails loudly instead.
+publish_attempts() {
+  [ -d "$ATT_DIR" ] || { say "no attempts repository at $ATT_DIR yet, nothing pushed here so far"; return 0; }
+  ATT="git -c safe.directory=$ATT_DIR --git-dir=$ATT_DIR"
+  # A digest of every branch and where it points, so an unchanged set is not an event. The
+  # registry compares one HEAD; here there is no single head to compare, and re-pushing the
+  # same branches every ten minutes would make "published" stop meaning anything.
+  NOW=$($ATT for-each-ref --format='%(refname) %(objectname)' refs/heads/ | git hash-object --stdin) \
+    || die "cannot read the git state of $ATT_DIR (permissions here, not the registry)"
+  if [ -r "$ATT_STATE" ] && [ "$(cat "$ATT_STATE")" = "$NOW" ]; then
+    say "attempts unchanged"
+    return 0
+  fi
+  if [ -z "$($ATT for-each-ref refs/heads/)" ]; then
+    say "attempts repository is empty, nothing to publish"
+    return 0
+  fi
+  [ -r "$ATT_KEY" ] || die "no readable key at $ATT_KEY for $ATT_MIRROR. A GitHub deploy key works on ONE repository, so this needs its own: ssh-keygen -t ed25519 -N '' -C exit0-attempts -f $ATT_KEY, then add the .pub WITH WRITE ACCESS there"
+  ATT_SSH="ssh -i $ATT_KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$KNOWN -o StrictHostKeyChecking=yes -o BatchMode=yes"
+  if GIT_SSH_COMMAND="$ATT_SSH" $ATT push --quiet "$ATT_MIRROR" "refs/heads/*:refs/heads/*" 2>"$TMP/.att"; then
+    mkdir -p "$(dirname "$ATT_STATE")"
+    printf '%s\n' "$NOW" > "$ATT_STATE"
+    say "published attempts -> $ATT_MIRROR"
+    return 0
+  fi
+  die "attempts push rejected. This host is the only writer, so this is not the two-writer case main has: $(head -3 "$TMP/.att" | tr '\n' ' ')"
+}
+
+if [ "$SKIP_HEAD" = "1" ]; then
+  publish_attempts
+  exit 0
+fi
 
 validate_head
 
@@ -108,6 +162,7 @@ if push_head; then
   mkdir -p "$(dirname "$STATE")"
   printf '%s\n' "$($GIT rev-parse HEAD)" > "$STATE"
   say "published $BRANCH $HEAD_SHA -> $MIRROR"
+  publish_attempts
   exit 0
 fi
 
@@ -156,3 +211,4 @@ push_head || die "push still rejected after merging: $(head -3 "$TMP/.push" | tr
 mkdir -p "$(dirname "$STATE")"
 printf '%s\n' "$($GIT rev-parse HEAD)" > "$STATE"
 say "merged and published $BRANCH $($GIT rev-parse HEAD) -> $MIRROR"
+publish_attempts

@@ -15,7 +15,7 @@ import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, cpSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, statSync, unlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { request } from "node:http";
@@ -204,12 +204,12 @@ const hit = (srv, opts = {}) =>
     req.end();
   });
 
-// The code lives in the registry now, so a solution names a ref that has to RESOLVE in the
-// repository the server is serving. Tests run against many trees, so the ref is materialised
-// here, against srv.dir, rather than at the 87 call sites that build a body: post() is the
-// only place that knows which server a body is actually going to.
+// The code lives in the registry now, so a solution names a branch that has to RESOLVE in
+// the ATTEMPTS repository beside the tree the server is serving. Tests run against many
+// trees, so the ref is materialised here, from srv.dir, rather than at the 87 call sites
+// that build a body: post() is the only place that knows which server a body is going to.
 const post = (srv, action, obj, headers) => {
-  if (action === "solution" && obj && typeof obj === "object" && typeof obj.ref === "string" && obj.ref.startsWith("refs/attempts/"))
+  if (action === "solution" && obj && typeof obj === "object" && typeof obj.ref === "string" && obj.ref.startsWith("refs/heads/"))
     ensureRefIn(srv.dir, obj.ref);
   return hit(srv, { method: "POST", path: `/api/${action}`, body: typeof obj === "string" ? obj : JSON.stringify(obj), headers });
 };
@@ -247,11 +247,13 @@ const b64alts = (pub) => {
   return out;
 };
 
-// The code lives in the registry now, so every solution needs a ref that RESOLVES. These
-// fixtures write git objects directly (hash-object / mktree / commit-tree) rather than
-// going through POST /api/attempt: it is far faster, it spends no daily quota, and above
-// all it never touches the working tree - a dirty tree puts the server into read-only mode
-// (invariant 11) and every write test after it would 503.
+// The code lives in the registry now, so every solution needs a branch that RESOLVES.
+// These fixtures write git objects directly (hash-object / mktree / commit-tree) rather
+// than going through POST /api/attempt: it is far faster and it spends no daily quota.
+// They go into the attempts repository, which is bare and has no working tree, so nothing
+// here can leave the registry's tree dirty and put the server into read-only mode
+// (invariant 11) - which would 503 every write test after it, for a reason nobody would
+// come looking for in a fixture.
 //
 // The slug is derived from the repo string each test passes, so two "different repos" stay
 // two different chain keys. That is what those tests are actually about, and it survives
@@ -263,13 +265,23 @@ const gitIn = (dir, args, input) =>
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "a@b.c", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "a@b.c" },
   }).trim();
 
+// The same rule server.mjs computes its default from, written out once here. Deliberately
+// the DEFAULT and not an ATTEMPTS_DIR the suite passes in: a default nothing exercises is
+// a default that turns out to be wrong the first time a real deployment needs it.
+const attemptsDirOf = (treeDir) => join(dirname(treeDir), `${basename(treeDir)}-attempts.git`);
+const attGitIn = (treeDir, args, input) =>
+  execFileSync("git", ["--git-dir", attemptsDirOf(treeDir), ...args], {
+    input, encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "a@b.c", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "a@b.c" },
+  }).trim();
+
 // Where a fixture attempt WOULD be. Pure: the sid is a function of the ref STRING, so the
 // path has to be decided before the body is signed, while the objects can appear later.
 // The slug is derived from the repo each test passes, so "two different repos" stay two
 // different chain keys - which is what those tests are about, and it is why none of them
 // had to be rewritten when the rule changed.
 const fixtureRef = (k, problem, repo) =>
-  `refs/attempts/${problem}/${sg.fingerprint(k.pub)}/t${createHash("sha256").update(String(repo ?? "-")).digest("hex").slice(0, 12)}`;
+  `refs/heads/${problem}/${sg.fingerprint(k.pub)}/t${createHash("sha256").update(String(repo ?? "-")).digest("hex").slice(0, 12)}`;
 
 // Objects written straight into the object database: no checkout, no add, no commit on a
 // branch. That matters more than the speed - touching the working tree would leave it dirty
@@ -278,11 +290,16 @@ const fixtureRef = (k, problem, repo) =>
 const ensureRefIn = (dir, ref) => {
   const memo = `${dir}|${ref}`;
   if (attemptRefs.has(memo)) return ref;
-  try { gitIn(dir, ["rev-parse", "--verify", `${ref}^{commit}`]); attemptRefs.add(memo); return ref; } catch {}
-  const blob = gitIn(dir, ["hash-object", "-w", "--stdin"], "MIT\n");
-  const tree = gitIn(dir, ["mktree"], `100644 blob ${blob}\tLICENSE\n`);
-  const commit = gitIn(dir, ["commit-tree", tree, "-m", "fixture attempt"]);
-  gitIn(dir, ["update-ref", ref, commit]);
+  const att = attemptsDirOf(dir);
+  if (!existsSync(join(att, "HEAD"))) {
+    mkdirSync(att, { recursive: true });
+    execFileSync("git", ["init", "--quiet", "--bare", att], { stdio: "pipe" });
+  }
+  try { attGitIn(dir, ["rev-parse", "--verify", `${ref}^{commit}`]); attemptRefs.add(memo); return ref; } catch {}
+  const blob = attGitIn(dir, ["hash-object", "-w", "--stdin"], "MIT\n");
+  const tree = attGitIn(dir, ["mktree"], `100644 blob ${blob}\tLICENSE\n`);
+  const commit = attGitIn(dir, ["commit-tree", tree, "-m", "fixture attempt"]);
+  attGitIn(dir, ["update-ref", ref, commit]);
   attemptRefs.add(memo);
   return ref;
 };
@@ -413,7 +430,14 @@ if (!gate.server) test("the main server started", () => assert.fail(SRV.why));
 after(async () => {
   for (const s of servers) await stop(s, "SIGKILL");
   if (process.env.KEEP) say(`directories left behind: ${trees.join(" ")}`);
-  else for (const d of trees) rmSync(d, { recursive: true, force: true });
+  else
+    for (const d of trees) {
+      rmSync(d, { recursive: true, force: true });
+      // The attempts repository is a SIBLING of the tree, not a child of it, because it is
+      // a different repository and the whole point of the move was that the registry does
+      // not carry pushed code. That also means rm on the tree does not reach it.
+      rmSync(attemptsDirOf(d), { recursive: true, force: true });
+    }
 });
 
 const state = {};
@@ -479,15 +503,29 @@ if (gate.sign)
         sg.payload("solution", { problem: "0001", repo: "https://example.com/r", score: 0.42, model: "opus-5", note: "", replaces: "e2c43b145970c1ef", builds_on: "aaaaaaaaaaaaaaaa" }),
         "exit0/v2|solution|0001|21:https://example.com/r|0.42|6:opus-5|0:|e2c43b145970c1ef|aaaaaaaaaaaaaaaa|-"
       );
-      // An attempt that lives as a ref inside a repository rather than as one of its own.
+      // An attempt that lives as a branch in the attempts repository.
+      assert.equal(
+        sg.payload("solution", { problem: "0014", repo: "https://github.com/o/r", score: 1, model: "m", note: "", replaces: "-", builds_on: "-", ref: "refs/heads/0014/abc123def456/semver-scan" }),
+        "exit0/v2|solution|0014|22:https://github.com/o/r|1|1:m|0:|-|-|40:refs/heads/0014/abc123def456/semver-scan"
+      );
+      // The old namespace still PARSES and must go on parsing forever: two records were
+      // signed under it before attempts moved out to a repository of their own, and
+      // build.mjs rebuilds every stored payload to check its signature. A grammar that
+      // narrowed here would throw inside the validator every write passes through
+      // (invariant 2) and freeze the registry. Refusing to WRITE it is the server's job.
       assert.equal(
         sg.payload("solution", { problem: "0014", repo: "https://github.com/o/r", score: 1, model: "m", note: "", replaces: "-", builds_on: "-", ref: "refs/attempts/0014/abc123def456/semver-scan" }),
         "exit0/v2|solution|0014|22:https://github.com/o/r|1|1:m|0:|-|-|43:refs/attempts/0014/abc123def456/semver-scan"
       );
-      // The namespace is only worth something if its shape is enforced. refs/heads is the
-      // one that matters: a ref grammar that accepts it turns "publish an attempt" into
-      // "write to the branch the registry serves".
-      for (const bad of ["refs/heads/main", "refs/attempts/0014/ABCDEF123456/x", "refs/attempts/14/abc123def456/x", "refs/attempts/0014/abc123def456/", "refs/attempts/0014/abc123def456/../x"])
+      // The namespace is only worth something if its shape is enforced. The three fixed
+      // segments are what makes it enforceable: no body can produce a branch name the
+      // attempts repository uses for itself, and none can escape the namespace with "..".
+      for (const bad of [
+        "refs/heads/main", "refs/tags/0014/abc123def456/x",
+        "refs/heads/0014/ABCDEF123456/x", "refs/heads/14/abc123def456/x",
+        "refs/heads/0014/abc123def456/", "refs/heads/0014/abc123def456/../x",
+        "refs/attempts/0014/ABCDEF123456/x", "refs/attempts/14/abc123def456/x",
+      ])
         assert.throws(
           () => sg.payload("solution", { problem: "0014", repo: "https://github.com/o/r", score: 1, model: "m", note: "", replaces: "-", builds_on: "-", ref: bad }),
           (e) => e.code === 400 && /ref/.test(e.message),
@@ -1057,7 +1095,7 @@ if (gate.sign)
     });
 
     test("sign carries every signed field, including the ones added last", () => {
-      const REF = "refs/attempts/0014/d8f819414c0b/semver-scan";
+      const REF = "refs/heads/0014/d8f819414c0b/semver-scan";
       const req = { problem: "0014", repo: "https://example.com/r", score: 1, builds_on: "e2c43b145970c1ef", ref: REF };
       const r = sgn(["sign", "identity.pem", "solution", JSON.stringify(req)]);
       assert.equal(r.code, 0, r.err);
@@ -1153,7 +1191,17 @@ if (gate.sign)
       assert.ok(id, `the failure has to name the problem that is now open: ${JSON.stringify(r.err.slice(0, 400))}`);
       assert.match(r.err, /sign\.mjs sign/, "the failure has to hand over the exact command that files the solution against it");
       assert.match(r.err, /1 problem|per day|budget/i, "the failure has to say the daily problem budget is spent");
-      assert.match(r.err, /refs\/attempts\//, "the code was pushed and the recovery command does not carry its ref, so following it verbatim returns 422");
+      // Behaviour, not a prefix. The recovery command has to carry THE ref this run pushed:
+      // a solution body without it is a body the server answers with 422, so handing one
+      // over would be handing over a command that cannot work. Reading the ref out of the
+      // run's own output is what keeps this test true the next time the namespace moves -
+      // the previous version pinned the literal "refs/attempts/" and went red on a change
+      // that was correct.
+      const pushedRef = (r.err.match(/attempt at (\S+)/) ?? [])[1];
+      assert.ok(pushedRef, `the run has to say where it pushed the code: ${JSON.stringify(r.err.slice(0, 400))}`);
+      const recovery = r.err.slice(r.err.indexOf("Your code IS pushed"));
+      assert.ok(recovery.includes(`"ref":"${pushedRef}"`), `the recovery command does not carry the ref that was pushed, so following it verbatim returns 422: ${JSON.stringify(recovery.slice(0, 400))}`);
+      assert.doesNotMatch(recovery, /"repo":\.\.\./, "the recovery leaves repo as an ellipsis, and there is exactly one right value for it now");
       is(await hit(srv, { path: `/${id}` }), 200, "the problem really is open in the registry");
       await stop(srv, "SIGKILL");
     });
@@ -1169,11 +1217,15 @@ if (gate.sign)
 // =====================================================================
 
 if (gate.server)
-  // Invariant 14 gave an attempt a place to live inside this repository and, until Phase 3,
-  // no way to get it there: only somebody with push access to the host could write one. So
-  // "submit a solution" quietly required a repository that outlives the claim, and a solved
-  // record whose repo is deleted points at nothing - the evidence survives in git forever
-  // while the code that produced it does not.
+  // Invariant 14 gave an attempt a place to live and, until Phase 3, no way to get it
+  // there: only somebody with push access to the host could write one. So "submit a
+  // solution" quietly required a repository that outlives the claim, and a solved record
+  // whose repo is deleted points at nothing - the evidence survives in git forever while
+  // the code that produced it does not.
+  //
+  // The code lands in a SEPARATE repository beside the registry, as an ordinary branch.
+  // Every assertion below that reads git therefore reads THAT repository: an attempt that
+  // showed up in the registry's own git would be the failure this move exists to prevent.
   describe("attempt transport: code with nowhere of its own to live", () => {
     const kA = mkKey();
     const kB = mkKey();
@@ -1199,23 +1251,30 @@ if (gate.server)
     const send = (k, problem, slug, buf) =>
       post(SRV, "attempt", { ...attBody(k, problem, slug, buf), bundle: buf.toString("base64") });
 
+    const attemptsGit = (...a) => String(execFileSync("git", ["--git-dir", attemptsDirOf(TREE), ...a], { encoding: "utf8", stdio: "pipe" })).trim();
+
     test("a bundle with a LICENSE lands under the SIGNER's own fingerprint, and nowhere else", async () => {
       const { buf } = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 0.42\n" });
       const c0 = commits(TREE);
       const r = await send(kA, "0001", "first-try", buf);
       is(r, 201, "pushing an attempt");
 
-      const mine = `refs/attempts/0001/${sg.fingerprint(kA.pub)}/first-try`;
+      const mine = `refs/heads/0001/${sg.fingerprint(kA.pub)}/first-try`;
       assert.equal(r.json.ref, mine, "the ref has to be addressed by the key's own fingerprint (invariant 14)");
-      const sha = String(execFileSync("git", ["-C", TREE, "rev-parse", mine], { encoding: "utf8" })).trim();
-      assert.equal(sha, r.json.sha, "the ref in git does not match the sha the server reported");
+      assert.equal(r.json.branch, mine.slice("refs/heads/".length), "the branch name is the ref without its prefix, and it is what a host UI shows");
+      assert.equal(attemptsGit("rev-parse", mine), r.json.sha, "the ref in git does not match the sha the server reported");
 
-      // Not a commit on main, and that is the point: main carries no solution code, and a
-      // normal clone does not fetch refs/attempts/*, so the clone stays small.
+      // Not a commit on main, and that is the point: main carries no solution code.
       assert.equal(commits(TREE), c0, "an attempt must not add a commit to main");
 
+      // And it is not in the registry's git AT ALL - not as a branch, not as a ref under
+      // any other namespace. That is the difference between this and the first version:
+      // the registry clone no longer carries attempts even as refs nobody fetches.
+      assert.equal(git(TREE, "for-each-ref", "--format=%(refname)", "refs/attempts/", "refs/heads/0001/"), "",
+        "pushed code turned up in the registry's own repository, which is the whole thing this move prevents");
+
       // And it really is fetchable code, not just a pointer.
-      const tree = String(execFileSync("git", ["-C", TREE, "ls-tree", "--name-only", sha], { encoding: "utf8" }));
+      const tree = attemptsGit("ls-tree", "--name-only", r.json.sha);
       assert.match(tree, /LICENSE/);
       assert.match(tree, /run\.sh/);
     });
@@ -1225,8 +1284,43 @@ if (gate.server)
       const r = await send(kA, "0001", "unlicensed", buf);
       is(r, 422, "a bundle with no LICENSE");
       assert.match(r.text, /LICENSE/);
-      assert.throws(() => execFileSync("git", ["-C", TREE, "rev-parse", `refs/attempts/0001/${sg.fingerprint(kA.pub)}/unlicensed`], { stdio: "pipe" }),
+      assert.throws(() => attemptsGit("rev-parse", `refs/heads/0001/${sg.fingerprint(kA.pub)}/unlicensed`),
         "a refused attempt left its ref behind");
+      // The staging ref is swept whether the push landed or not, or a refused bundle would
+      // keep its objects reachable forever and the repository would grow with rejections.
+      assert.equal(attemptsGit("for-each-ref", "--format=%(refname)", "refs/staging/"), "", "a refused attempt left its staging ref behind");
+    });
+
+    test("a ref a solution already names is frozen: the code a verifier ran cannot change under them", async () => {
+      const a = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 1\n" });
+      const r = await send(kB, "0001", "frozen", a.buf);
+      is(r, 201, "first push");
+
+      // Fast-forward alone is not enough here. It keeps the HISTORY honest and lets the
+      // author advance the branch - but once a record names the ref, advancing it leaves
+      // the verifier's signature on a tree they never saw. So the moment a solution points
+      // at it, the address stops moving.
+      is(await post(SRV, "solution", solBody(kB, { problem: "0001", repo: "https://example.com/frozen", score: 0.3, ref: r.json.ref })), 201, "filing a solution that names it");
+
+      writeFileSync(join(a.dir, "run.sh"), "echo 999\n");
+      a.g("add", "-A");
+      a.g("commit", "-q", "-m", "silently better");
+      a.g("bundle", "create", join(a.dir, "z.bundle"), "HEAD");
+      const fwd = readFileSync(join(a.dir, "z.bundle"));
+      const blocked = await send(kB, "0001", "frozen", fwd);
+      is(blocked, 409, "a fast-forward of a ref a solution names");
+      assert.match(blocked.text, /frozen/);
+      assert.equal(attemptsGit("rev-parse", r.json.ref), r.json.sha, "the frozen ref moved anyway");
+    });
+
+    test("a new solution cannot name the namespace attempts used to live in", async () => {
+      const dead = `refs/attempts/0001/${sg.fingerprint(kA.pub)}/historical`;
+      // It still PARSES - it has to, or build.mjs could not rebuild the payload of the two
+      // records signed under it - and the server is what refuses to write a new one.
+      assert.ok(sg.payload("solution", { problem: "0001", repo: "https://example.com/old", score: 0.1, model: "?", note: "", replaces: "-", builds_on: "-", ref: dead }));
+      const r = await post(SRV, "solution", solBody(kA, { problem: "0001", repo: "https://example.com/old", score: 0.1, ref: dead }));
+      is(r, 422, "a new solution naming the retired namespace");
+      assert.match(r.text, /refs\/attempts/);
     });
 
     test("a ref somebody may already have verified cannot be rewritten, only advanced", async () => {
@@ -1235,8 +1329,8 @@ if (gate.server)
 
       // A DIFFERENT history under the same name: git refuses it, we do not have to detect it.
       const b = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 2\n" });
-      const r = await send(kB, "0001", "iter", b.buf);
-      is(r, 409, "rewriting a ref with unrelated history");
+      const r2 = await send(kB, "0001", "iter", b.buf);
+      is(r2, 409, "rewriting a ref with unrelated history");
 
       // Advancing the SAME history is fine: that is a solver iterating, not rewriting.
       writeFileSync(join(a.dir, "run.sh"), "echo 3\n");
@@ -3340,7 +3434,50 @@ if (gate.server)
     // An attempt that has nowhere of its own to live: it sits as a ref inside a repository
     // the registry already publishes to. The namespace is only worth something if you can
     // only write under your own fingerprint, and that is checked here, not assumed.
-    test("ref: an attempt can live inside a repo, under its own fingerprint and nobody else's", async () => {
+    // The two URLs are CONFIGURATION, and configuration nothing exercises is configuration
+    // that turns out to be wrong the first time a deployment needs it. Everything else in
+    // this suite runs unconfigured, where both fields are correctly absent - so absence is
+    // well covered and presence was not covered at all.
+    test("ref: a deployment that publishes its attempts says where, and never guesses", async () => {
+      const REPO = "https://github.com/exit-0-run/attempts.git";
+      const BROWSE = "https://github.com/exit-0-run/attempts";
+      const dir = newTree("attempt-urls");
+      const srv = await startServer(dir, { ATTEMPTS_URL: REPO, ATTEMPTS_BROWSE: BROWSE });
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "Configured problem", higher_is_better: true });
+      const k = mkKey();
+
+      const pulse = JSON.parse((await hit(srv, { path: "/api/pulse" })).text);
+      assert.equal(pulse.attempts?.repo, REPO, "/api/pulse does not say where pushed code lives, so `repo` is folklore");
+      assert.equal(pulse.attempts?.browse, BROWSE);
+
+      // A real push, so what is asserted is what a submitter is actually handed.
+      const src = mkdtempSync(join(tmpdir(), "exit0-cfg-"));
+      trees.push(src);
+      gitIn(src, ["init", "-q"]);
+      writeFileSync(join(src, "LICENSE"), "MIT\n");
+      gitIn(src, ["add", "-A"]);
+      gitIn(src, ["commit", "-q", "-m", "x"]);
+      gitIn(src, ["bundle", "create", join(src, "b.bundle"), "HEAD"]);
+      const buf = readFileSync(join(src, "b.bundle"));
+      const att = await post(srv, "attempt", {
+        ...signBody(k, "attempt", { problem: P.id, slug: "configured", bundle_sha256: createHash("sha256").update(buf).digest("hex") }),
+        bundle: buf.toString("base64"),
+      });
+      is(att, 201, "pushing an attempt");
+      assert.equal(att.json.repo, REPO, "the 201 does not hand over the repo, so the submitter has to invent one");
+      assert.equal(att.json.browse, `${BROWSE}/tree/${P.id}/${sg.fingerprint(k.pub)}/configured`, "the browse URL is not the branch that was just written");
+      assert.match(att.json.next, /POST \/api\/solution/, "the 201 does not say what to do with it");
+
+      // And the link reaches a reader, which is the entire reason attempts moved out of
+      // the ref namespace: a ref no UI lists is code nobody can look at.
+      is(await post(srv, "solution", solBody(k, { problem: P.id, repo: REPO, score: 1, ref: att.json.ref })), 201, "filing against the pushed branch");
+      const page = (await hit(srv, { path: `/${P.id}` })).text;
+      assert.ok(page.includes(att.json.browse), `the problem page names no way to READ the code: ${page.slice(0, 400)}`);
+      await stop(srv, "SIGKILL");
+    });
+
+    test("ref: an attempt lives as a branch under its own fingerprint and nobody else's", async () => {
       const dir = newTree("attempt-ref");
       const srv = await startServer(dir);
       assert.ok(srv.port, srv.why);
@@ -3349,7 +3486,7 @@ if (gate.server)
       const me = sg.fingerprint(k.pub);
       const REPO = "https://github.com/owner/registry";
 
-      const mk = (slug, extra = {}) => solBody(k, { problem: P.id, repo: REPO, score: 1, ref: `refs/attempts/${P.id}/${me}/${slug}`, ...extra });
+      const mk = (slug, extra = {}) => solBody(k, { problem: P.id, repo: REPO, score: 1, ref: `refs/heads/${P.id}/${me}/${slug}`, ...extra });
 
       is(await post(srv, "solution", mk("v1")), 201, "an attempt hosted as a ref");
 
@@ -3363,11 +3500,11 @@ if (gate.server)
 
       // Somebody else's namespace.
       const other = mkKey();
-      const stolen = await post(srv, "solution", solBody(other, { problem: P.id, repo: REPO, score: 3, ref: `refs/attempts/${P.id}/${me}/mine` }));
+      const stolen = await post(srv, "solution", solBody(other, { problem: P.id, repo: REPO, score: 3, ref: `refs/heads/${P.id}/${me}/mine` }));
       is(stolen, 403, "a ref claimed under another key's fingerprint");
 
       // Another problem's namespace.
-      const wrong = await post(srv, "solution", solBody(k, { problem: P.id, repo: REPO, score: 4, ref: `refs/attempts/9999/${me}/x` }));
+      const wrong = await post(srv, "solution", solBody(k, { problem: P.id, repo: REPO, score: 4, ref: `refs/heads/9999/${me}/x` }));
       is(wrong, 400, "a ref naming a different problem");
 
       assert.equal(build(dir, "--check").code, 0, "a registry holding hosted attempts does not validate");
@@ -3376,14 +3513,15 @@ if (gate.server)
       // where somebody looks for work sends them to clone the default branch and find
       // nothing: the output of "find one" must paste into "run it".
       const w = (await hit(srv, { path: "/work" })).text;
-      assert.match(w, new RegExp(`refs/attempts/${P.id}/${me}/v1`), "/work prints the repo without the ref");
+      assert.match(w, new RegExp(`refs/heads/${P.id}/${me}/v1`), "/work prints the repo without the ref");
       const wj = JSON.parse((await hit(srv, { path: "/api/work" })).text);
       assert.ok(wj.work.some((x) => x.ref && x.ref.endsWith("/v1")), "/api/work does not carry ref");
       const page = (await hit(srv, { path: `/${P.id}` })).text;
-      assert.match(page, new RegExp(`refs/attempts/${P.id}/${me}/v1`), "the problem page prints the repo without the ref");
-      // Naming the ref is not the same as saying how to get it. A ref is not a branch and
-      // no web UI lists it, so "clone the repo" is an instruction that ends in an empty
-      // checkout of the default branch.
+      assert.match(page, new RegExp(`refs/heads/${P.id}/${me}/v1`), "the problem page prints the repo without the ref");
+      // Naming the ref is not the same as saying how to get it. `git clone <repo>` lands
+      // on the default branch of the attempts repository, which carries none of the code,
+      // so the fetch form is what has to be printed - and it is the one form that is also
+      // correct for the records signed before attempts moved into a repository of their own.
       for (const [what, txt] of [["/work", w], ["the problem page", page]])
         assert.match(txt, /git fetch <repo> <ref> && git checkout FETCH_HEAD/, `${what} names a ref without saying how to fetch it`);
     });
@@ -4738,25 +4876,91 @@ describe("repo invariants", () => {
   // host, and since the code and registry repositories were merged into one they land on
   // the same branch. A non-fast-forward is therefore EXPECTED, not exotic, and a push that
   // only ever fails on it would freeze the public copy the first time the two crossed.
-  // Phase 3 writes attempt refs into THIS host's repository, and the solution record then
-  // names the public mirror as its repo. If the mirror carries only main, the ref exists
-  // here and nowhere a verifier can reach: the documented `git fetch <repo> <ref>` fails
-  // and the entry cannot be checked by anybody. That shipped, and it was found by looking
-  // at where the refs actually were, not by any test. This is that test.
-  test("deploy: the mirror publishes attempt refs, not only main, and never by force", () => {
+  // Pushed code lives in a SECOND repository, and publishing it is a second job with a
+  // different contract. The first version of this got it wrong in the way that is easiest
+  // to get wrong: it pushed only main, so an attempt ref existed on the host and nowhere a
+  // verifier could reach, and the documented `git fetch <repo> <ref>` failed for everyone.
+  // That shipped, and it was found by looking at where the refs actually were rather than
+  // at where the code said they went.
+  test("deploy: the mirror publishes the attempts repository as well, and never by force", () => {
     const m = text("deploy/mirror.sh") ?? "";
-    const push = /push[^\n]*\n?[^\n]*refs\/heads[^\n]*/.exec(m);
-    assert.ok(push, "no push refspec found in mirror.sh");
-    assert.match(m, /refs\/attempts\/\*:refs\/attempts\/\*/,
-      "the mirror does not publish refs/attempts/*, so every attempt pushed through /api/attempt is unreachable for a verifier");
-    // A leading + would make the refspec forced, and a stale pusher could then rewind or
-    // delete an attempt somebody has already verified.
     // Comments are stripped first: this file EXPLAINS why --mirror and --force are absent,
     // so a naive match reads the reasoning as the thing it warns against. Assert on the
     // lines that run.
     const code = m.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
-    assert.doesNotMatch(code, /\+refs\/attempts/, "the attempt refspec is forced: a stale pusher could overwrite an attempt already verified");
+
+    assert.match(code, /HEAD:refs\/heads\/\$BRANCH/, "no registry push refspec found in mirror.sh");
+    assert.match(code, /EXIT0_ATTEMPTS_MIRROR/, "mirror.sh does not know where to publish pushed code, so every attempt stays on this host");
+    assert.match(code, /refs\/heads\/\*:refs\/heads\/\*/, "the attempts push has no explicit additive refspec");
+    // History: nothing writes refs/attempts/* any more, but two records signed before the
+    // move name refs under it and their fetch command has to keep working forever.
+    assert.match(code, /refs\/attempts\/\*:refs\/attempts\/\*/,
+      "the mirror stopped republishing refs/attempts/*, so the two records signed before the move point at nothing");
+
+    // A leading + would make a refspec forced, and a stale pusher could then rewind or
+    // delete work somebody has already verified against.
+    assert.doesNotMatch(code, /\+refs\//, "a forced refspec: a stale pusher could overwrite work already verified");
     assert.doesNotMatch(code, /--mirror\b|--force\b/, "--mirror and --force carry delete semantics on the far side");
+  });
+
+  // An attempt adds no commit to the registry (invariant 14, noCommit): the ref update in
+  // the other repository IS the write. So "the registry head has not moved" says nothing
+  // about whether new code needs publishing, and an early exit on the head alone would
+  // strand every attempt until some unrelated record happened to land.
+  test("deploy: an unchanged registry head does not stop the attempts from being published", () => {
+    const code = (text("deploy/mirror.sh") ?? "").split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    const early = /nothing new in the registry[\s\S]{0,400}/.exec(code);
+    assert.ok(early, "mirror.sh no longer has the unchanged-head branch this test is about");
+    assert.doesNotMatch(early[0], /^\s*exit 0\s*$/m,
+      "the unchanged-head branch exits before publishing attempts, so a push that adds no commit here is never mirrored");
+    assert.match(code, /SKIP_HEAD[\s\S]{0,200}publish_attempts/,
+      "the unchanged-head path does not reach publish_attempts");
+  });
+
+  // GitHub registers a deploy key on ONE repository: the second add is refused with "Key is
+  // already in use". Two mirrors therefore need two keys, and a script that reuses one
+  // would fail on the second push forever while the message pointed at permissions.
+  test("deploy: the two mirrors have two keys, and a missing second one is named", () => {
+    const m = text("deploy/mirror.sh") ?? "";
+    const code = m.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    assert.match(code, /ATT_KEY=\$\{EXIT0_ATTEMPTS_KEY:-\$KEY\}/, "the attempts push has no key of its own, so it cannot publish to a second GitHub repository");
+    assert.match(code, /ATT_SSH=/, "the attempts push builds no ssh command of its own, so ATT_KEY is declared and never used");
+    assert.match(code, /GIT_SSH_COMMAND="\$ATT_SSH"/, "the attempts push still runs under the registry's ssh command");
+    assert.match(code, /\[ -r "\$ATT_KEY" \]/, "a missing attempts key is not checked, so the failure arrives as a permission error");
+    const u = text("deploy/exit0-mirror.service") ?? "";
+    assert.match(u, /^Environment=EXIT0_ATTEMPTS_KEY=/m, "the mirror unit carries no attempts key for install.sh to render into");
+  });
+
+  // The attempts repository is durable state that is NOT reachable from the registry's
+  // history, so a backup of the registry alone loses every attempt and leaves the records
+  // naming branches that exist nowhere.
+  test("deploy: the backup copies the attempts repository too, fast-forward only", () => {
+    const b = text("deploy/backup.sh") ?? "";
+    const code = b.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    assert.match(code, /ATT_SRC=/, "backup.sh does not know about the attempts repository");
+    assert.match(code, /git clone --quiet --mirror "\$ATT_SRC"/, "the first run does not copy the attempts repository");
+    assert.match(code, /fetch --no-tags --quiet origin "refs\/heads\/\*:refs\/heads\/\*"[\s\S]{0,200}\$ATT_DST/,
+      "the attempts fetch is missing or is not the fast-forward-only form");
+    assert.doesNotMatch(code, /\+refs\/heads\/\*:refs\/heads\/\*/, "the attempts fetch is forced, so a rewrite upstream would overwrite the last copy");
+  });
+
+  // ProtectSystem=strict makes everything outside ReadWritePaths read-only. Leave the
+  // attempts repository out and every push dies with EROFS - on a route whose failure
+  // reads like a git problem rather than a unit problem.
+  test("deploy: the unit can write BOTH repositories, and knows where pushed code goes", () => {
+    const u = text("deploy/exit0.service") ?? "";
+    const rw = /^ReadWritePaths=(.*)$/m.exec(u);
+    assert.ok(rw, "no ReadWritePaths in the unit");
+    assert.equal(rw[1].trim().split(/\s+/).length, 2, `the unit names ${rw[1]} - the attempts repository has to be writable too, or every push is EROFS`);
+    for (const v of ["ATTEMPTS_DIR", "ATTEMPTS_URL", "ATTEMPTS_BROWSE"])
+      assert.match(u, new RegExp(`^Environment=${v}=`, "m"), `the unit carries no ${v}, so install.sh has nothing to render into`);
+
+    const i = text("deploy/install.sh") ?? "";
+    assert.match(i, /ReadWritePaths=\$DIR \$ATTEMPTS_DIR/, "install.sh renders only one writable path into the unit");
+    assert.match(i, /git init -q --bare "\$ATTEMPTS_DIR"/, "install.sh does not create the attempts repository");
+    // Inside the registry it is an untracked directory, which is a permanently dirty tree,
+    // which is read-only mode for every write (invariant 11).
+    assert.match(i, /ATTEMPTS_DIR must not live inside/, "install.sh accepts an attempts repository inside the registry tree");
   });
 
   test("deploy: the mirror reconciles a divergence by merging, and never publishes an unvalidated state", () => {

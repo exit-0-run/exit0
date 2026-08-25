@@ -15,6 +15,17 @@ Environment=EXIT0_MIRROR=git@github.com:exit-0-run/exit0-registry.git
 Environment=EXIT0_MIRROR_KEY=/etc/exit0/mirror_key
 Environment=EXIT0_MIRROR_STATE=/var/lib/exit0/mirrored
 Environment=EXIT0_MIRROR_KNOWN_HOSTS=/etc/exit0/known_hosts
+# The second repository, published on its own terms: no validation (it holds no records),
+# additive and fast-forward only, and a rejected push is a fault rather than the two-writer
+# divergence main has. Its own state file, because an unchanged registry head says nothing
+# about whether new code was pushed - an attempt adds no commit here by design.
+Environment=EXIT0_ATTEMPTS_DIR=/srv/exit0-attempts.git
+Environment=EXIT0_ATTEMPTS_MIRROR=git@github.com:exit-0-run/attempts.git
+Environment=EXIT0_ATTEMPTS_STATE=/var/lib/exit0/mirrored-attempts
+# Its own deploy key: GitHub registers one key on one repository, so two repositories need
+# two keys. Empty falls back to EXIT0_MIRROR_KEY, which is right for a self-hosted remote
+# that has no such rule.
+Environment=EXIT0_ATTEMPTS_KEY=/etc/exit0/attempts_key
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Runs as root because it reads a repository owned by the service user and the key

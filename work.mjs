@@ -205,10 +205,12 @@ const main = async () => {
 
   const dir = resolve(opt("dir", join(tmpdir(), `exit0-${sol.sid}`)));
   const checkout = join(dir, "checkout");
-  // The fetch form is the one llms.txt and /work print, not a shorter variant of it. An
-  // entry hosted as a ref is listed by no web UI, so `git fetch <repo> <ref>` followed by
-  // a checkout of FETCH_HEAD is the only way to reach it, and inventing flags around that
-  // is how the printed command stops matching the documented one.
+  // The fetch form is the one llms.txt and /work print, not a shorter variant of it. A
+  // hosted attempt is a branch, so `git clone --branch` would also work - and would be a
+  // second spelling of the documented command, which drifts. It would also break on the
+  // records signed before attempts moved out to a repository of their own: their refs are
+  // outside refs/heads and no clone reaches them. `git fetch <repo> <ref>` plus a checkout
+  // of FETCH_HEAD is the one form that is correct for every entry, old and new.
   const cmds = sol.ref
     ? [["git", ["init", "-q", checkout]], ["git", ["-C", checkout, "fetch", sol.repo, sol.ref]], ["git", ["-C", checkout, "checkout", "-q", "FETCH_HEAD"]]]
     : [["git", ["clone", sol.repo, checkout]]];

@@ -166,10 +166,10 @@ const boolT = (v, l) => {
 const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
 // Absent is "-", present is length-prefixed like every other string, so the two can never
 // be read as each other: a present value always carries its "N:" and "-" is not a URL.
-// An attempt can live as a ref inside a repository instead of as a repository of its own.
-// The shape is fixed and checked, not just carried: the fingerprint segment is what makes
-// "you can only claim a ref under your own key" checkable at all, and a free-form string
-// would make the whole namespace a place to write anything.
+// An attempt lives as a branch in the registry's attempts repository instead of as a
+// repository of its own. The shape is fixed and checked, not just carried: the fingerprint
+// segment is what makes "you can only claim a ref under your own key" checkable at all, and
+// a free-form string would make the whole namespace a place to write anything.
 // The last segment of a ref, and the name an attempt is pushed under. ONE rule: REF_RE is
 // built from it rather than repeating the character class, because a rule written twice
 // drifts apart and the copy that drifts is the one nobody runs.
@@ -180,14 +180,22 @@ export const canonSlug = (v) => {
   if (!SLUG_RE.test(v)) throw bad(400, "slug: lowercase letters, digits, then any of . _ -, starting with a letter or digit");
   return v;
 };
-export const REF_RE = new RegExp(`^refs/attempts/[0-9]{4}/[0-9a-f]{12}/${SLUG_RE.source.slice(1, -1)}$`);
+// TWO prefixes, and the second one is history that must never stop parsing. Attempts live
+// in a repository of their own now and an attempt is an ordinary branch there, so the
+// current shape is refs/heads/<problem>/<fingerprint>/<slug>. Records signed before the
+// move name refs/attempts/* and are valid exactly as they were signed: build.mjs rebuilds
+// every stored payload to check its signature, so narrowing this expression would not
+// merely redden --check later, it would throw inside the validator that every write passes
+// through (invariant 2) and freeze the whole registry. The grammar therefore only ever
+// widens. Refusing to WRITE the old shape is the server's job, not the grammar's.
+export const REF_RE = new RegExp(`^refs/(?:heads|attempts)/[0-9]{4}/[0-9a-f]{12}/${SLUG_RE.source.slice(1, -1)}$`);
 // One rule, two shapes: the body carries the plain string and the payload carries it
 // framed. Two separate checks would drift, and the one that drifts is the one nobody runs.
 export const canonRef = (v) => {
   if (v === undefined || v === null || v === "" || v === "-") return "-";
   if (typeof v !== "string") throw bad(400, "ref must be a string");
   if (bytes(v) > MAXLEN.ref) throw bad(400, `ref: max ${MAXLEN.ref} bytes`);
-  if (!REF_RE.test(v)) throw bad(400, "ref: refs/attempts/<4 digits>/<12 hex>/<slug>, or - when the repo is a repo of its own");
+  if (!REF_RE.test(v)) throw bad(400, "ref: refs/heads/<4 digits>/<12 hex>/<slug> - the branch POST /api/attempt returns. (refs/attempts/... still parses: it is where attempts lived before they moved to a repository of their own, and records signed then stay valid.)");
   return v;
 };
 const refT = (v) => {
@@ -305,10 +313,10 @@ export const payload = (action, f) => {
       // bodies differing only in builds_on are one entry, and relabelling your own
       // ancestry after the fact is not something this registry offers.
       replacesT(f.builds_on, "builds_on"),
-      // Where the code IS, when it is not a repository of its own: a ref inside one. The
-      // pair (repo, ref) is the address, so both are signed and both are part of the
-      // chain. Without this a submitter with nowhere to publish has to either turn away
-      // or point at somebody else's host.
+      // Where the code IS: a branch in the registry's attempts repository. The pair
+      // (repo, ref) is the address, so both are signed and both are part of the chain.
+      // Since hosting the code became a rule rather than an option, `repo` is the same
+      // URL on every hosted entry and `ref` is the only half that separates them.
       refT(f.ref),
     ].join("|");
   // tolerance is signed by the VERIFIER, not only by the problem author. A verdict
@@ -340,7 +348,7 @@ export const payload = (action, f) => {
       F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
       replacesT(f.replaces),
     ].join("|");
-  // The transport for an attempt that has nowhere of its own to live (invariant 14). The
+  // The transport that puts code where a verifier can fetch it (invariant 14). The
   // bundle is binary and large, so what gets signed is its sha256: the signature still
   // covers the content (invariant 5) and the payload stays one line of text like every
   // other action. The server computes that digest from the bytes it received and NEVER
@@ -406,9 +414,10 @@ export const payload = (action, f) => {
 // With the link the state cannot repeat: a repeat would need a sha256 collision,
 // because "-" occurs exactly once (a record never disappears) and every next
 // link commits to the previous one.
-// ref is in here, not only in the payload. Two attempts by one key can now share a repo
-// URL and differ only by ref (that is the whole point of hosting them as refs), so leaving
-// it out would give them one sid and collapse two independent chains into one.
+// ref is in here, not only in the payload. Every hosted attempt shares ONE repo URL now
+// (they are branches in one repository), so two attempts by one key differ only by ref -
+// leaving it out would give them one sid and collapse two independent chains into one.
+// That was a real 422 during development, not a hypothesis.
 export const solutionId = (problemId, repo, score, key, replaces, ref) =>
   sha(
     Buffer.from(
@@ -708,7 +717,7 @@ const USAGE = [
   "usage:",
   "  node scripts/sign.mjs keygen [file.pem] [--force]",
   "  node scripts/sign.mjs whoami [file.pem]",
-  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding> <json|@file|->",
+  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding|attempt> <json|@file|->",
   "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
   "  node scripts/sign.mjs ask <key.pem> <json|@file|->",
   "",
@@ -718,8 +727,9 @@ const USAGE = [
   "claim is for the common case the rest of this CLI makes awkward: you already HAVE a",
   "result and you want somebody to check it. It opens the problem, pushes your code and files your",
   "solution under it, in that order: the problem id is assigned by the server, your solution",
-  "signature covers it, and the solution names the ref the push returned. THREE signed",
-  "writes, one command. The body needs `bundle` (a path) and `slug` besides repo and score.",
+  "signature covers it, and the solution names the branch the push returned. THREE signed",
+  "writes, one command. The body needs `bundle` (a path) and `slug` besides repo and score,",
+  "and `repo` is overwritten with the attempts repository the registry actually pushed to.",
   "",
   "ask is the other half of that: somebody ELSE published a number and you want to know",
   "whether it holds. It signs a problem and nothing else, because the figure is not yours",
@@ -970,7 +980,7 @@ const claim = async (pem, base, raw) => {
   } catch (e) {
     throw bad(400, `the third argument is not valid JSON: ${e.message}`);
   }
-  if (!x.repo || x.score === undefined) throw bad(400, "a claim needs repo and score: it is a result looking for a check");
+  if (!x.repo || x.score === undefined) throw bad(400, "a claim needs repo and score: it is a result looking for a check. repo is where a verifier clones from, and the registry overrides it with the attempts repository it actually put your code in.");
   // Since the code has to live in the registry, a claim is THREE writes, not two, and the
   // bundle is as required as the score. Checked before the first write: a claim that dies
   // after opening the problem has spent the whole daily budget of one problem per key.
@@ -983,6 +993,7 @@ const claim = async (pem, base, raw) => {
   // running the same command again tomorrow.
   let opened = null;
   let pushed = null;
+  let pushedRepo = null;
   const stranded = () => {
     if (!opened) return;
     console.error("");
@@ -993,7 +1004,7 @@ const claim = async (pem, base, raw) => {
     // hosts the code now, so the solution names the ref the push returned.
     if (pushed) {
       console.error(`Your code IS pushed, at ${pushed}. Fix the body and file the solution alone:`);
-      console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":...,"score":...,"ref":"${pushed}","replaces":"-"}'`);
+      console.error(`  node scripts/sign.mjs sign ${pem} solution '{"problem":"${opened}","repo":"${pushedRepo ?? "<GET " + base + "/api/pulse -> attempts.repo>"}","score":...,"ref":"${pushed}","replaces":"-"}'`);
       console.error(`  curl -sS -X POST ${base}/api/solution -H 'content-type: application/json' -d @-`);
       return;
     }
@@ -1043,7 +1054,8 @@ const claim = async (pem, base, raw) => {
   try {
     att = await send("attempt", canonBody("attempt", { ...x, problem: p.id }, []));
     pushed = att.ref;
-    console.error(`attempt at ${att.ref}`);
+    pushedRepo = typeof att.repo === "string" && att.repo ? att.repo : null;
+    console.error(`attempt at ${att.ref}${att.browse ? ` (${att.browse})` : ""}`);
   } catch (e) {
     console.error(`attempt: ${e?.message ?? e}`);
     stranded();
@@ -1053,7 +1065,14 @@ const claim = async (pem, base, raw) => {
   let sol;
   try {
     const solChanged = [];
-    const solOut = canonBody("solution", { ...x, problem: p.id, replaces: "-", ref: att.ref }, solChanged);
+    // The registry hosts the code, so it also decides which clone URL carries it. Taking
+    // the caller's word for `repo` here is how a record ends up naming a URL that does not
+    // have the branch: the value is not an opinion any more, it is a fact the 201 reports.
+    // Announced the same way canonBody announces a fix, because it IS one and because a
+    // signed field changing silently is exactly what this file exists to prevent.
+    const repo = pushedRepo ?? x.repo;
+    if (repo !== x.repo) console.error(`fixed repo: ${JSON.stringify(x.repo)} -> ${JSON.stringify(repo)} (where the registry put your code)`);
+    const solOut = canonBody("solution", { ...x, problem: p.id, repo, replaces: "-", ref: att.ref }, solChanged);
     for (const [label, before, after] of solChanged)
       console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
     sol = await send("solution", solOut);

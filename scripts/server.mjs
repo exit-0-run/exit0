@@ -20,7 +20,7 @@ import {
   readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, rmSync, mkdtempSync,
   existsSync, mkdirSync, openSync, writeSync, closeSync, accessSync, constants,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -72,6 +72,59 @@ const SOURCE = (() => {
   }
 })();
 const sourceOf = (p) => (SOURCE && p.file ? `${SOURCE}/${p.file}` : null);
+
+// --- where pushed code lives ---
+// Attempts are NOT in this repository. They were, for one day, as refs/attempts/* here,
+// and the namespace was chosen because a normal `git clone` does not fetch it - which
+// kept the registry clone small but cost a human every way of looking at the code. No
+// web UI lists a ref outside refs/heads and refs/tags, and a commit reached by sha is
+// shown under "this commit does not belong to any branch". A registry of solutions whose
+// solutions cannot be read is a contradiction, so the code moved out to a repository of
+// its own where an attempt is an ordinary BRANCH: browsable, listed, clonable by name.
+//
+// The objection that kept branches out was that a branch can be opened as a pull request
+// into `main`. That objection was about THIS repository. In a separate one there is no
+// `main` here to open a request against, so the reason expired with the move rather than
+// being waved away - and the registry clone gets smaller than the namespace ever made it,
+// because the attempts are not in it at all.
+//
+// The default is a sibling of the working directory, so /srv/exit0 gets
+// /srv/exit0-attempts.git and a test tree gets its own beside it. A default nothing
+// exercises is a default that is wrong when it is first needed, so the suite runs on
+// this one rather than on an override.
+const ATTEMPTS_DIR = (() => {
+  const raw = process.env.ATTEMPTS_DIR;
+  if (raw !== undefined && String(raw).trim() !== "") return resolve(String(raw).trim());
+  const here = resolve(process.cwd());
+  return join(dirname(here), `${basename(here)}-attempts.git`);
+})();
+
+// The clone URL a verifier fetches from, and the base of a web view of it. Both are
+// configuration and neither is guessed: deriving an https browse URL from an ssh clone URL
+// is host-specific string surgery that is wrong the first time somebody is not on GitHub.
+// Unset means the field is absent rather than misleading.
+const urlEnv = (name) => {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return null;
+  try {
+    return canonUrl(String(raw).trim(), name).replace(/\/+$/, "");
+  } catch (e) {
+    console.error(`${name}: ${e.message}`);
+    process.exit(1);
+  }
+};
+const ATTEMPTS_URL = urlEnv("ATTEMPTS_URL");
+const ATTEMPTS_BROWSE = urlEnv("ATTEMPTS_BROWSE");
+
+// refs/heads/0014/ab19f27b0a00/first-try -> <base>/tree/0014/ab19f27b0a00/first-try
+// Only for the shape that IS a branch. The historical refs/attempts/* records stay exactly
+// as they were signed and stay unbrowsable, which is the honest answer: nothing retroactive
+// happened to them, they simply predate the move.
+const BRANCH_PREFIX = "refs/heads/";
+const browseOf = (ref) =>
+  ATTEMPTS_BROWSE && typeof ref === "string" && ref.startsWith(BRANCH_PREFIX)
+    ? `${ATTEMPTS_BROWSE}/tree/${ref.slice(BRANCH_PREFIX.length)}`
+    : null;
 
 const DIR = "problems";
 const STATE = ".state";
@@ -309,6 +362,36 @@ const withWriteLock = (fn) => {
 // --- git ---
 
 const git = (...a) => execFileSync("git", a, { stdio: "pipe" });
+
+// git in the OTHER repository: the one that holds pushed code. Bare, so there is no
+// working tree to dirty and nothing here can put it into the read-only state invariant 11
+// describes - that state is about the registry's tree and this repository does not have
+// one. Every attempt operation goes through this and never through git() above, or code
+// would land back in the repository the move exists to keep free of it.
+const attGit = (...a) => git("--git-dir", ATTEMPTS_DIR, ...a);
+
+// Created on first use rather than required up front. A fresh clone, a test tree and an
+// operator running `node scripts/server.mjs` in a checkout all have to work with no setup
+// step, and an empty bare repository is three files git writes itself. install.sh still
+// creates it, so ownership and permissions on a real host come from there and not from
+// whichever process happened to push first.
+let attemptsReady = false;
+const ensureAttempts = () => {
+  if (attemptsReady) return;
+  try {
+    if (!existsSync(join(ATTEMPTS_DIR, "HEAD"))) {
+      mkdirSync(ATTEMPTS_DIR, { recursive: true });
+      git("init", "--quiet", "--bare", ATTEMPTS_DIR);
+    }
+    attemptsReady = true;
+  } catch (e) {
+    // Storage, not request content: name the state and the command that fixes it.
+    throw bad(503, `cannot open the repository that holds pushed code (${ATTEMPTS_DIR})`, {
+      info: { fix: `git init --bare ${ATTEMPTS_DIR}, then make it writable by the service user`, detail: detailOf(e).slice(0, 200) },
+      headers: { "retry-after": "5" },
+    });
+  }
+};
 const build = (...a) => execFileSync("node", ["scripts/build.mjs", ...a], { stdio: "pipe" });
 
 // A read from git MUST NOT fight for .git/index.lock with a commit that is
@@ -837,25 +920,39 @@ const solution = (b) => {
   // one thing the registry exists to make checkable stops being checkable. Since Phase 3
   // there is somewhere to put it, so now there is no excuse not to.
   if (f.ref === "-")
-    throw bad(422, "a solution has to point at code hosted here: push it with POST /api/attempt and pass the ref that comes back", {
+    throw bad(422, "a solution has to point at code this registry hosts: push it with POST /api/attempt and pass back the ref you get", {
       info: {
         why: "a link to somebody else's host is only as durable as that account, and a verifier who cannot fetch the code cannot check the claim",
         how: "git bundle create x.bundle HEAD  ->  sign.mjs sign key.pem attempt '{\"problem\":\"" + p.id + "\",\"slug\":\"...\",\"bundle\":\"x.bundle\"}'  ->  POST /api/attempt",
-        then: "put the ref it returns in this body as `ref`, and this registry's clone URL in `repo`",
+        then: "the 201 hands you `ref` and `repo`: put both in this body",
       },
+    });
+
+  // The old namespace is READ forever and written never. Two records signed before the
+  // move name refs/attempts/* and they stay valid exactly as signed - the grammar still
+  // admits the shape, or re-deriving their payload offline would 422 and freeze the file
+  // (invariant 2). What cannot happen is a NEW record naming a home that no longer exists.
+  if (f.ref.startsWith("refs/attempts/"))
+    throw bad(422, "refs/attempts/* is where attempts used to live and nothing is written there any more. Push with POST /api/attempt and use the ref it returns.", {
+      info: { now: BRANCH_PREFIX + "<problem>/<your fingerprint>/<slug>", repo: ATTEMPTS_URL ?? "GET /api/pulse -> attempts.repo" },
     });
 
   // The shape of the ref was checked while building the payload. What is checked here is
   // the CLAIM inside it: the problem it names and the fingerprint it sits under. Without
-  // this anybody could file a solution pointing at a ref in somebody else's namespace, and
-  // the namespace would stop meaning "this is mine" the moment it started meaning anything.
+  // this anybody could file a solution pointing at a branch in somebody else's namespace,
+  // and the namespace would stop meaning "this is mine" the moment it started meaning
+  // anything. Counted from the END, not from the start: the two prefixes have a different
+  // number of segments, so a fixed index reads the wrong one for a historical ref.
   const seg = f.ref.split("/");
-  if (seg[2] !== p.id) throw bad(400, `ref names problem ${seg[2]}, this submission is for ${p.id}`);
-  if (seg[3] !== author) throw bad(403, "ref sits under another key's fingerprint", { info: { yours: author } });
-  // And it has to EXIST. Checking the shape without checking the object is how a record
-  // ends up naming a ref nobody can fetch, which is the exact failure this rule replaces.
-  try { git("rev-parse", "--verify", `${f.ref}^{commit}`); }
-  catch { throw bad(404, `${f.ref} does not exist here yet: push the attempt first, then submit`, { info: { push: "POST /api/attempt" } }); }
+  const slot = seg.length;
+  if (seg[slot - 3] !== p.id) throw bad(400, `ref names problem ${seg[slot - 3]}, this submission is for ${p.id}`);
+  if (seg[slot - 2] !== author) throw bad(403, "ref sits under another key's fingerprint", { info: { yours: author } });
+  // And it has to EXIST, in the repository that actually holds pushed code. Checking the
+  // shape without checking the object is how a record ends up naming a ref nobody can
+  // fetch, which is the exact failure this whole rule replaces.
+  ensureAttempts();
+  try { attGit("rev-parse", "--verify", `${f.ref}^{commit}`); }
+  catch { throw bad(404, `${f.ref} does not exist yet: push the attempt first, then submit`, { info: { push: "POST /api/attempt" } }); }
   const sid = solutionId(p.id, f.repo, f.score, b.key, f.replaces, f.ref);
   const sols = Array.isArray(p.solutions) ? p.solutions : [];
   // The chain is per (problem, repo, ref, key). ref belongs in it because attempts hosted
@@ -1151,20 +1248,39 @@ const finding = (b) => {
 
 
 // --- attempt: the transport for code with nowhere of its own to live ---
-// Invariant 14 gave an attempt a place to live inside this repository and no way to get it
-// there: the ref grammar existed, but only somebody with push access to the host could
-// write one, which is to say only us. So "submit a solution" silently required a GitHub
-// account and a repository that outlives the claim. It does not any more.
+// Invariant 14 gave an attempt a place to live and no way to get it there: the ref grammar
+// existed, but only somebody with push access to the host could write one, which is to say
+// only us. So "submit a solution" silently required a GitHub account and a repository that
+// outlives the claim. It does not any more, and since the claim that a solution IS code
+// here became a rule rather than an option, this is the only door that code comes through.
 //
-// What this fixes is DURABILITY, not reach. A solved record whose repo is deleted points
-// at nothing: the evidence bytes survive in git forever, so what was measured is still
+// What it fixes is DURABILITY, not reach. A solved record whose repo is deleted points at
+// nothing: the evidence bytes survive in git forever, so what was measured is still
 // readable, but the code that produced it is gone and nobody can ever re-run it.
 //
-// It is still not a commit on main. The ref update IS the durable write (invariant 1 says
-// state lives in git, not that every write is a commit on one branch), and refs/attempts/*
-// is not fetched by a normal clone, so "there is no solution code in main" stays true and
-// the clone stays small.
+// The code lands in a SEPARATE repository (ATTEMPTS_DIR, published as ATTEMPTS_URL) and an
+// attempt is an ordinary branch there. The first version put it here as refs/attempts/*,
+// which kept the registry clone small and made the code unreadable to a human: no host UI
+// lists a ref outside refs/heads and refs/tags, and a commit reached by sha carries a
+// banner saying it belongs to no branch. Moving it out gets both - the registry clone no
+// longer carries attempts even as unfetched refs, and an attempt has a URL a person can
+// open. It still adds no commit to main here (plan.noCommit): the ref update in the other
+// repository IS the durable write, and invariant 1 says state lives in git, not that every
+// write is a commit on one branch.
+//
+// The cap is ours and it is the one gate that is not git refusing something. It keeps an
+// attempt SOURCE rather than a dataset: the attempts repository is cloned by verifiers, and
+// a repository nobody can clone in a reasonable time is a repository nobody verifies.
 const ATTEMPT_MAX = 512 * 1024;
+
+// A ref a solution already names is FROZEN. Without this the fast-forward rule alone lets
+// an author advance a branch after a stranger has verified it: the record keeps its score,
+// its SOLVED status and the verifier's signature while `git checkout` at that ref yields
+// different code. Fast-forward makes the history honest, not the claim - the verifier
+// checked one tree and the address now resolves to another. A new slug costs nothing and
+// says the true thing: this is a different attempt.
+const namedBy = (p, ref) =>
+  (Array.isArray(p.solutions) ? p.solutions : []).some((x) => x && x.ref === ref);
 
 const attempt = (b) => {
   const p = readProblem(problemFile(b.problem));
@@ -1181,71 +1297,84 @@ const attempt = (b) => {
   const f = { problem: p.id, slug: canonSlug(b.slug), bundle_sha256 };
   verifySig(b, payload("attempt", f), f);
 
-  // The fingerprint segment comes from the KEY, so a ref can only ever be claimed under
-  // its own author (invariant 14). There is nothing in the body that could say otherwise.
+  // The fingerprint segment comes from the KEY, so a branch can only ever be claimed under
+  // its own author (invariant 14). There is nothing in the body that could say otherwise,
+  // and the three segments are fixed, so no body can ever name `main` or any branch the
+  // attempts repository uses for itself.
   const author = fingerprint(b.key);
-  const target = `refs/attempts/${p.id}/${author}/${f.slug}`;
+  const target = `${BRANCH_PREFIX}${p.id}/${author}/${f.slug}`;
+  if (namedBy(p, target))
+    throw bad(409, `${target} is named by a solution on this problem, so it is frozen. Push a new slug: an entry somebody may have verified must go on resolving to the code they ran.`, {
+      info: { ref: target, why: "a verifier checked one tree; advancing this address would leave their signature on a different one" },
+    });
+
   const staging = `refs/staging/${bundle_sha256.slice(0, 16)}`;
+  ensureAttempts();
 
   const dir = mkdtempSync(join(tmpdir(), "exit0-attempt-"));
   const file = join(dir, "in.bundle");
-  const sweep = () => {
-    try { git("update-ref", "-d", staging); } catch {}
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
-  };
   try {
     writeFileSync(file, raw);
     // Refuses a bundle that is not self-contained: one built as a thin pack needs objects
     // this repository has never seen, and would import a ref pointing at a history that
     // cannot be checked out. The error names the fix rather than the internals.
-    try { git("bundle", "verify", file); }
+    try { attGit("bundle", "verify", file); }
     catch { throw bad(400, "bundle: not a self-contained git bundle. Build it with `git bundle create x.bundle HEAD` from a clone that has the full history."); }
 
-    const heads = String(git("bundle", "list-heads", file)).trim().split("\n").filter(Boolean);
+    const heads = String(attGit("bundle", "list-heads", file)).trim().split("\n").filter(Boolean);
     if (heads.length !== 1) throw bad(400, `bundle: exactly one ref, this one carries ${heads.length}. One attempt is one line of history.`);
     const src = heads[0].split(/\s+/)[1];
 
-    git("fetch", "--quiet", file, `${src}:${staging}`);
-    const sha = String(git("rev-parse", staging)).trim();
+    attGit("fetch", "--quiet", file, `${src}:${staging}`);
+    const sha = String(attGit("rev-parse", staging)).trim();
 
     // A LICENSE is not paperwork here. The whole point of an attempt is that a stranger
     // clones it and RUNS it, and code with no licence is code they are not allowed to run.
     // Checked on the tree that arrived, not promised in the request.
-    const tree = String(git("ls-tree", "--name-only", sha)).split("\n").map((x) => x.trim());
+    const tree = String(attGit("ls-tree", "--name-only", sha)).split("\n").map((x) => x.trim());
     if (!tree.some((n) => /^LICEN[CS]E(\.[a-z]+)?$/i.test(n)))
       throw bad(422, "the bundle has no LICENSE at its root. A verifier has to clone this and run it, and unlicensed code is code they may not run.", { info: { got: tree.filter(Boolean).slice(0, 20) } });
 
-    // Fast-forward only, and git decides it. Never force: an attempt already verified by
-    // somebody must not be able to become different code under the same address, and the
-    // history is the audit trail for exactly the same reason main's is.
+    // Fast-forward only, and git decides it. Never force: the history is the audit trail
+    // for the same reason main's is. The freeze above is the stronger rule and this one
+    // still matters, because a branch nobody has named yet may still have been cloned.
     let old = null;
-    try { old = String(git("rev-parse", target)).trim(); } catch {}
+    try { old = String(attGit("rev-parse", target)).trim(); } catch {}
     if (old === sha) throw bad(409, "this bundle is already at that ref", { info: { ref: target, sha } });
     if (old) {
-      try { git("merge-base", "--is-ancestor", old, sha); }
-      catch { throw bad(409, `${target} already points at ${old.slice(0, 12)} and this bundle does not build on it. Push a new slug rather than rewriting a ref somebody may already have verified.`, { info: { ref: target, head: old } }); }
+      try { attGit("merge-base", "--is-ancestor", old, sha); }
+      catch { throw bad(409, `${target} already points at ${old.slice(0, 12)} and this bundle does not build on it. Push a new slug rather than rewriting a branch somebody may already have cloned.`, { info: { ref: target, head: old } }); }
     }
-    git("update-ref", target, sha, ...(old ? [old] : []));
+    attGit("update-ref", target, sha, ...(old ? [old] : []));
     return {
       code: 201,
       // Nothing to write into problems/ and therefore nothing to commit on main: the ref
-      // update above is the whole durable write.
+      // update above, in the other repository, is the whole durable write.
       noCommit: true,
-      body: { ref: target, sha, repo_hint: "pass this ref, with this registry's clone URL as `repo`, to POST /api/solution" },
+      body: {
+        ref: target,
+        branch: target.slice(BRANCH_PREFIX.length),
+        sha,
+        // Handed over rather than guessed at by the caller. `repo` is signed and is theirs
+        // to set, but there is exactly one right value now and making them derive it is how
+        // a record ends up naming a clone URL that does not carry the branch.
+        repo: ATTEMPTS_URL,
+        browse: browseOf(target),
+        next: ATTEMPTS_URL
+          ? `POST /api/solution with "ref":"${target}" and "repo":"${ATTEMPTS_URL}"`
+          : `POST /api/solution with "ref":"${target}" and the clone URL of this instance's attempts repository as "repo" (GET /api/pulse -> attempts.repo)`,
+      },
       msg: `${p.id}: attempt ${author}/${f.slug} at ${sha.slice(0, 12)}`,
       apply: () => {},
     };
-  } catch (e) {
-    sweep();
-    throw e;
   } finally {
-    try { git("update-ref", "-d", staging); } catch {}
+    // Staging is dropped whether this succeeded or failed: on success the objects are
+    // reachable from the branch, on failure they are unreachable and gc takes them.
+    try { attGit("update-ref", "-d", staging); } catch {}
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 };
 
-// A null prototype: without it POST /api/constructor lands on Object.prototype
-// and reaches a commit with no signature and no limit.
 const actions = Object.assign(Object.create(null), { solution, verification, problem, finding, attempt });
 
 // --- representations ---
@@ -1660,9 +1789,19 @@ const renderProblem = (p) => {
     for (const n of sorted) L.push(`  ${String(n.kind).toUpperCase().padEnd(9)} ${n.author}  ${n.body}`);
   }
   L.push("");
-  if (sols.some((s) => s.ref)) {
-    L.push("an entry with a ref is not a branch and no web UI lists it. Fetch it:");
+  // How to GET the code. An attempt is an ordinary branch in the attempts repository, so
+  // there is a page to open as well as a command to run - and the command is what stays
+  // correct for the two records signed before the move, whose refs are outside refs/heads
+  // and are listed by no UI. Both are printed, in that order: the command works for every
+  // entry, the link only for the ones that are branches.
+  const withRef = sols.filter((s) => s.ref);
+  if (withRef.length) {
+    L.push("the code behind an entry is in git, not on this host. Check it out:");
     L.push("  git fetch <repo> <ref> && git checkout FETCH_HEAD");
+    for (const s of withRef) {
+      const url = browseOf(s.ref);
+      if (url) L.push(`  ${s.sid}  ${url}`);
+    }
     L.push("");
   }
   // A settled entry that only one key ever ran is not finished work, and this is the page a
@@ -2218,8 +2357,9 @@ const renderQueue = (idx, q) => {
   // not appear in any host's branch list, so "clone it" is not an instruction a reader can
   // follow. Printed only when something in the page actually needs it.
   if (page.some(({ s }) => s.ref)) {
-    L.push("An entry with a ref is not a branch and no web UI will list it. Fetch it:");
+    L.push("The code behind an entry is in git, not on this host. Check it out:");
     L.push("  git fetch <repo> <ref> && git checkout FETCH_HEAD");
+    if (ATTEMPTS_BROWSE) L.push(`  or read it first: ${ATTEMPTS_BROWSE}`);
     L.push("");
   }
   // Three markers now, so the queue says what each one is asking for. SECOND RUN is the one
@@ -2617,6 +2757,12 @@ const readRoute = (req, res, path, qs) => {
       // would be someone else's counter.
       limits: { ...LIMITS, per_address: IP_CAP, attempts_left: peekIp(clientIp(req)).left },
       contract: CONTRACT,
+      // Where pushed code lives, so it is DISCOVERABLE rather than folklore. `repo` is
+      // signed on a solution and therefore the caller's to set, and there is now exactly
+      // one right value for it - so the instance says which, instead of leaving a record
+      // to name a clone URL that does not carry the branch. Absent when unconfigured,
+      // never a guess: this instance may not publish its attempts anywhere at all.
+      attempts: { branches: BRANCH_PREFIX + "<problem>/<fingerprint>/<slug>", ...(ATTEMPTS_URL ? { repo: ATTEMPTS_URL } : {}), ...(ATTEMPTS_BROWSE ? { browse: ATTEMPTS_BROWSE } : {}) },
       writes: readonly ? "readonly" : "ok",
       ...(readonly ? { reason: readonly.reason, fix: readonly.fix, ...(readonly.tainted ? { source: "HEAD" } : {}) } : {}),
     }, { "cache-control": "no-store" });

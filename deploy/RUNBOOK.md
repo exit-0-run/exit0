@@ -159,10 +159,32 @@ They are split now:
 | `backup.sh` | another machine | pull | the copy of last resort. No credentials here |
 | `mirror.sh` | this host, `exit0-mirror.timer` | push | the public clone stays current |
 
-The mirror needs a **deploy key with write access** on the repository it publishes to, and
-GitHub allows a given key on one repository only. Moving the target means removing the key
-from the old repository first, or the push fails with `Permission to ... denied to deploy
-key` - which reads like a broken key and is not.
+**There are TWO repositories to publish, not one.** The registry (`/srv/exit0`) and the
+attempts repository (`/srv/exit0-attempts.git`), which holds pushed code as one branch per
+attempt. `mirror.sh` does both in one run, on different terms:
+
+| | validated before push | refspec | a rejected push means |
+|---|---|---|---|
+| registry | yes, `build.mjs --check` over `git archive HEAD` | `HEAD:refs/heads/<branch>` plus `refs/attempts/*` (history) | two writers diverged; fetch and **merge** |
+| attempts | no - it holds no records, so there is nothing for the validator to have an opinion about | `refs/heads/*:refs/heads/*` | a fault. This host is the only writer, so somebody pushed to the far side directly |
+
+An attempt adds **no commit to the registry** (invariant 14), so an unchanged registry head
+says nothing about whether new code is waiting. The two therefore keep separate state files
+(`/var/lib/exit0/mirrored` and `mirrored-attempts`) and the unchanged-head path still
+publishes the attempts. The first version returned early on the head alone and every
+attempt stayed on the host, unreachable for exactly the verifiers it existed to serve.
+
+Both need a **deploy key with write access**, and they need **two different keys**: GitHub
+registers a given deploy key on one repository only, and the second add is refused with
+`Key is already in use`. So there are two:
+
+    /etc/exit0/mirror_key      -> exit-0-run/exit0        (EXIT0_MIRROR_KEY)
+    /etc/exit0/attempts_key    -> exit-0-run/attempts     (EXIT0_ATTEMPTS_KEY)
+
+`EXIT0_ATTEMPTS_KEY` falls back to `EXIT0_MIRROR_KEY` when it is empty, which is right for a
+self-hosted remote with no such rule and wrong for GitHub. Moving a target means removing
+the key from the old repository first, or the push fails with `Permission to ... denied to
+deploy key` - which reads like a broken key and is not.
 
     systemctl list-timers exit0-mirror.timer
     journalctl -u exit0-mirror -n 20
@@ -183,9 +205,13 @@ fast-forward, that is a finding, not a nuisance - look before you do anything ab
 
     ssh-keygen -t ed25519 -N '' -C exit0-mirror -f /etc/exit0/mirror_key
 
-Then add `/etc/exit0/mirror_key.pub` as a **deploy key with write access** on the mirror
-repository, and run `deploy/install.sh` again: it seeds `/etc/exit0/known_hosts` with
-`ssh-keyscan` and enables the timer.
+    ssh-keygen -t ed25519 -N '' -C exit0-attempts -f /etc/exit0/attempts_key
+
+Then add `/etc/exit0/mirror_key.pub` as a **deploy key with write access** on the registry
+mirror, `/etc/exit0/attempts_key.pub` the same way on `exit-0-run/attempts`, and run
+`deploy/install.sh` again: it seeds `/etc/exit0/known_hosts` with `ssh-keyscan` and enables
+the timer. Both keys are pinned against the same `known_hosts`, because both go to the same
+host.
 
 The key lives in `/etc/exit0`, outside `/srv/exit0`, and that is not tidiness. The service
 user's home **is** the registry directory, and the installer runs `git add -A` there - a
@@ -204,11 +230,24 @@ repository, or it is there without write access. Check with:
 
 ## Restore
 
-    git clone <mirror> /srv/exit0
+    git clone <registry mirror> /srv/exit0
+    git clone --mirror <attempts mirror> /srv/exit0-attempts.git
     cd /opt/exit0-src && sudo deploy/install.sh
 
 The clone brings the data and the history; the installer adds the code, the git identity, the
 unit and the start. Because a fresh clone is clean, the "uncommitted changes" check passes.
+
+**Restore the attempts repository too, and `--mirror` it**: a plain clone takes one branch
+and the rest of the attempts stay behind. Skip it and the registry comes back looking
+healthy while every solution record names a branch that exists nowhere - which is the exact
+"points at nothing" failure that hosting the code was meant to end. The installer creates an
+empty one if it is missing, so a restore that forgets this step is silent. Check it:
+
+    git --git-dir=/srv/exit0-attempts.git for-each-ref --format='%(refname)' refs/heads/ | wc -l
+
+against the number of solution records carrying a `ref`:
+
+    grep -c '"ref": "refs/heads/' /srv/exit0/problems/[0-9]*.json | awk -F: '{n+=$2} END {print n}'
 
 Sanity check after a restore, **from the registry directory**, not from the sources:
 

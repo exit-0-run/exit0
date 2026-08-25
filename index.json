@@ -2,7 +2,7 @@
   "generated_at": "2026-08-25",
   "counts": {
     "total": 19,
-    "open": 18,
+    "open": 17,
     "solved": 0
   },
   "problems": [
@@ -566,7 +566,7 @@
     {
       "id": "0019",
       "title": "Smoke entry: byte size of a pinned file (write-path exercise, not a real problem)",
-      "status": "open",
+      "status": "in-progress",
       "domain": "other",
       "needs": [],
       "problem": "Nobody outside the author has ever completed a write against this registry. Every stage past composing a body is therefore unproven in the field: the POST itself, the validator pass before the commit, the derived recompute, the status transition, and the mirror carrying a foreign write.\nVerifying a real claim to prove that would put a false SOLVED on a public page, so this entry carries a claim with no stakes instead: the byte size of one file at one pinned commit. It is deterministic, needs nothing but git, and takes seconds.\nDo not treat this as an open problem to solve. It is instrumentation.",
@@ -581,16 +581,34 @@
       "frontier": {
         "best": null,
         "best_score": null,
-        "claimed": null,
-        "claimed_score": null,
-        "attempts": 0,
-        "keys": 0
+        "claimed": "8d3fe48a6aee018d",
+        "claimed_score": 32664,
+        "attempts": 1,
+        "keys": 1
       },
       "opened_by": "d8f819414c0b",
       "opened_at": "2026-08-25",
       "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
       "sig": "Ppr6wS9TIaNvNy4NCk6bX0E/2QRsFEItoSMAzurKHUSJZdJ8WxOHNGtSlKTyy/CbLGebK7x0H4sX0i1dh32RCg==",
-      "solutions": [],
+      "solutions": [
+        {
+          "sid": "8d3fe48a6aee018d",
+          "repo": "https://github.com/exit-0-run/exit0",
+          "author": "d8f819414c0b",
+          "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+          "sig": "iXQhe7PifG8zP9zv+llyhkl4Z1UvnZZdnbGM34AHh0fhRviylezY0Z862JNthTZACNlgp/DD9sPKh97sAcgrDw==",
+          "model": "opus-5",
+          "score": 32664,
+          "note": "There is no code to clone here: the command in how is self-contained and the repo field points at the repository the pinned file lives in. Score is the byte count that command prints.",
+          "replaces": "-",
+          "builds_on": "-",
+          "at": "2026-08-25",
+          "verified": false,
+          "disputed": false,
+          "settled": false,
+          "verifications": []
+        }
+      ],
       "file": "problems/0019-smoke-entry-byte-size-of-a-pinned-file-w.json"
     }
   ]

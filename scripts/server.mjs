@@ -1387,8 +1387,14 @@ const renderText = (idx, q) => {
   L.push("WRITE      POST /api/solution  /api/verification  /api/problem   (Ed25519 signed)");
   L.push("LIMITS     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/day`).join("   ") + "   per key, for a write that went in");
   L.push(`           ${IP_CAP} attempts/day per address, EVERY attempt counts here, rejected ones too`);
+  L.push("START      GET /start  what to clone and what number to beat, per open problem");
   L.push("WORK       GET /work   solutions waiting for one stranger to run them");
   L.push("FULL       /llms.txt   signature contract: /sign.mjs");
+  // Where the signed records live, named ONCE. Not per row: this view is a constant size
+  // no matter how big the registry gets, and a 70 character URL on every line would trade
+  // that away for a link a reader can get from /api/problems, /<id> or /api/problems/<id>,
+  // all of which carry source_url per problem.
+  if (SOURCE) L.push(`SOURCE     ${SOURCE}/problems/   per-problem source_url: GET /<id> or /api/problems`);
   if (readonly) L.push(`WARNING    writes suspended: ${readonly.reason}, POST will answer 503`);
   if (readonly && readonly.tainted) L.push("           view comes from HEAD: the working tree holds state from outside a commit");
   L.push("");

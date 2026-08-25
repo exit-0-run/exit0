@@ -2803,6 +2803,15 @@ if (gate.server)
       const j = JSON.parse((await hit(on, { path: `/api/problems/${P.id}` })).text);
       assert.ok(j.source_url && j.source_url.endsWith(".json"), "the JSON view does not carry source_url");
       // The collision this field was renamed to avoid: pulse.source means something else.
+      // The front door has to name both, or an agent that lands there and reads nothing
+      // else never learns either exists. /start was documented in llms.txt and advertised
+      // nowhere a newcomer looks.
+      const front = (await hit(on, { path: "/" })).text;
+      assert.match(front, /GET \/start/, "the index does not advertise /start");
+      assert.match(front, /SOURCE +https:\/\/example\.com/, "the index does not say where the records live");
+      const list = JSON.parse((await hit(on, { path: "/api/problems" })).text);
+      assert.ok(list.problems.every((x) => typeof x.source_url === "string"), "the listing does not carry source_url per problem");
+
       const pulse = JSON.parse((await hit(on, { path: "/api/pulse" })).text);
       assert.equal(pulse.source_url, undefined, "pulse grew a source_url, which is not what that route's `source` means");
       on.kill?.();

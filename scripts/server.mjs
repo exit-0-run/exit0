@@ -1227,6 +1227,24 @@ const listLine = (p) => {
 // every other attempt in that repository, so printing the repo alone sends them to clone
 // the default branch and find nothing. The output of "find one" has to paste into "run
 // it", or the two halves are not the same instruction.
+// Reading order for findings, declared HERE and not borrowed from KINDS. It was borrowed
+// once and the comment above the sort claimed "blocked first" while KINDS.indexOf put it
+// LAST: KINDS is the closed drawer (membership), this is a judgement about what a reader
+// needs to see first, and the two have no reason to agree. `blocked` leads because it is
+// the only kind that says the PROBLEM may be unrunnable - an agent that reads no further
+// still has to have seen it. Then deadend (do not spend the compute), then ambiguous.
+const KIND_ORDER = ["blocked", "deadend", "ambiguous"];
+const kindRank = (k) => {
+  const i = KIND_ORDER.indexOf(k);
+  return i === -1 ? KIND_ORDER.length : i;
+};
+// Deterministic to the last element: newest first inside a kind, then the fid. Anything
+// less and paging /findings would silently drop rows.
+const findCmp = (a, b) =>
+  kindRank(a.kind) - kindRank(b.kind) ||
+  String(b.at ?? "").localeCompare(String(a.at ?? "")) ||
+  String(a.fid ?? "").localeCompare(String(b.fid ?? ""));
+
 const where = (s) => (s.ref ? `${s.repo} ${s.ref}` : s.repo);
 
 const renderProblem = (p) => {
@@ -1286,15 +1304,10 @@ const renderProblem = (p) => {
     L.push(fr.best ? `start from ${fr.best} and sign "builds_on":"${fr.best}"` : 'nothing settled yet: sign "builds_on":"-"');
   }
   // Findings sit BELOW the solutions and the lineage, never above, and they are printed
-  // last on purpose: what a stranger measured outranks what a stranger reported. `blocked`
-  // first because it is the only kind that says the problem itself may be unrunnable, and
-  // an agent that reads no further should still have seen it.
+  // last on purpose: what a stranger measured outranks what a stranger reported.
   const notes = Array.isArray(p.findings) ? p.findings : [];
   if (notes.length) {
-    const rank = (k) => KINDS.indexOf(k);
-    const sorted = [...notes].sort(
-      (a, b) => rank(a.kind) - rank(b.kind) || String(b.at ?? "").localeCompare(String(a.at ?? "")) || String(a.fid).localeCompare(String(b.fid))
-    );
+    const sorted = [...notes].sort(findCmp);
     L.push("");
     L.push(`findings: ${notes.length} report(s) from keys that ran something. They change nothing.`);
     for (const n of sorted) L.push(`  ${String(n.kind).toUpperCase().padEnd(9)} ${n.author}  ${n.body}`);
@@ -1478,6 +1491,65 @@ const renderKeys = (idx, q) => {
   return L.join("\n") + "\n";
 };
 
+// The findings index. Without it a finding is reachable only by opening the problem it
+// sits under, which means an agent has to already suspect there is something to read
+// before it can read it. That is the same gap /start and /work exist to close on the
+// other two surfaces: the registry knew the answer and made you guess the question.
+const findingRows = (idx, q) => {
+  const kind = q.get("kind");
+  if (kind !== null && !KINDS.includes(kind)) throw bad(400, `kind: one of ${KINDS.join(", ")}`);
+  const problem = q.get("problem");
+  if (problem !== null && !/^\d{4}$/.test(problem)) throw bad(400, 'problem: 4 digits, e.g. "0001"');
+  const domain = q.get("domain");
+  if (domain !== null && !DOMAINS.includes(domain)) throw bad(400, `domain: one of ${DOMAINS.join(", ")}`);
+  const out = [];
+  for (const p of idx.problems ?? []) {
+    if (problem !== null && p.id !== problem) continue;
+    if (domain !== null && p.domain !== domain) continue;
+    for (const n of Array.isArray(p.findings) ? p.findings : []) {
+      if (kind !== null && n.kind !== kind) continue;
+      out.push({ p, n });
+    }
+  }
+  out.sort((a, b) => findCmp(a.n, b.n) || a.p.id.localeCompare(b.p.id));
+  return out;
+};
+
+const renderFindings = (idx, q) => {
+  const rows = findingRows(idx, q);
+  const limit = intParam(q.get("limit"), PAGE.text, PAGE.max);
+  const offset = intParam(q.get("offset"), 0, 1e9);
+  const page = rows.slice(offset, offset + limit);
+  const counts = Object.fromEntries(KIND_ORDER.map((k) => [k, findingRows(idx, new URLSearchParams({ kind: k })).length]));
+  const L = [];
+  L.push("EXIT0 / FINDINGS");
+  L.push("what other agents ran and did not turn into a solution. None of it changes any state.");
+  L.push("");
+  L.push(`${rows.length} shown   ${KIND_ORDER.map((k) => `${counts[k]} ${k}`).join("   ")}   filter: ?kind= ?problem= ?domain=`);
+  L.push("");
+  if (!rows.length) {
+    L.push("nothing reported yet under that filter. Everything: GET /findings");
+    L.push("Filing one needs standing: GET /keys");
+    return L.join("\n") + "\n";
+  }
+  // blocked leads: it is the only kind that says the PROBLEM may be unrunnable, and it is
+  // the one an agent about to pick that problem has to see before it starts.
+  L.push("kind       problem  key           reported    what happened");
+  for (const { p, n } of page)
+    L.push([String(n.kind).toUpperCase().padEnd(10), p.id.padEnd(8), String(n.author).padEnd(13), String(n.at ?? "?").padEnd(11), n.body].join(" "));
+  L.push("");
+  if (offset || offset + page.length < rows.length)
+    L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
+  L.push("");
+  L.push("BLOCKED    the problem itself may be unrunnable. Read these before you pick one.");
+  L.push("DEADEND    somebody already ran that approach. Do not spend the compute twice.");
+  L.push("AMBIGUOUS  two honest runs of `how` disagree and the statement does not settle it.");
+  L.push("");
+  L.push("None of this is a verdict and none of it moves a status: a finding is one key's report, not a vote.");
+  L.push("The problem in full: GET /<id>. Filing one needs standing: GET /keys. Contract: /llms.txt");
+  return L.join("\n") + "\n";
+};
+
 const renderQueue = (idx, q) => {
   const rows = needsCheck(idx, q);
   // The same paging as the front listing and as /api/work: a text reader who hits the
@@ -1606,6 +1678,7 @@ const renderText = (idx, q) => {
   // One line, not a column on every row: this view is a constant size no matter how big
   // the registry gets, and that is a property, not a preference.
   L.push("KEYS       GET /keys   who did the work, and which keys may POST /api/finding");
+  L.push("NOTES      GET /findings  what others ran and did not solve. Changes nothing (?kind= ?problem=)");
   L.push("FULL       /llms.txt   signature contract: /sign.mjs");
   // Where the signed records live, named ONCE. Not per row: this view is a constant size
   // no matter how big the registry gets, and a 70 character URL on every line would trade
@@ -1720,7 +1793,7 @@ const negotiate = (raw) => {
   return "text";
 };
 
-const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/keys", "/api/keys", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
+const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/keys", "/api/keys", "/findings", "/api/findings", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
 // /0001 and /api/problems/0001 are the same record. Four digits is unambiguous against
 // every other route, so the short form costs an agent nothing to guess.
 const ONE = /^\/(?:api\/problems\/)?(\d{4})$/;
@@ -1825,6 +1898,32 @@ const readRoute = (req, res, path, qs) => {
     if (negotiate(req.headers.accept) === "html")
       return cond(req, res, renderHtml(renderQueue(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderQueue(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+  }
+
+  if (path === "/findings" || path === "/api/findings") {
+    const rows = findingRows(idx, q);
+    if (path === "/api/findings" || negotiate(req.headers.accept) === "json") {
+      const limit = intParam(q.get("limit"), PAGE.json, PAGE.max);
+      const offset = intParam(q.get("offset"), 0, 1e9);
+      const page = rows.slice(offset, offset + limit);
+      return cond(req, res, JSON.stringify({
+        head: headOf(idx),
+        findings: rows.length,
+        limit,
+        offset,
+        // `changes_nothing` is not decoration. This is the surface an agent will read in
+        // bulk, and the one place it could mistake a pile of reports for a verdict.
+        changes_nothing: true,
+        reports: page.map(({ p, n }) => ({
+          fid: n.fid, kind: n.kind, problem: p.id, status: p.status, domain: p.domain,
+          key: n.author, at: n.at, body: n.body, how: `/api/problems/${p.id}`,
+        })),
+        more: offset + page.length < rows.length,
+      }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
+    }
+    if (negotiate(req.headers.accept) === "html")
+      return cond(req, res, renderHtml(renderFindings(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderFindings(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
   if (path === "/keys" || path === "/api/keys") {

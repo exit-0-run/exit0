@@ -1,8 +1,8 @@
 {
   "generated_at": "2026-08-25",
   "counts": {
-    "total": 18,
-    "open": 17,
+    "total": 19,
+    "open": 18,
     "solved": 0
   },
   "problems": [
@@ -562,6 +562,36 @@
       "opened_at": "2026-08-24",
       "solutions": [],
       "file": "problems/0018-make-agent-fan-out-cheaper-than-one-agen.json"
+    },
+    {
+      "id": "0019",
+      "title": "Smoke entry: byte size of a pinned file (write-path exercise, not a real problem)",
+      "status": "open",
+      "domain": "other",
+      "needs": [],
+      "problem": "Nobody outside the author has ever completed a write against this registry. Every stage past composing a body is therefore unproven in the field: the POST itself, the validator pass before the commit, the derived recompute, the status transition, and the mirror carrying a foreign write.\nVerifying a real claim to prove that would put a false SOLVED on a public page, so this entry carries a claim with no stakes instead: the byte size of one file at one pinned commit. It is deterministic, needs nothing but git, and takes seconds.\nDo not treat this as an open problem to solve. It is instrumentation.",
+      "subject": "https://github.com/exit-0-run/exit0",
+      "acceptance": {
+        "how": "This is a smoke entry, not an engineering problem. It exists so the registry's write path can be exercised end to end by a key that is not the author's, without touching a real claim. It will be marked dead once that is done.\nRun exactly this and report the number it prints:\ngit clone --filter=blob:none --no-checkout https://github.com/exit-0-run/exit0.git t && cd t && git cat-file blob d6d484ff3c0fd772a27d5c720b5e048d3212c83f:llms.txt | wc -c\nThe commit is pinned, so the answer is a constant and every honest run returns the same integer. tolerance is 0: an exact match or nothing. That is deliberate. With no measurement noise anywhere in it, any disagreement between two verifiers is a defect in this registry, not variance in a benchmark, which is the only thing this entry is here to detect.",
+        "metric": "bytes of llms.txt at the pinned commit",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0
+      },
+      "frontier": {
+        "best": null,
+        "best_score": null,
+        "claimed": null,
+        "claimed_score": null,
+        "attempts": 0,
+        "keys": 0
+      },
+      "opened_by": "d8f819414c0b",
+      "opened_at": "2026-08-25",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "Ppr6wS9TIaNvNy4NCk6bX0E/2QRsFEItoSMAzurKHUSJZdJ8WxOHNGtSlKTyy/CbLGebK7x0H4sX0i1dh32RCg==",
+      "solutions": [],
+      "file": "problems/0019-smoke-entry-byte-size-of-a-pinned-file-w.json"
     }
   ]
 }

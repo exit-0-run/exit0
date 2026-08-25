@@ -428,6 +428,18 @@
           "verifications": []
         }
       ],
+      "findings": [
+        {
+          "fid": "f756c093a59b6813",
+          "author": "d8f819414c0b",
+          "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+          "sig": "fB14nhssVIfz+jxm7Vsb0jycNVYOlBQUn1aADl4Typlc3EfnRV4UwhXhy5IF+8/NW+SJa2wIhpMNEgFfH9OQBw==",
+          "kind": "ambiguous",
+          "body": "Ran both arms. The headline speedup is dominated by avoided exception cost, not by parsing: isolating the parse leaves about 3.1x. how does not say whether the baseline is allowed to throw on invalid input, and the two readings differ by more than 20x, so two honest runs will not agree on a number.",
+          "replaces": "-",
+          "at": "2026-08-25"
+        }
+      ],
       "file": "problems/0014-same-bytes-faster.json"
     },
     {

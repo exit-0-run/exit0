@@ -50,10 +50,23 @@ console.log(`${new Date().toISOString()}\n`);
 
 // --- 1. the published door ---
 const llms = await hit("/llms.txt");
-check("/llms.txt is served and names the signature grammar", llms.status === 200 && llms.text.includes("exit0/v1|verification|"), `HTTP ${llms.status}, ${llms.text.length} bytes`);
-
 const signer = await hit("/sign.mjs");
 check("/sign.mjs is served", signer.status === 200 && signer.text.includes("export const payload"), `HTTP ${signer.status}, ${signer.text.length} bytes`);
+
+// The prefix is READ OFF the served sign.mjs rather than written here. It used to be
+// pinned to the literal exit0/v1, and when PREFIX moved to v2 this check could no longer
+// pass at all: a smoke test with a check that can never go green is not a canary, it is a
+// dead bird in the cage that nobody looks at. Deriving it also makes the check stronger
+// than it was - it now asserts the documentation and the code agree on the wire version.
+const PREFIX = (signer.text.match(/export const PREFIX = "([^"]+)"/) ?? [])[1];
+check("/sign.mjs declares the wire version", !!PREFIX, signer.text.slice(0, 200));
+check(
+  "/llms.txt is served and names the SAME signature grammar the served code implements",
+  llms.status === 200 && !!PREFIX && llms.text.includes(`${PREFIX}|verification|`),
+  `HTTP ${llms.status}, ${llms.text.length} bytes, prefix ${PREFIX}`
+);
+for (const action of ["solution", "verification", "problem", "finding"])
+  check(`/llms.txt carries the grammar for ${action}`, !!PREFIX && llms.text.includes(`${PREFIX}|${action}|`), `no ${PREFIX}|${action}| line`);
 if (signer.status !== 200) {
   console.log("\nwithout the signer nothing below can be signed. Stopping.");
   process.exit(1);
@@ -193,6 +206,29 @@ check("the problem badge answers too", pbdg.status === 200 && pbdg.text.includes
 
 const listed = await hit(`/api/problems?domain=${encodeURIComponent(problem.domain)}`);
 check("the filtered listing finds this problem and states whether it was cut", listed.status === 200 && (listed.json?.problems ?? []).some((x) => x.id === PID) && typeof listed.json?.more === "boolean", `HTTP ${listed.status}: ${listed.text.slice(0, 200)}`);
+
+// The board is a fold over records already in git: nothing to store, so the only thing
+// that can break it in a deployment is the route not being wired up.
+const board = await hit("/api/keys");
+check(
+  "the board answers and carries a row per key, with no score to game",
+  board.status === 200 && Array.isArray(board.json?.board) && board.json.board.every((r) => typeof r.standing === "boolean" && !("score" in r)),
+  `HTTP ${board.status}: ${board.text.slice(0, 300)}`
+);
+const boardText = await hit("/keys", { headers: { accept: "text/plain" } });
+check("the text board explains its columns", boardText.status === 200 && /^solved\s/m.test(boardText.text) && /^standing\s/m.test(boardText.text), `HTTP ${boardText.status}`);
+
+// Standing is the whole reason findings are not a comment box. A deployment where an
+// unknown key can file one has lost the property, not just a test.
+const stranger = await hit("/api/finding", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ key: "not a key", sig: "no", problem: PID, kind: "deadend", body: "x", replaces: "-" }),
+});
+check("a finding from a key with nothing behind it is refused", [400, 401, 403].includes(stranger.status), `HTTP ${stranger.status}: ${stranger.text.slice(0, 200)}`);
+
+const front = await hit("/", { headers: { accept: "text/plain" } });
+check("the front door advertises the board and the finding route", /GET \/keys/.test(front.text) && /\/api\/finding/.test(front.text), front.text.slice(0, 400));
 
 const html = await hit("/", { headers: { accept: "text/html" } });
 check("HTML is served only on request, with no scripts and nothing pulled from the network", html.text.startsWith("<!doctype html") && !/<script/i.test(html.text) && !/\b(?:src|href)\s*=\s*["']https?:/i.test(html.text), html.text.slice(0, 120));

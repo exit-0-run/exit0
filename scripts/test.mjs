@@ -1715,6 +1715,69 @@ if (gate.server)
       }
     });
 
+    // Structured URLs are links; a URL somebody TYPED is not. That line is invariant 12's:
+    // a title carrying [text](url) once put a clickable link under the submitter's control
+    // into README, and that was a bug. repo and subject go through canonUrl on the write
+    // path; a note, a finding body, `how` and a title are canonText and never validated as
+    // URLs, so they are strings, not destinations this registry vouches for.
+    // A cut list that announces it was cut is honest; a cut list with no way past it is
+    // still a dead end. On a phone the front page was a long scroll ending in a
+    // parenthesised parameter and nothing to press, while the drawer table sat right above
+    // it naming slices a reader could not reach.
+    test("the front page is an index: every slice and every page is reachable by a link", async () => {
+      const h = await hit(SRV, { path: "/?limit=2", headers: { accept: "text/html" } });
+      is(h, 200, "GET /?limit=2 (html)");
+      const links = new Set([...h.text.matchAll(/<a href="(\/[^"]*)"/g)].map((m) => m[1]));
+      // Every drawer that has problems is a link, not a bare name.
+      const idx = JSON.parse((await hit(SRV, { path: "/api/index.json" })).text);
+      const domains = new Set((idx.problems ?? []).map((p) => p.domain));
+      for (const d of domains)
+        assert.ok(links.has(`/?domain=${d}`), `the ${d} drawer names a slice with no way to open it`);
+      // The cut declares a way past itself.
+      assert.ok([...links].some((l) => l.includes("offset=")), "the list is cut and offers no next page to click");
+
+      // A filter must survive paging, or page two silently widens back to everything.
+      const f = await hit(SRV, { path: "/?domain=infra&limit=1", headers: { accept: "text/html" } });
+      const nav = [...f.text.matchAll(/<a href="(\/\?[^"]*offset=[^"]*)"/g)].map((m) => m[1]);
+      assert.ok(nav.length, "a filtered page offers no next page");
+      for (const n of nav) {
+        assert.match(n, /domain=infra/, "paging a filtered list drops the filter");
+        // "&" is "&amp;" by the time linkify sees it. Without the entity the href used to
+        // stop at "&amp" and produce a link to a different listing than the one shown.
+        const real = n.replace(/&amp;/g, "&");
+        const r = await hit(SRV, { path: real, headers: { accept: "text/plain" } });
+        is(r, 200, `the offered link ${real} does not resolve`);
+        assert.match(r.text, /domain=infra/, `${real} came back without the filter it carried`);
+      }
+    });
+
+    test("a URL is a link only when the registry put it there as a field", async () => {
+      const typed = "https://typed-into-free-text.example/phish";
+      const P = await newProblem(SRV, {
+        title: "A problem whose text types out a URL",
+        problem: `Somebody wrote ${typed} in the body, and it is prose, not a field.`,
+        subject: "https://example.com/subject-of-this-problem",
+      });
+      const r = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/a-real-repo", score: 1, note: `see also ${typed}` }));
+      is(r, 201, "the solution");
+
+      const h = await hit(SRV, { path: `/${P.id}`, headers: { accept: "text/html" } });
+      is(h, 200, `GET /${P.id} (html)`);
+      const linked = (h.text.match(/<a href="(https?:\/\/[^"]+)"/g) ?? []).join(" ");
+      assert.match(linked, /a-real-repo/, "a solution repo is a structured field and was not linked");
+      assert.match(linked, /subject-of-this-problem/, "a problem subject is a structured field and was not linked");
+      assert.ok(!linked.includes(typed), "a URL typed into free text became a clickable link under the submitter's control (invariant 12)");
+      // The prose still SHOWS it - we refuse to make it a destination, not to show it.
+      assert.ok(h.text.includes(typed), "the URL vanished from the page entirely; the rule is do not link it, not hide it");
+
+      // An external link must not donate ranking or leak a referrer.
+      for (const m of h.text.matchAll(/<a href="https?:\/\/[^"]+"([^>]*)>/g))
+        assert.match(m[1], /rel="nofollow noopener noreferrer"/, "an external link carries no rel");
+      // And none of this reaches the surface an agent parses by column.
+      const t = await hit(SRV, { path: `/${P.id}`, headers: { accept: "text/plain" } });
+      assert.ok(!/<a\s/.test(t.text), "an anchor leaked into text/plain");
+    });
+
     test("only paths the server actually serves become links, and content cannot make markup", async () => {
       const P = await newProblem(SRV, {
         title: "A problem whose text mentions paths",

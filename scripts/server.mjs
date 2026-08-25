@@ -1735,9 +1735,13 @@ const renderText = (idx, q) => {
   const dom = byDomain(idx.problems ?? []);
   const names = DOMAINS.filter((d) => dom[d]);
   if (names.length) {
-    L.push("DRAWERS    domain        open  prog  solved");
+    // The row IS the filter. It used to print a bare drawer name next to three numbers,
+    // which told a reader a slice existed and left them to construct the URL for it - and
+    // in the HTML view left them nothing to click at all. Printing the path costs the same
+    // line and hands an agent the exact address instead of a name to assemble.
+    L.push("DRAWERS    slice                    open  prog  solved");
     for (const d of names)
-      L.push(`           ${d.padEnd(13)} ${String(dom[d].open).padStart(4)}  ${String(dom[d]["in-progress"]).padStart(4)}  ${String(dom[d].solved).padStart(6)}`);
+      L.push(`           ${`/?domain=${d}`.padEnd(24)} ${String(dom[d].open).padStart(4)}  ${String(dom[d]["in-progress"]).padStart(4)}  ${String(dom[d].solved).padStart(6)}`);
     L.push("");
   }
 
@@ -1748,8 +1752,27 @@ const renderText = (idx, q) => {
   L.push(shown);
   // The cap is announced, never silent: a truncated list that looks complete is a lie
   // about the state of the registry.
-  if (matched.length > page.length)
-    L.push(`           showing ${offset + 1}-${offset + page.length}. Narrow it (?status=open ?domain=... ?have=none) or page it (?offset=${offset + limit})`);
+  // The cap is announced, never silent: a truncated list that looks complete is a lie
+  // about the state of the registry. Announcing it is not the same as offering a way past
+  // it, so the way past is printed as PATHS, which the HTML view turns into links. A
+  // reader on a phone had a cut list, a parenthesised parameter and nothing to press.
+  const q2 = (over) => {
+    const u = new URLSearchParams();
+    if (filter.status) u.set("status", filter.status);
+    if (filter.domain) u.set("domain", filter.domain);
+    if (filter.have !== null) u.set("have", filter.have || "none");
+    for (const [k, v] of Object.entries(over)) if (v === null) u.delete(k); else u.set(k, String(v));
+    const t = u.toString();
+    return t ? `/?${t}` : "/";
+  };
+  if (matched.length > page.length) {
+    const nav = [];
+    if (offset > 0) nav.push(`prev ${q2({ offset: Math.max(0, offset - limit) || null })}`);
+    if (offset + page.length < matched.length) nav.push(`next ${q2({ offset: offset + limit })}`);
+    L.push(`           showing ${offset + 1}-${offset + page.length} of ${matched.length}   ${nav.join("   ")}`);
+  }
+  if (filter.status || filter.domain || filter.have !== null) L.push(`           all of it ${q2({ status: null, domain: null, have: null, offset: null })}`);
+  else L.push("           narrow it   /?status=open   /?have=none   or a slice from DRAWERS above");
   L.push("");
   for (const p of page) L.push(listLine(p));
   if (!page.length) L.push("           nothing matches this filter");
@@ -1781,34 +1804,85 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 // quote, no space and no angle bracket in it - the attribute cannot be broken out of.
 const idsOf = (idx) => new Set((idx.problems ?? []).map((p) => p.id));
 
+// Absolute URLs the REGISTRY put there as structured fields, and only those: source_url
+// (which this server builds itself), a problem's subject, a solution's repo. Every one of
+// them passed canonUrl on the write path or was constructed here.
+//
+// The alternative - linkify any http(s) in the rendered text - is the trap invariant 12
+// already names: a title carrying `[text](url)` once put a clickable link under the
+// submitter's control into README, and that was treated as a bug, not a feature. Free text
+// here (a note, a finding body, `how`, a title) is canonText and never canonUrl, so a URL
+// inside one is a string somebody typed, not a field this registry vouches for. Matching an
+// exact set keeps the line where invariant 12 drew it. A free-text URL that happens to
+// equal a structured one links anyway, and that costs nothing: it was already a link
+// wherever it was structured.
+const urlsOf = (idx) => {
+  const out = new Set();
+  for (const p of idx.problems ?? []) {
+    const su = sourceOf(p);
+    if (su) out.add(su);
+    if (p.subject) out.add(p.subject);
+    for (const s of solsOf(p)) if (s.repo) out.add(s.repo);
+  }
+  return out;
+};
+
 const linkPath = (p) => READ.includes(p) || ONE.test(p) || BADGE.test(p);
 
-const linkify = (escaped, ids) =>
+const linkify = (escaped, ids, urls = new Set()) =>
   escaped
     // The breadcrumb. Only the very first word of the document, which is the view's own
     // header, never the word wherever else it appears.
     .replace(/^EXIT0\b/, '<a href="/">EXIT0</a>')
     // Served paths, wherever they are mentioned. Placeholders like /&lt;id&gt; do not match
     // and must not: they are grammar, not destinations.
-    .replace(/(^|[\s(])(\/[A-Za-z0-9][A-Za-z0-9._/-]*)/gm, (m, pre, raw) => {
+    .replace(/(^|[\s(])(\/[A-Za-z0-9._/-]*(?:\?[A-Za-z0-9=&_.,%;-]*)?)/gm, (m, pre, raw) => {
       // Sentences end in punctuation and paths do not, but "." is a legal path character
       // (/llms.txt), so the match has to be trimmed rather than the charset narrowed.
       // Peel trailing sentence punctuation until what is left is something we serve.
-      let path = raw, tail = "";
+      // The query is carried into the href but never into the decision: what makes a path
+      // linkable is the path, and a query is a filter this server already validates and
+      // refuses when it cannot read (400 on a bad limit or offset). The charset admits no
+      // quote, space or angle bracket, and the text was escaped before this ran, so the
+      // attribute cannot be broken out of.
+      // ";" is in the query charset because esc() runs FIRST: an "&" joining two filters is
+      // already "&amp;" by the time this sees it, and without the semicolon the match
+      // stopped at "&amp" and produced a broken link the moment a page carried two
+      // parameters. It stays escaped in the href too, which is correct - an attribute value
+      // is entity-decoded, so href="/?a=1&amp;b=2" IS "/?a=1&b=2" to the browser.
+      const qi = raw.indexOf("?");
+      let path = qi === -1 ? raw : raw.slice(0, qi);
+      const query = qi === -1 ? "" : raw.slice(qi);
+      let tail = "";
       while (path.length > 1 && !linkPath(path)) {
         const c = path[path.length - 1];
         if (!".,;:!?".includes(c)) return m;
         tail = c + tail;
         path = path.slice(0, -1);
       }
-      return linkPath(path) ? `${pre}<a href="${path}">${path}</a>${tail}` : m;
+      return linkPath(path) ? `${pre}<a href="${path}${query}">${path}${query}</a>${tail}` : m;
     })
     // Bare problem ids, which is how every listing prints them. The target is derived from
     // four digits and nothing else, and only when that problem exists, so a body that
     // mentions 0014 linking to problem 0014 is the correct reading and not an injection.
-    .replace(/(^|[\s(])(\d{4})\b/gm, (m, pre, id) => (ids.has(id) ? `${pre}<a href="/${id}">${id}</a>` : m));
+    .replace(/(^|[\s(])(\d{4})\b/gm, (m, pre, id) => (ids.has(id) ? `${pre}<a href="/${id}">${id}</a>` : m))
+    // Structured absolute URLs. rel is not decoration: nofollow because a registry anyone
+    // can write to is otherwise an SEO donation to whoever submits, noopener/noreferrer
+    // because the destination is somebody else's host. The URL is escaped already, and it
+    // has to match a known structured value exactly, so the attribute cannot be escaped
+    // out of and the target cannot be a string somebody merely typed into a note.
+    .replace(/https?:\/\/[^\s<>"]+/g, (raw) => {
+      let u = raw, tail = "";
+      while (u.length && !urls.has(u)) {
+        const c = u[u.length - 1];
+        if (!".,;:!?)".includes(c)) return raw;
+        tail = c + tail;
+        u = u.slice(0, -1);
+      }
+      return urls.has(u) ? `<a href="${u}" rel="nofollow noopener noreferrer">${u}</a>${tail}` : raw;
+    });
 
-const renderHtml = (text, ids = new Set()) =>
+const renderHtml = (text, ids = new Set(), urls = new Set()) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>exit0</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1821,7 +1895,7 @@ const renderHtml = (text, ids = new Set()) =>
      exit0-mark.png. Inline, so the "no external resources" invariant stands. Decorative:
      the line right below the mark is the wordmark, in text, for everyone. -->
 <a class="home" href="/" aria-label="exit0 home"><svg class="mark" viewBox="0 0 179 292" aria-hidden="true" fill="currentColor"><rect width="179" height="225"/><rect y="278" width="179" height="14"/></svg></a>
-<pre>${linkify(esc(text), ids)}</pre></body></html>`;
+<pre>${linkify(esc(text), ids, urls)}</pre></body></html>`;
 
 // --- HTTP ---
 
@@ -1957,7 +2031,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderStart(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderStart(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderStart(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -1985,7 +2059,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderQueue(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderQueue(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderQueue(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -2011,7 +2085,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderFindings(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderFindings(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderFindings(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -2036,7 +2110,7 @@ const readRoute = (req, res, path, qs) => {
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
     }
     if (negotiate(req.headers.accept) === "html")
-      return cond(req, res, renderHtml(renderKeys(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+      return cond(req, res, renderHtml(renderKeys(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderKeys(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -2053,7 +2127,7 @@ const readRoute = (req, res, path, qs) => {
     const body = JSON.stringify(want_src ? { ...p, source_url: want_src } : p, null, 2) + "\n";
     if (path.startsWith("/api/") || want === "json")
       return cond(req, res, body, "application/json; charset=utf-8", { vary: "accept", link: LINK });
-    if (want === "html") return cond(req, res, renderHtml(renderProblem(p), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    if (want === "html") return cond(req, res, renderHtml(renderProblem(p), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderProblem(p), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
@@ -2075,7 +2149,7 @@ const readRoute = (req, res, path, qs) => {
   }
 
   const want = negotiate(req.headers.accept);
-  if (want === "html") return cond(req, res, renderHtml(renderText(idx, q), idsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+  if (want === "html") return cond(req, res, renderHtml(renderText(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
   if (want === "json") {
     const { matched, page, limit, offset, filter } = select(idx, q, PAGE.json);
     return cond(req, res, JSON.stringify({ counts: idx.counts, filter, total: matched.length, offset, limit, problems: page.map(summary) }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });

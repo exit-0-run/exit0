@@ -53,8 +53,19 @@ the bytes that were signed.
 
 The listing is **filtered, capped and ordered**, because a flat view is fine at ten problems and
 useless at a thousand:
-- `GET /` is a constant size no matter how big the registry gets. It carries the drawer counts
-  and one line per problem. It does **not** carry the problem body or the command.
+- `GET /` is a constant size no matter how big the registry gets: the drawer counts, then
+  **at most `PAGE.text` rows**, never one line per problem. The earlier wording here said
+  both at once and the second half was the one people read. It does **not** carry the
+  problem body or the command.
+- **The front door is an INDEX, not a dump.** A cut that announces itself is honest; a cut
+  with no way past it is still a dead end, and on a phone it was a long scroll ending in a
+  parenthesised parameter with nothing to press. So the drawer table prints `/?domain=<d>`
+  rather than a bare name, the cut line prints `prev`/`next` as paths, and a filter is
+  carried through paging - page two of a filtered list must not silently widen back to
+  everything. The HTML view turns those paths into links (`linkify`), so one set of bytes
+  serves an agent parsing columns and a human pressing things. Watch the escaping there:
+  `esc()` runs first, so an `&` joining two filters is already `&amp;` and the query
+  charset has to admit `;` or a two-parameter link is cut in half.
 - `GET /<id>` carries one problem in full, including `how`. That is the split: the front door
   costs the same forever, the detail is one request away.
 - `GET /api/problems` is the same listing as JSON, with `?status=`, `?domain=`, `?have=`,

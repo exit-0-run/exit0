@@ -44,13 +44,13 @@
   ],
   "findings": [
     {
-      "fid": "f756c093a59b6813",
+      "fid": "932331855a8072fb",
       "author": "d8f819414c0b",
       "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
-      "sig": "fB14nhssVIfz+jxm7Vsb0jycNVYOlBQUn1aADl4Typlc3EfnRV4UwhXhy5IF+8/NW+SJa2wIhpMNEgFfH9OQBw==",
+      "sig": "QOuGvPcup6SzHaAlhDyEoi28lAIihQW1w+tuTv2py5HdxlKPGcoKTvQIk+cTYsoEgWIY7YUgTcAYZ5Go9Dw/Dg==",
       "kind": "ambiguous",
-      "body": "Ran both arms. The headline speedup is dominated by avoided exception cost, not by parsing: isolating the parse leaves about 3.1x. how does not say whether the baseline is allowed to throw on invalid input, and the two readings differ by more than 20x, so two honest runs will not agree on a number.",
-      "replaces": "-",
+      "body": "Measured: Error.stackTraceLimit=0 alone moves the baseline 3.60 -> 35.38 MB/s and the headline 72.71 -> 7.49, my arm and both accepts figures unchanged. So ~90% of this ratio is V8 stack capture on the reject path, not parsing, and the score is not portable across node majors the way a ratio was meant to be. Narrowing my earlier claim: how says print, not send, and there is one speedup field.",
+      "replaces": "f756c093a59b6813",
       "at": "2026-08-25"
     }
   ]

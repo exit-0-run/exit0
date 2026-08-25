@@ -4473,7 +4473,11 @@ describe("repo invariants", () => {
       for (const raw of body.split("\n")) {
         const line = raw.trim();
         if (line.startsWith("#")) continue;
-        const m2 = /(?:^|[;&|(]\s*|!\s*)(?:\$GIT|git)\s+([a-z-]+)((?:\s+--[a-z][a-z0-9-]*)+)/.exec(line);
+        // `-C <dir>` sits between `git` and the subcommand and is the form install.sh uses on
+        // EVERY line, so without this the loop matched nothing there and the test proved
+        // nothing about the one script it was most needed for. It stayed green while
+        // `status --porcelain --no-optional-locks` sat in install.sh untouched.
+        const m2 = /(?:^|[;&|(]\s*|!\s*)(?:\$GIT|git)\s+(?:-C\s+\S+\s+)?([a-z-]+)((?:\s+--[a-z][a-z0-9-]*)+)/.exec(line);
         if (!m2) continue;
         const [, sub, flagBlob] = m2;
         const flags = flagBlob.trim().split(/\s+/);

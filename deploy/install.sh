@@ -98,7 +98,7 @@ fi
 # nothing to fail on a box where the mirror is not configured at all. An $SRC that is not a
 # clone (a plain copied directory, which is how this used to be deployed) skips it quietly.
 if [ -d "$SRC/.git" ] && [ -d "$DIR/.git" ]; then
-  if [ -n "$(git -C "$DIR" status --porcelain --no-optional-locks)" ]; then
+  if [ -n "$(git -C "$DIR" --no-optional-locks status --porcelain)" ]; then
     echo "install: $DIR has uncommitted changes, not fast-forwarding it" >&2
   elif git -C "$DIR" fetch --quiet "$SRC" HEAD 2>/dev/null && git -C "$DIR" merge --ff-only FETCH_HEAD >/dev/null 2>&1; then
     echo "install: $DIR fast-forwarded to $(git -C "$DIR" rev-parse --short HEAD)"

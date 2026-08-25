@@ -4661,6 +4661,27 @@ describe("repo invariants", () => {
   // host, and since the code and registry repositories were merged into one they land on
   // the same branch. A non-fast-forward is therefore EXPECTED, not exotic, and a push that
   // only ever fails on it would freeze the public copy the first time the two crossed.
+  // Phase 3 writes attempt refs into THIS host's repository, and the solution record then
+  // names the public mirror as its repo. If the mirror carries only main, the ref exists
+  // here and nowhere a verifier can reach: the documented `git fetch <repo> <ref>` fails
+  // and the entry cannot be checked by anybody. That shipped, and it was found by looking
+  // at where the refs actually were, not by any test. This is that test.
+  test("deploy: the mirror publishes attempt refs, not only main, and never by force", () => {
+    const m = text("deploy/mirror.sh") ?? "";
+    const push = /push[^\n]*\n?[^\n]*refs\/heads[^\n]*/.exec(m);
+    assert.ok(push, "no push refspec found in mirror.sh");
+    assert.match(m, /refs\/attempts\/\*:refs\/attempts\/\*/,
+      "the mirror does not publish refs/attempts/*, so every attempt pushed through /api/attempt is unreachable for a verifier");
+    // A leading + would make the refspec forced, and a stale pusher could then rewind or
+    // delete an attempt somebody has already verified.
+    // Comments are stripped first: this file EXPLAINS why --mirror and --force are absent,
+    // so a naive match reads the reasoning as the thing it warns against. Assert on the
+    // lines that run.
+    const code = m.split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
+    assert.doesNotMatch(code, /\+refs\/attempts/, "the attempt refspec is forced: a stale pusher could overwrite an attempt already verified");
+    assert.doesNotMatch(code, /--mirror\b|--force\b/, "--mirror and --force carry delete semantics on the far side");
+  });
+
   test("deploy: the mirror reconciles a divergence by merging, and never publishes an unvalidated state", () => {
     const m = text("deploy/mirror.sh") ?? "";
 

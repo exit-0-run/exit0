@@ -82,8 +82,24 @@ validate_head() {
 # No --force and no --mirror. --mirror carries force semantics and can delete refs, and
 # a stale pusher would then silently rewind the public copy that people clone to check
 # verdicts.
+# refs/attempts/* goes WITH main, and this is not optional decoration. Phase 3 lets a
+# stranger push an attempt into the registry's own repository, and the solution record then
+# names the MIRROR as its repo. Push only main and the ref exists on this host and nowhere
+# a verifier can reach it: the documented `git fetch <repo> <ref>` returns "ref not found"
+# and the entry is unverifiable. Shipped that way for one afternoon; caught by checking
+# where the refs actually were rather than where the code said they went.
+#
+# Still no --force and no --mirror: --mirror carries force semantics and can DELETE refs on
+# the far side, which would let a stale pusher wipe attempts other people have verified.
+# The refspec is explicit and additive, so a ref can be created and advanced and never
+# removed from here. Fast-forward is the far side's rule and ours: without a leading +,
+# git refuses a non-fast-forward attempt ref exactly as the write path does.
+#
+# The clone stays small regardless: a normal `git clone` fetches refs/heads and refs/tags,
+# never refs/attempts/*, which is the measured reason invariant 14 chose that namespace.
 push_head() {
-  GIT_SSH_COMMAND="$SSH" $GIT push --quiet "$MIRROR" "HEAD:refs/heads/$BRANCH" 2>"$TMP/.push"
+  GIT_SSH_COMMAND="$SSH" $GIT push --quiet "$MIRROR" \
+    "HEAD:refs/heads/$BRANCH" "refs/attempts/*:refs/attempts/*" 2>"$TMP/.push"
 }
 
 validate_head

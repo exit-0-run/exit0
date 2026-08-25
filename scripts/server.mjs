@@ -1303,6 +1303,59 @@ const frontGap = (p) => {
   return s ? gapOf(s, !!(p.acceptance && p.acceptance.higher_is_better)) : null;
 };
 
+// --- the clock ---
+// Every state here is monotone, so nothing decays and nothing expires - and that is
+// right, because an expiry would be a game mechanic rather than a measurement. What is
+// also true: an unverified claim is not neutral, and the number of days nobody has run
+// it is a fact about it that only gets larger. So the age is printed, and nothing else
+// changes because of it.
+//
+// It is READ, never stored. Every record already carries the UTC day the server wrote it
+// (`at` on a solution, on a verdict, on a finding), which is why this needs no git call
+// on the read path (invariant 10: two git calls per read measured 55 req/s against 3400)
+// and no derived field (invariant 7: build.mjs recomputes derived fields on every pass,
+// so an age written into problems/*.json would be a different number tomorrow and
+// `build.mjs --check` would fail in every clone in the world).
+const DAY_MS = 86400000;
+const dayNum = (s) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? ""));
+  const t = m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : NaN;
+  return Number.isFinite(t) ? t / DAY_MS : null;
+};
+const ageDays = (at, now = today()) => {
+  const a = dayNum(at);
+  const n = dayNum(now);
+  // A record dated ahead of the UTC day is a clock somewhere being wrong, not an age.
+  // Clamping beats printing a negative number nobody can act on.
+  return a === null || n === null ? null : Math.max(0, n - a);
+};
+const forDays = (n) => `${n} ${n === 1 ? "day" : "days"}`;
+// Zero verdicts is the whole test. A disputed entry HAS been run by a stranger, so it is
+// not unchecked - /work already tells those apart as `first` and `tiebreak`.
+const unchecked = (s) => !(Array.isArray(s.verifications) ? s.verifications : []).length;
+// Since when this entry has been waiting for somebody: the day the claim was filed, or
+// the day of the most recent verdict when there are verdicts and they cancel out. ISO
+// dates compare lexicographically, so this is a max without parsing anything.
+const waitingSince = (s) => {
+  let d = String(s.at ?? "");
+  for (const v of Array.isArray(s.verifications) ? s.verifications : []) {
+    const a = String(v.at ?? "");
+    if (a > d) d = a;
+  }
+  return d || null;
+};
+// The oldest claim on this problem that nobody has run, in days, or null when there is
+// none. One pass over solutions the caller is already walking.
+const oldestUnchecked = (p) => {
+  let at = null;
+  for (const s of solsOf(p)) {
+    if (!unchecked(s)) continue;
+    const d = String(s.at ?? "");
+    if (d && (at === null || d < at)) at = d;
+  }
+  return at === null ? null : ageDays(at);
+};
+
 const listLine = (p) => {
   const sols = solsOf(p);
   const ver = sols.filter((x) => x.verified).length;
@@ -1315,6 +1368,11 @@ const listLine = (p) => {
   // Two numbers, on the row where a reader meets the claim. One per problem, never one per
   // solution, so this line is the same size at ten problems and at ten thousand.
   const g = frontGap(p);
+  // `0 ver` says nobody has run it; this says for how long, which is the half that
+  // changes while the registry is ignored. One token on a row this view already prints,
+  // so the front door stays the same size forever: it is capped at PAGE.text rows no
+  // matter how many problems exist, and this adds no row and no second pass.
+  const idle = oldestUnchecked(p);
   return [
     `[${p.id}]`,
     String(p.status).toUpperCase().padEnd(11),
@@ -1333,6 +1391,7 @@ const listLine = (p) => {
     // Printed only when the number actually moved: "72.4->72.4" is noise, and the row
     // already says how many entries were verified. The full list is GET /gap.
     g && g.gap !== 0 ? `${numText(g.claimed)}->${numText(g.worst)} ` : "",
+    idle === null ? "" : `unchecked ${idle}d `,
     p.title,
   ].join(" ");
 };
@@ -1425,6 +1484,12 @@ const renderProblem = (p) => {
       const spread = st.low === st.high ? "" : `   independent scores ${st.low} - ${st.high}`;
       L.push(`      confirmed by ${st.confirms} ${st.confirms === 1 ? "key" : "keys"}, ${st.disputes} mismatch${spread}`);
     }
+    // The reader this page sends to /work is the one about to spend compute here, and
+    // "??" told them nobody had run it while saying nothing about how long that has been
+    // true. Printed only where there is not a single verdict: below, every verdict
+    // carries its own date already.
+    const idle = unchecked(s) ? ageDays(s.at) : null;
+    if (idle !== null) L.push(`      unchecked for ${forDays(idle)}`);
     // The verdicts themselves, and the conditions each was reached under. A verdict with
     // nothing under it was previously visible only as "OK <- <fingerprint>" on the line
     // above, which says who but never what they were asserting.
@@ -1567,6 +1632,9 @@ const startRows = (idx, q) => {
       // are not the same floor, and this is the view that tells you which one to aim at.
       best_keys: best ? verdictStrength(best.verifications).confirms : null,
       claimed_score: claim && (!best || claim.sid !== best.sid) ? claim.score : null,
+      // How long that unchecked number has stood without a stranger settling it. The
+      // date is already in the record, so this costs the lookup that is happening anyway.
+      claimed_since: claim && (!best || claim.sid !== best.sid) ? waitingSince(claim) : null,
       attempts: fr.attempts ?? sols.length,
     });
   }
@@ -1589,8 +1657,9 @@ const renderStart = (idx, q) => {
     L.push("nothing open matches that kit. Everything: GET /start");
     return L.join("\n") + "\n";
   }
-  L.push("problem  beat      keys  unchecked  tries  needs             start from");
-  for (const r of page)
+  L.push("problem  beat      keys  unchecked  waiting  tries  needs             start from");
+  for (const r of page) {
+    const idle = r.claimed_since === null ? null : ageDays(r.claimed_since);
     L.push(
       [
         r.p.id.padEnd(8),
@@ -1599,15 +1668,18 @@ const renderStart = (idx, q) => {
         // a floor worth re-running before you spend a week beating it.
         (r.best_keys === null ? "-" : String(r.best_keys)).padEnd(5),
         (r.claimed_score === null ? "-" : String(r.claimed_score)).padEnd(10),
+        (idle === null ? "-" : `${idle}d`).padEnd(8),
         String(r.attempts).padEnd(6),
         (needsOf(r.p).join(",") || "none").padEnd(17),
         r.best_repo ?? "nothing yet, it is open",
       ].join(" ")
     );
+  }
   L.push("");
   if (offset || offset + page.length < rows.length)
     L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
   L.push("");
+  L.push("waiting is how long the unchecked number has stood without a stranger settling it. Nothing here expires on its own.");
   L.push('sign your submission with "builds_on":"<start from sid>" when you continue somebody else, "-" when you start clean.');
   // A floor standing on one key is not a wall, and re-running it costs minutes against the
   // days beating it costs. Printed only when the page actually holds such a row.
@@ -1871,8 +1943,9 @@ const renderQueue = (idx, q) => {
     L.push("Open problems to solve: GET /?status=open");
     return L.join("\n") + "\n";
   }
-  L.push("what        problem  solution          score       band   needs             where to get it");
-  for (const { p, s, why } of page)
+  L.push("what        problem  solution          score       band   waiting  needs             where to get it");
+  for (const { p, s, why } of page) {
+    const idle = ageDays(waitingSince(s));
     L.push(
       [
         WHY[why].padEnd(11),
@@ -1882,10 +1955,16 @@ const renderQueue = (idx, q) => {
         // The exact value to sign, in the view that hands out the work. Without it the
         // path was: read the queue, open the problem, convert a percentage, hope.
         String(p.acceptance?.tolerance ?? 0.02).padEnd(6),
+        // This queue is the whole bottleneck, and until now every row in it looked the
+        // same age. A row nobody has taken for a fortnight is a different offer from one
+        // filed this morning, and the difference is the only thing here that moves while
+        // nobody does anything.
+        (idle === null ? "-" : `${idle}d`).padEnd(8),
         (needsOf(p).join(",") || "none").padEnd(17),
         where(s),
       ].join(" ")
     );
+  }
   if (offset + page.length < rows.length || offset)
     L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
   L.push("");
@@ -1907,6 +1986,7 @@ const renderQueue = (idx, q) => {
   L.push("  TIEBREAK     ok and mismatch cancel out. Your verdict decides it.");
   L.push("  SECOND RUN   settled, but on ONE key. Your verdict changes no status: it changes what the number is worth.");
   L.push("");
+  L.push("waiting is days since the claim was filed, or since the verdict that left it tied. Nothing here expires on its own.");
   L.push("Pick one, read GET /<problem> for the command, run it, then:");
   L.push('  POST /api/verification  {"problem","solution":"<sid>","score","verdict","output","output_sha256","replaces":"-"}');
   L.push("You sign one field more than you send: tolerance, the band column above. GET /<problem> prints it too.");

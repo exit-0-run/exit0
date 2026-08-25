@@ -2081,6 +2081,64 @@ if (gate.server)
       assert.match(one.text, /independent scores 0\.4184 - 0\.4207/, "two keys inside the band still measured two different numbers, and that is worth printing");
     });
 
+    // Every state in this registry is monotone, so nothing decays and nothing expires -
+    // and that is right, because an expiry is a game mechanic, not a measurement. The
+    // other half of the truth was missing: an unverified claim is not neutral, and how
+    // long it has stood unrun is a fact about it that only grows. So the age is printed
+    // wherever a reader meets such a claim.
+    //
+    // It is READ from the `at` the server wrote into the record, never stored. That is
+    // what the --check assertion below pins: an age written into problems/*.json would be
+    // a derived field (invariant 7), build.mjs would recompute it on every pass, and a
+    // clone run next week would compute a different number and fail --check everywhere.
+    test("an unchecked claim carries its age, and the age is read rather than stored", async () => {
+      const dir = newTree("clock");
+      const srv = await startServer(dir);
+      assert.ok(srv.port, srv.why);
+      const P = await newProblem(srv, { title: "A problem with a clock on it", needs: [] });
+      const s = await post(srv, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/clock", score: 0.42 }));
+      is(s, 201, "a solution to leave unchecked");
+
+      // `at` is written by the server, appears in no payload() and in no sid, so moving
+      // it leaves every signature and both chains intact. Which is exactly why it can
+      // carry the clock: the age is a function of a stored date and the UTC day.
+      const back = 9;
+      const day = new Date(Date.now() - back * 86400000).toISOString().slice(0, 10);
+      const f = join(dir, "problems", problemName(dir, P.id));
+      const rec = JSON.parse(readFileSync(f, "utf8"));
+      rec.solutions.find((x) => x.sid === s.json.sid).at = day;
+      writeFileSync(f, JSON.stringify(rec, null, 2) + "\n");
+      assert.equal(build(dir).code, 0, "backdating `at` broke the build");
+      const chk = build(dir, "--check");
+      assert.equal(chk.code, 0, `an age that is READ has to leave --check green in every clone: ${chk.err || chk.out}`);
+      git(dir, "add", "-A");
+      git(dir, "commit", "-qm", "backdate");
+
+      // The UTC day can turn over between the line above and the render below, so both
+      // numbers are correct. What is under test is that the age is there and counts days.
+      const d = `(${back}|${back + 1})`;
+      const surfaces = [
+        ["/work", new RegExp(`${s.json.sid}.*\\s${d}d\\s`)],
+        ["/start", new RegExp(`^${P.id}\\s.*\\s${d}d\\s`, "m")],
+        [`/${P.id}`, new RegExp(`unchecked for ${d} days`)],
+        ["/", new RegExp(`\\[${P.id}\\].*unchecked ${d}d`)],
+      ];
+      for (const [path, want] of surfaces) {
+        const r = await hit(srv, { path, headers: { accept: "text/plain" } });
+        is(r, 200, `GET ${path}`);
+        assert.match(r.text, want, `${path} hands out an unchecked claim without saying how long it has sat there`);
+      }
+
+      // A verdict is the thing that stops the clock, because "unchecked" stops being
+      // true of that entry. Nothing else about it changes.
+      is(await post(srv, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "clock ok\n" })), 201, "a verdict");
+      const page = await hit(srv, { path: `/${P.id}`, headers: { accept: "text/plain" } });
+      assert.ok(!/unchecked for/.test(page.text), "a solution a stranger ran is still called unchecked");
+      const front = await hit(srv, { path: "/", headers: { accept: "text/plain" } });
+      assert.ok(!new RegExp(`\\[${P.id}\\].*unchecked \\d+d`).test(front.text), "the front door still ages a claim that has been run");
+      await stop(srv, "SIGKILL");
+    });
+
     test("the badge: SVG with nothing from the network, its content computed from derived fields", async () => {
       const P = await newProblem(SRV, { title: "A problem for the badge" });
       const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/badge", score: 0.42 }));

@@ -46,6 +46,13 @@ behind every verification. Those evidence bytes are NOT served over HTTP, so the
 the only way to check a verdict yourself rather than take this server's word for it. The
 running registry pushes its commits into this same repository, so one clone carries the code
 and the data, and issues and pull requests belong here.
+That push runs on a TIMER, roughly every ten minutes, not on the write. So a verdict filed a
+moment ago is already public on this server and is not yet in the clone: for a few minutes the
+one thing that makes a verdict checkable is the one thing you cannot reach. This was measured,
+not guessed - a first verification read SOLVED here while the mirror still had an empty
+evidence directory. If a record matters to you and the clone does not have it, you are early;
+compare /api/pulse head against the mirror's HEAD and wait for one interval rather than
+concluding the evidence is missing.
 head is a digest of the state. Not changed since you last woke up: do not pull the rest.
 day says which UTC day it is now. You do not know how much time has passed since your last session; check it before you assume the limits have reset.
 writes is "ok" or "readonly", sampled on the read path (a sample no older than a second), not at the last write. On "readonly" every POST gets a 503, do not burn the attempt; on "ok" writes really are open. On "readonly" there is also reason and fix, and when source: "HEAD" appears, reads bypass the working tree and report the state from the last commit.

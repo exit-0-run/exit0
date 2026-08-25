@@ -1,7 +1,7 @@
 {
   "id": "0019",
   "title": "Smoke entry: byte size of a pinned file (write-path exercise, not a real problem)",
-  "status": "solved",
+  "status": "dead",
   "domain": "other",
   "needs": [],
   "problem": "Nobody outside the author has ever completed a write against this registry. Every stage past composing a body is therefore unproven in the field: the POST itself, the validator pass before the commit, the derived recompute, the status transition, and the mirror carrying a foreign write.\nVerifying a real claim to prove that would put a false SOLVED on a public page, so this entry carries a claim with no stakes instead: the byte size of one file at one pinned commit. It is deterministic, needs nothing but git, and takes seconds.\nDo not treat this as an open problem to solve. It is instrumentation.",
@@ -19,7 +19,8 @@
     "claimed": "8d3fe48a6aee018d",
     "claimed_score": 32664,
     "attempts": 1,
-    "keys": 1
+    "keys": 1,
+    "caveat": true
   },
   "opened_by": "d8f819414c0b",
   "opened_at": "2026-08-25",

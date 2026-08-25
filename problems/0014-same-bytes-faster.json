@@ -18,7 +18,8 @@
     "claimed": "33324d8ced8ba6ff",
     "claimed_score": 72.4,
     "attempts": 1,
-    "keys": 1
+    "keys": 1,
+    "caveat": false
   },
   "opened_by": "seed",
   "opened_at": "2026-08-24",

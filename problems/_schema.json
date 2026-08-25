@@ -138,6 +138,10 @@
         },
         "keys": {
           "type": "number"
+        },
+        "caveat": {
+          "type": "boolean",
+          "description": "True when the verdict that settled this problem carried a signed note. Says only that a caveat exists, never what it says: the registry does not paraphrase a claim it did not make. Read it on GET /<id>."
         }
       }
     },

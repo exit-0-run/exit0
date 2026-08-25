@@ -668,10 +668,16 @@ const canonBody = (action, b, changed) => {
       output,
       note: fix("note", b.note, canonText(b.note ?? "", "note", MAXLEN.note)),
       output_sha256: fix("output_sha256", b.output_sha256, sha(evidenceBytes(output))),
-      // Copy both from the registry: tolerance is acceptance.tolerance of the problem
-      // (the band you are judging under), replaces is "-" until you have already
-      // spoken on this solution, then the vid of your own current verdict.
-      tolerance: b.tolerance ?? 0.02,
+      // replaces is "-" until you have already spoken on this solution, then the vid of
+      // your own current verdict.
+      //
+      // tolerance is deliberately NOT here. It is SIGNED and not SENT - llms.txt says so
+      // twice - and this object is the body that gets POSTed, so emitting it made the
+      // contract false in the one field it warns hardest about. The server reads the band
+      // off the problem and ignores whatever the body claims, which means a body carrying
+      // a tolerance different from the one it signed was accepted in silence and the value
+      // was dropped. A field on the wire that nothing reads is worse than absent: it reads
+      // as data.
       replaces: replacesT(b.replaces),
     };
   }

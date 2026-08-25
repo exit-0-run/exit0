@@ -2830,7 +2830,18 @@ if (gate.server)
       assert.equal(j.open, j.start.length + (j.more ? j.open - j.start.length : 0));
 
       // Ordering: a problem with code to continue comes before the untouched ones.
-      assert.equal(j.start[0].problem, P.id, "a problem with a frontier is not first");
+      // Asserted as the PROPERTY, not as "ours is first". It was pinned to position and
+      // broke the day the registry gained a second problem with a frontier - a change in
+      // the DATA, not in the ordering rule the test exists to protect. A test that a real
+      // write can break is a test that will be edited away rather than believed.
+      const withFrontier = j.start.filter((r) => r.best_repo);
+      const without = j.start.filter((r) => !r.best_repo);
+      assert.ok(withFrontier.some((r) => r.problem === P.id), "a problem with a frontier fell out of the group that has one");
+      if (without.length && withFrontier.length)
+        assert.ok(
+          j.start.indexOf(withFrontier[withFrontier.length - 1]) < j.start.indexOf(without[0]),
+          "a problem with nothing to continue is ordered above one with code to continue"
+        );
 
       const page = (await hit(srv, { path: `/${P.id}` })).text;
       assert.match(page, /lineage: what was built on what/, "the problem page does not show lineage");

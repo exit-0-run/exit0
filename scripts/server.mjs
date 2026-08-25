@@ -1218,6 +1218,12 @@ const listLine = (p) => {
     `${sols.length} sub`.padEnd(7),
     `${ver} ver`.padEnd(6),
     sols.some((x) => x.disputed) ? "DISPUTED " : "",
+    // A settled verdict that carried conditions. DISPUTED already tells a reader "two keys
+    // disagree"; this tells them "one key agreed, and said something about it". Both are a
+    // reason to open the problem before trusting the number, which is the only thing a
+    // constant-size line can usefully do. The word, not the sentence: paraphrasing a
+    // signed claim into a listing would be the registry speaking for a verifier.
+    p.frontier && p.frontier.caveat ? "CONDITIONS " : "",
     p.title,
   ].join(" ");
 };

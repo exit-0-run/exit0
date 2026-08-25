@@ -121,6 +121,17 @@ const derive = (p) => {
     claimed_score: claimed ? claimed.score : null,
     attempts: p.solutions.length,
     keys: new Set(p.solutions.map((s) => { try { return keyId(s.key); } catch { return s.author; } })).size,
+    // Did the verdict that settled this carry conditions. A verification can now say what
+    // it was asserting, and without this the caveat reached exactly one page: the problem
+    // detail. Every surface a passer-by actually reads - the listing, README, the badge -
+    // showed an unqualified "solved". That was measured on a live write, not imagined: a
+    // verdict whose own note said "not independent" rendered as plain SOLVED everywhere
+    // except the one page nobody lands on first.
+    // It says a caveat EXISTS, never what it says: summarising somebody's signed sentence
+    // into a flag would be the registry paraphrasing a claim it did not make.
+    caveat: best
+      ? verdictHeads(best.verifications).heads.some((v) => v.verdict === "ok" && v.note)
+      : false,
   };
 
   if (p.status === "dead") return p;
@@ -613,7 +624,7 @@ const rows = listed.slice(0, ROWS).map((p) => {
   // field, never from user content, so it needs no cell() - but it goes through one
   // anyway, because the day somebody makes it a string is the day that reasoning rots.
   const state = p.frontier && p.frontier.best_score !== null && p.frontier.best_score !== undefined
-    ? `${badge[p.status]} best ${cell(String(p.frontier.best_score))}, beat it`
+    ? `${badge[p.status]} best ${cell(String(p.frontier.best_score))}, beat it${p.frontier.caveat ? ", verdict has conditions" : ""}`
     : badge[p.status];
   return `| ${p.id} | ${cell(p.title)} | ${cell(p.domain)} | ${cell(needs)} | ${state} | ${link}${sporne ? ` (${sporne} disputed)` : ""} |`;
 });

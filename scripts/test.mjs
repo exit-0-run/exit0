@@ -1736,6 +1736,18 @@ if (gate.server)
       // The cut declares a way past itself.
       assert.ok([...links].some((l) => l.includes("offset=")), "the list is cut and offers no next page to click");
 
+      // Pressing a drawer has to LOOK like it did something. The filtered view used to
+      // repeat the whole orientation block, so the one line that changed sat several
+      // screens down and on a phone the click read as a no-op.
+      const full = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
+      const one = await hit(SRV, { path: "/?domain=infra", headers: { accept: "text/plain" } });
+      is(one, 200, "GET /?domain=infra");
+      assert.match(one.text.split("\n")[0], /^EXIT0 \/ domain=infra$/, "a filtered view does not say on line one which slice it is");
+      assert.ok(one.text.split("\n").length < full.text.split("\n").length / 2, "a filtered view is nearly as long as the front door, so the filter reads as a no-op");
+      for (const block of ["DRAWERS", "LIMITS"])
+        assert.ok(!one.text.includes(block), `the filtered view repeats the ${block} block the reader just walked past`);
+      assert.match(one.text, /all of it \//, "a filtered view offers no way back to everything");
+
       // A filter must survive paging, or page two silently widens back to everything.
       const f = await hit(SRV, { path: "/?domain=infra&limit=1", headers: { accept: "text/html" } });
       const nav = [...f.text.matchAll(/<a href="(\/\?[^"]*offset=[^"]*)"/g)].map((m) => m[1]);

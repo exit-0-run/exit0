@@ -1706,12 +1706,32 @@ const badgeFor = (idx, id) => {
 
 const renderText = (idx, q) => {
   const L = [];
-  L.push("EXIT0");
-  L.push("the registry where SOLVED means: a stranger ran your code and got your numbers");
+  // "/" serves two views that happen to share a route, and until now it rendered the front
+  // door for both. Pressing a drawer changed exactly one line, PROBLEMS N match, several
+  // screens down - so on a phone the filter looked like it had done nothing at all and the
+  // reader landed back on what read as the same page. The filter was working; the FEEDBACK
+  // was below the fold.
+  //
+  // The front door orients: what is this place, what can I do. A filtered listing answers
+  // one question: which problems match. Different jobs, so different pages. The filtered
+  // one says where you are on line ONE, in the same path form every other view uses
+  // (EXIT0 / WORK, EXIT0 / 0014), and drops the orientation block a reader already walked
+  // past to get here. It is smaller than the front door, so the constant-size property is
+  // not touched.
+  // select() is called ONCE, here, and it both validates the query (400 on a domain that
+  // is not a drawer) and returns the filter. Computing the filter a second time to decide
+  // which view to render would be the same rule written twice, and the copy is the one
+  // that drifts.
+  const { matched, page, limit, offset, filter } = select(idx, q, PAGE.text);
+  const filtered = !!(filter.status || filter.domain || filter.have !== null);
+  const slice = [filter.status && `status=${filter.status}`, filter.domain && `domain=${filter.domain}`, filter.have !== null && `have=${filter.have || "none"}`].filter(Boolean).join(" ");
+  L.push(filtered ? `EXIT0 / ${slice}` : "EXIT0");
+  if (!filtered) L.push("the registry where SOLVED means: a stranger ran your code and got your numbers");
   L.push("");
   L.push(`state: ${idx.counts.total} problems, ${idx.counts.open} open, ${idx.counts.solved} solved`);
   L.push(`head: ${headOf(idx)}   UTC day: ${today()}`);
   L.push("");
+  if (!filtered) {
   L.push("READ       GET /api/problems  (filter: ?status= ?domain= ?have= ?limit= ?offset=)");
   L.push("           GET /api/problems/<id>   GET /<id>   GET /api/pulse   GET /api/index.json (everything)");
   L.push("WRITE      POST /api/solution  /api/verification  /api/problem  /api/finding   (Ed25519 signed)");
@@ -1732,9 +1752,11 @@ const renderText = (idx, q) => {
   if (readonly) L.push(`WARNING    writes suspended: ${readonly.reason}, POST will answer 503`);
   if (readonly && readonly.tainted) L.push("           view comes from HEAD: the working tree holds state from outside a commit");
   L.push("");
+  }
   const dom = byDomain(idx.problems ?? []);
   const names = DOMAINS.filter((d) => dom[d]);
-  if (names.length) {
+  // You are already inside a drawer; the table of drawers is the thing you pressed.
+  if (names.length && !filtered) {
     // The row IS the filter. It used to print a bare drawer name next to three numbers,
     // which told a reader a slice existed and left them to construct the URL for it - and
     // in the HTML view left them nothing to click at all. Printing the path costs the same
@@ -1745,10 +1767,7 @@ const renderText = (idx, q) => {
     L.push("");
   }
 
-  const { matched, page, limit, offset, filter } = select(idx, q, PAGE.text);
-  const shown = filter.status || filter.domain || filter.have !== null
-    ? `PROBLEMS   ${matched.length} match ${[filter.status && `status=${filter.status}`, filter.domain && `domain=${filter.domain}`, filter.have !== null && `have=${filter.have || "none"}`].filter(Boolean).join(" ")}`
-    : `PROBLEMS   ${matched.length} total`;
+  const shown = filtered ? `PROBLEMS   ${matched.length} match ${slice}` : `PROBLEMS   ${matched.length} total`;
   L.push(shown);
   // The cap is announced, never silent: a truncated list that looks complete is a lie
   // about the state of the registry.
@@ -1771,7 +1790,7 @@ const renderText = (idx, q) => {
     if (offset + page.length < matched.length) nav.push(`next ${q2({ offset: offset + limit })}`);
     L.push(`           showing ${offset + 1}-${offset + page.length} of ${matched.length}   ${nav.join("   ")}`);
   }
-  if (filter.status || filter.domain || filter.have !== null) L.push(`           all of it ${q2({ status: null, domain: null, have: null, offset: null })}`);
+  if (filtered) L.push(`           all of it ${q2({ status: null, domain: null, have: null, offset: null })}   contract /llms.txt`);
   else L.push("           narrow it   /?status=open   /?have=none   or a slice from DRAWERS above");
   L.push("");
   for (const p of page) L.push(listLine(p));

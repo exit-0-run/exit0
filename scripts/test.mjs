@@ -3419,6 +3419,58 @@ describe("repo invariants", () => {
     }
   });
 
+  // Two independent agents landed on this registry cold and both hit the same wall: the
+  // contract said "you see tolerance on every problem in GET /" and GET / has never carried
+  // it. That is not a cosmetic doc bug. A verifier SIGNS tolerance, the CLI defaults it to
+  // 0.02, and the address budget charges for the resulting 403 - so following the
+  // documentation literally cost an attempt to discover the documentation was wrong.
+  test("every route the contract names as a source of tolerance actually carries it", async () => {
+    const llms = text("llms.txt") ?? "";
+    // Whatever routes the prose names, the value has to be there in SIGNABLE form.
+    const p = JSON.parse(readFileSync(join(ROOT, "index.json"), "utf8")).problems.find((x) => x.acceptance);
+    assert.ok(p, "no problem with an acceptance block to check against");
+    const tol = String(p.acceptance.tolerance ?? 0.02);
+
+    const detail = await hit(SRV, { path: `/${p.id}`, headers: { accept: "text/plain" } });
+    is(detail, 200, `GET /${p.id}`);
+    assert.ok(detail.text.includes(tol), `GET /${p.id} does not print the tolerance as the number you sign (${tol}); a percentage is not a value anybody can put in a payload`);
+
+    const api = await hit(SRV, { path: `/api/problems/${p.id}` });
+    assert.equal(api.json?.acceptance?.tolerance, p.acceptance.tolerance ?? 0.02, "/api/problems/<id> lost the tolerance");
+
+    // And the contract must not point at the front door, which is a constant-size view and
+    // carries no per-problem value at all.
+    const front = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
+    assert.ok(!/toler/i.test(front.text), "GET / grew a tolerance: either put it on every row or keep the contract honest about it not being here");
+    assert.ok(
+      !/(Copy it from|You see it on every problem in) GET \/(?![a-z<])/.test(llms),
+      "llms.txt sends a verifier to GET / for the tolerance, and GET / does not have it"
+    );
+  });
+
+  // The queue is where a verifier stands at the moment they need the band.
+  test("the work queue carries the band it tells you to sign", async () => {
+    const q = await hit(SRV, { path: "/api/work" });
+    is(q, 200, "GET /api/work");
+    for (const w of q.json?.work ?? [])
+      assert.equal(typeof w.tolerance, "number", `${w.solution}: the queue offers work without the band to judge it under`);
+    const t = await hit(SRV, { path: "/work", headers: { accept: "text/plain" } });
+    if ((q.json?.work ?? []).length) assert.match(t.text, /\bband\b/, "the text queue does not carry the band column it tells you to sign");
+  });
+
+  // GET /<id> calls itself "one problem in full". It rendered finding bodies whole and
+  // dropped the submitter's own note - so the reader the site sends there, the one about to
+  // spend compute on the entry, was the only one who did not get it.
+  test("the problem view carries the solution note it calls one problem in full", async () => {
+    const withNote = JSON.parse(readFileSync(join(ROOT, "index.json"), "utf8"))
+      .problems.find((x) => (x.solutions ?? []).some((s) => s.note));
+    if (!withNote) return; // nothing in the registry to check right now
+    const s2 = withNote.solutions.find((x) => x.note);
+    const r = await hit(SRV, { path: `/${withNote.id}`, headers: { accept: "text/plain" } });
+    is(r, 200, `GET /${withNote.id}`);
+    assert.ok(r.text.includes(s2.note), `GET /${withNote.id} drops the solution note, which is the submitter's own account of what the number means`);
+  });
+
   test("every problem in the registry has a drawer and canonical needs", () => {
     const files = readdirSync(join(ROOT, "problems")).filter((f) => /^\d{4}-.*\.json$/.test(f));
     assert.ok(files.length, "no problems in the registry");

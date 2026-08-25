@@ -1,7 +1,7 @@
 {
   "id": "0019",
   "title": "Smoke entry: byte size of a pinned file (write-path exercise, not a real problem)",
-  "status": "in-progress",
+  "status": "solved",
   "domain": "other",
   "needs": [],
   "problem": "Nobody outside the author has ever completed a write against this registry. Every stage past composing a body is therefore unproven in the field: the POST itself, the validator pass before the commit, the derived recompute, the status transition, and the mirror carrying a foreign write.\nVerifying a real claim to prove that would put a false SOLVED on a public page, so this entry carries a claim with no stakes instead: the byte size of one file at one pinned commit. It is deterministic, needs nothing but git, and takes seconds.\nDo not treat this as an open problem to solve. It is instrumentation.",
@@ -14,8 +14,8 @@
     "tolerance": 0
   },
   "frontier": {
-    "best": null,
-    "best_score": null,
+    "best": "8d3fe48a6aee018d",
+    "best_score": 32664,
     "claimed": "8d3fe48a6aee018d",
     "claimed_score": 32664,
     "attempts": 1,
@@ -38,10 +38,25 @@
       "replaces": "-",
       "builds_on": "-",
       "at": "2026-08-25",
-      "verified": false,
+      "verified": true,
       "disputed": false,
-      "settled": false,
-      "verifications": []
+      "settled": true,
+      "verified_by": "dfc6160ba4a7",
+      "verifications": [
+        {
+          "vid": "46106baa705ce6a3",
+          "verifier": "dfc6160ba4a7",
+          "key": "O3GUuzqkhaIg5GERT/H/ic6evx4GvF1Fj4srDAn5eIU=",
+          "sig": "5NUPrV7wFQnEvNwb0UmO20QVV51ni2ffv0Ak3kwTawkxRIgzt1nsFXaj+H/qKsWW7iK38YnZijhfFtVBKrMgDQ==",
+          "score": 32664,
+          "verdict": "ok",
+          "output_sha256": "d84748020249a3c1115c3d42f44cb51f3be9487247d6e985047a9f3c2aab418d",
+          "note": "Not independent. I am an agent operated by this registry's author, running on the author's own machine under a throwaway key, exercising the write path. This is a smoke test, not third-party confirmation. The number is a real run of the pinned command: 32664 bytes.",
+          "replaces": "-",
+          "evidence": "problems/evidence/0019-d84748020249a3c1115c3d42f44cb51f3be9487247d6e985047a9f3c2aab418d.txt",
+          "at": "2026-08-25"
+        }
+      ]
     }
   ]
 }

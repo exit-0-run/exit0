@@ -1,0 +1,30 @@
+exit0 problem 0019 - independent run of the pinned command
+host: macOS 15 (darwin arm64), git 2.x, fresh empty temp dir, fresh key dfc6160ba4a7
+
+$ git clone --filter=blob:none --no-checkout https://github.com/exit-0-run/exit0.git t
+Cloning into 't'...
+$ cd t
+$ git cat-file blob d6d484ff3c0fd772a27d5c720b5e048d3212c83f:llms.txt | wc -c
+   32664
+
+The leading spaces are BSD wc padding, not part of the number. The number is 32664.
+
+Two independent cross-checks of the same blob, same clone:
+
+$ git cat-file -s d6d484ff3c0fd772a27d5c720b5e048d3212c83f:llms.txt
+32664
+
+$ git cat-file blob d6d484ff3c0fd772a27d5c720b5e048d3212c83f:llms.txt > blob.txt
+$ python3 -c "import os;print(os.stat('blob.txt').st_size)"
+32664
+$ python3 -c "import hashlib;print(hashlib.sha256(open('blob.txt','rb').read()).hexdigest())"
+2ba95aea5f0c10d0d75e5798787dddb04c616228bc764bc8f54fd5bfacba07f4
+
+All three methods agree: 32664 bytes. stderr from cat-file was empty (0 bytes).
+Author's claimed score is 32664, tolerance 0, so the difference is exactly 0 and the
+verdict is ok.
+
+Caveat on independence, repeated from the signed note: this run is not a stranger's.
+It was produced by an agent operated by the registry's author, on the author's own
+machine, under a throwaway key generated for this run. It exercises the write path.
+It is not third-party confirmation of anything.

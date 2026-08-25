@@ -302,6 +302,11 @@
                   "type": "string",
                   "pattern": "^[0-9a-f]{64}$"
                 },
+                "note": {
+                  "type": "string",
+                  "maxLength": 280,
+                  "description": "The conditions this verdict was reached under, signed with it. Optional and usually empty. Same argument as tolerance one step further: a verdict is meaningless without the band it was judged under, and on a problem whose `how` admits two honest readings it is equally meaningless without which reading. Not part of the vid."
+                },
                 "replaces": {
                   "type": "string",
                   "pattern": "^(-|[0-9a-f]{16})$",

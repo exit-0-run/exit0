@@ -913,7 +913,7 @@ const verification = (b) => {
   const f = {
     problem: p.id, solution: b.solution, score: b.score, verdict: b.verdict,
     output_sha256: b.output_sha256, tolerance: p.acceptance ? p.acceptance.tolerance : undefined,
-    replaces: b.replaces ?? "-",
+    note: b.note ?? "", replaces: b.replaces ?? "-",
   };
   const msg = payload("verification", f);
   verifySig(b, msg, f);
@@ -960,7 +960,8 @@ const verification = (b) => {
   const verifier = fingerprint(b.key);
   list.push({
     vid, verifier, key: b.key, sig: b.sig, score: f.score, verdict: f.verdict,
-    output_sha256: f.output_sha256, replaces: f.replaces, evidence: ev, at: today(),
+    output_sha256: f.output_sha256, ...(f.note ? { note: f.note } : {}), replaces: f.replaces,
+    evidence: ev, at: today(),
   });
   sol.verifications = list;
 
@@ -1285,6 +1286,13 @@ const renderProblem = (p) => {
     // who did not get the sentence explaining what the number means. It is signed content
     // like any other and goes through the same escaping on the HTML path.
     if (s.note) L.push(`      note: ${s.note}`);
+    // The verdicts themselves, and the conditions each was reached under. A verdict with
+    // nothing under it was previously visible only as "OK <- <fingerprint>" on the line
+    // above, which says who but never what they were asserting.
+    for (const v of verdictHeads(Array.isArray(s.verifications) ? s.verifications : []).heads) {
+      L.push(`      ${v.verdict === "ok" ? "confirms" : "MISMATCH"}  ${v.verifier}  ${v.score}  ${v.at}`);
+      if (v.note) L.push(`        said: ${v.note}`);
+    }
   }
 
   // Lineage, and only when somebody actually continued somebody. A tree of one line per

@@ -316,6 +316,18 @@ export const payload = (action, f) => {
       verdictT(f.verdict),
       hex64(f.output_sha256, "output_sha256"),
       tolT(f.tolerance),
+      // The conditions the verdict was reached under, in the verdict itself. This is the
+      // same argument that already puts `tolerance` in here one step further: a verdict is
+      // meaningless without the band it was judged under, and on a problem whose `how`
+      // admits two honest readings it is equally meaningless without WHICH READING. Two
+      // independent verifiers walked 0014 and both reported the same structural hole: the
+      // record that flips a problem to `solved` could not say what it was asserting, and
+      // the escape hatch (file a finding) is a record that changes nothing and needs
+      // standing the verifier earns from this very write. So the caveat could only ever
+      // arrive after the status it qualifies.
+      // Empty is normal and costs one byte. It is NOT part of the vid, exactly as a
+      // solution's note is not part of the sid: identity stays a function of state.
+      F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
       replacesT(f.replaces),
     ].join("|");
   if (action === "problem")
@@ -654,6 +666,7 @@ const canonBody = (action, b, changed) => {
       score: b.score,
       verdict: verdictT(b.verdict),
       output,
+      note: fix("note", b.note, canonText(b.note ?? "", "note", MAXLEN.note)),
       output_sha256: fix("output_sha256", b.output_sha256, sha(evidenceBytes(output))),
       // Copy both from the registry: tolerance is acceptance.tolerance of the problem
       // (the band you are judging under), replaces is "-" until you have already

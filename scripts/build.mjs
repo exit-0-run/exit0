@@ -493,6 +493,7 @@ for (const { path, p } of loaded) {
 
     s.verifications.forEach((v, j) => {
       const vat = `${at}.verifications[${j}]`;
+      if (v.note !== undefined) sameField(canonText, v.note, `${vat}.note`, MAXLEN.note, err);
       if (!canonicalKey(v.key)) err(`${vat}: key is not in canonical base64 form`);
       else {
         if (fingerprint(v.key) !== v.verifier) err(`${vat}: verifier does not match the key fingerprint`);
@@ -508,7 +509,7 @@ for (const { path, p } of loaded) {
         // a later change of the band break this signature instead of going unnoticed.
         vmsg = payload("verification", {
           problem: p.id, solution: s.sid, score: v.score, verdict: v.verdict,
-          output_sha256: v.output_sha256, tolerance: p.acceptance.tolerance, replaces: v.replaces,
+          output_sha256: v.output_sha256, tolerance: p.acceptance.tolerance, note: v.note, replaces: v.replaces,
         });
       } catch (e) {
         err(`${vat}: ${e.message}`);
@@ -559,7 +560,7 @@ const shape = (p) => {
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
     const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "ref", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
-    sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"]));
+    sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "note", "replaces", "evidence", "at"]));
     return sol;
   });
   // findings LAST in the file, after solutions, because that is their standing in this

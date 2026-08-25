@@ -255,13 +255,18 @@ const solBody = (k, o) =>
 const verBody = (k, o) => {
   const output_sha256 = sha256(o.output);
   const replaces = o.replaces ?? "-";
+  // note is signed and sent, and is threaded through BOTH objects deliberately. A helper
+  // that drops a signed field does not produce an error - it produces a valid submission
+  // with the field silently gone, which is exactly how sign.mjs lost builds_on, ref and
+  // subject in turn. Whenever a field is added to a payload, look here.
+  const note = o.note ?? "";
   const signed = {
     problem: o.problem, solution: o.solution, score: o.score, verdict: o.verdict,
-    output_sha256, tolerance: o.tolerance ?? 0.02, replaces,
+    output_sha256, tolerance: o.tolerance ?? 0.02, note, replaces,
   };
   return {
     problem: o.problem, solution: o.solution, score: o.score, verdict: o.verdict,
-    output_sha256, replaces, output: o.output,
+    output_sha256, ...(note ? { note } : {}), replaces, output: o.output,
     key: k.pub, sig: sigOf(k, sg.payload("verification", signed)),
   };
 };
@@ -282,7 +287,7 @@ const signedVerification = (dir, id, sid, k, o) => {
   const output_sha256 = sha256(o.output);
   const signed = {
     problem: id, solution: sid, score: o.score, verdict: o.verdict,
-    output_sha256, tolerance: o.tolerance ?? 0.02, replaces: o.replaces,
+    output_sha256, tolerance: o.tolerance ?? 0.02, note: o.note ?? "", replaces: o.replaces,
   };
   const evidence = sg.evidencePath(id, output_sha256);
   mkdirSync(join(dir, "problems", "evidence"), { recursive: true });
@@ -468,7 +473,7 @@ if (gate.sign)
           tolerance: 0.02,
           replaces: "-",
         }),
-        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|-"
+        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|0:|-"
       );
       assert.equal(
         sg.payload("verification", {
@@ -480,7 +485,7 @@ if (gate.sign)
           tolerance: 0.05,
           replaces: "aaaaaaaaaaaaaaaa",
         }),
-        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.05|aaaaaaaaaaaaaaaa"
+        "exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.05|0:|aaaaaaaaaaaaaaaa"
       );
       assert.equal(
         sg.payload("problem", {
@@ -1177,6 +1182,61 @@ if (gate.server)
 // =====================================================================
 
 if (gate.server)
+  // The caveat rides WITH the verdict. Two independent verifiers walked problem 0014 and
+  // both reported the same hole: the record that flips a problem to `solved` could not say
+  // what it was asserting, and the only escape hatch (a finding) changes nothing AND needs
+  // standing the verifier earns from that very write - so the qualification could only ever
+  // arrive after the status it qualifies.
+  describe("a verdict can say what it was asserting", () => {
+    const kA = mkKey(), kB = mkKey();
+    const state = {};
+    const output = '{"speedup":72.485,"mismatches":0}\n';
+
+    test("the note is signed, stored and shown next to the verdict", async () => {
+      const P = await newProblem(SRV, { title: "A problem where a verdict needs a caveat" });
+      state.P = P.id;
+      const r = await post(SRV, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/caveat", score: 72.4 }));
+      is(r, 201, "the solution");
+      state.sid = r.json.sid;
+
+      const note = "whole-corpus reading; the accepts-only ratio is 3.1 and I did not use it";
+      const v = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: state.sid, score: 72.485, verdict: "ok", output, note }));
+      is(v, 201, "a verdict carrying its own conditions");
+      const sol = problemAt(TREE, P.id).solutions.find((x) => x.sid === state.sid);
+      assert.equal(sol.verifications[0].note, note, "the note did not survive into git");
+      assert.equal(sol.settled, true);
+
+      const page = await hit(SRV, { path: `/${P.id}`, headers: { accept: "text/plain" } });
+      assert.ok(page.text.includes(note), "the problem page shows a verdict without the conditions it was reached under");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("an empty note is the normal case and costs one byte", async () => {
+      const P = await newProblem(SRV, { title: "A problem where the verdict needs no caveat" });
+      const r = await post(SRV, "solution", solBody(kA, { problem: P.id, repo: "https://example.com/plain", score: 1 }));
+      is(r, 201, "the solution");
+      const v = await post(SRV, "verification", verBody(kB, { problem: P.id, solution: r.json.sid, score: 1, verdict: "ok", output }));
+      is(v, 201, "a verdict with no note");
+      const sol = problemAt(TREE, P.id).solutions.find((x) => x.sid === r.json.sid);
+      assert.ok(!("note" in sol.verifications[0]), "an empty note was stored instead of omitted");
+      assert.match(sg.payload("verification", { problem: P.id, solution: r.json.sid, score: 1, verdict: "ok", output_sha256: sha256(output), tolerance: 0.02, replaces: "-" }), /\|0:\|-$/);
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("the note is covered by the signature: editing it in the file fails --check", () => {
+      const dir = snapshotDir("verdict-note");
+      const path = join(dir, "problems", readdirSync(join(dir, "problems")).find((f) => f.startsWith(`${state.P}-`)));
+      const p = JSON.parse(readFileSync(path, "utf8"));
+      p.solutions[0].verifications[0].note = "a different claim entirely";
+      writeFileSync(path, JSON.stringify(p, null, 2) + "\n");
+      const r = build(dir, "--check");
+      assert.notEqual(r.code, 0, "a rewritten verdict note passed validation, so the caveat is not actually signed");
+      // stderr, not stdout: build.mjs prints the error list there. Matching r.out alone
+      // reported "expected a signature failure, got: " with nothing after the colon.
+      assert.match(r.err + r.out, /signature does not match/, `the build failed, but not on the verdict's signature - that proves nothing: ${(r.err + r.out).slice(0, 300)}`);
+    });
+  });
+
   describe("disputes, resubmissions and derived state", () => {
     test("a dispute is not a veto: N griefers are answered by N+1 honest ones", async () => {
       const P = await newProblem(SRV, { title: "A problem for the dispute test" });

@@ -1,0 +1,1 @@
+{"speedup":65.41,"mb_per_second":169.21,"baseline_mb_per_second":2.59,"inputs":541,"mismatches":0,"mb_per_second_accepts":101.9,"baseline_mb_per_second_accepts":34.65,"accepts":259,"rejects":282,"repeats":400,"corpus_commit":"281055e7716ef0415a8826972471331989ede58c","reference":"semver@7.7.2"}

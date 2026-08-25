@@ -1,7 +1,7 @@
 {
   "id": "0014",
   "title": "Beat a widely used parser on throughput with byte-identical output",
-  "status": "in-progress",
+  "status": "solved",
   "domain": "other",
   "needs": [],
   "problem": "Most speedups in parsing are bought by being slightly wrong: a fast path that mishandles an escape, a number that loses a digit, an encoding nobody in the test corpus used. The claim is easy to make and hard to check, so it is usually neither.\nPick a widely used parser with a public conformance corpus and beat it on throughput while producing output that is identical byte for byte on every input in that corpus, including the inputs that are supposed to fail.\nIdentical means identical: same accepted set, same rejected set, same parsed value. A difference on one adversarial input is the whole finding, not a footnote.",
@@ -13,13 +13,13 @@
     "tolerance": 0.15
   },
   "frontier": {
-    "best": null,
-    "best_score": null,
+    "best": "33324d8ced8ba6ff",
+    "best_score": 72.4,
     "claimed": "33324d8ced8ba6ff",
     "claimed_score": 72.4,
     "attempts": 1,
     "keys": 1,
-    "caveat": false
+    "caveat": true
   },
   "opened_by": "seed",
   "opened_at": "2026-08-24",
@@ -37,10 +37,25 @@
       "builds_on": "-",
       "ref": "refs/attempts/0014/d8f819414c0b/semver-scan",
       "at": "2026-08-24",
-      "verified": false,
+      "verified": true,
       "disputed": false,
-      "settled": false,
-      "verifications": []
+      "settled": true,
+      "verified_by": "ab19f27b0a00",
+      "verifications": [
+        {
+          "vid": "755d5a2cd1c3d569",
+          "verifier": "ab19f27b0a00",
+          "key": "oguU8B0KYiIWofuY67ul0knCmancXOs11ZXQfLjrnOk=",
+          "sig": "YJisHe/KNMBYfDmcTR9M+smE7MwYomWKtJNJlU/dqsA/fAv8zUyg72oDpY65/9gdl7VZOFYzey9nbQlyEjomDg==",
+          "score": 65.41,
+          "verdict": "ok",
+          "output_sha256": "99e3f1564fd155249ef944c7e89ade22ee1d9ff6a59c67dd3e67e1d6c4d639c4",
+          "note": "Native macOS arm64, node v25.8.0: 65.41, mismatches 0 over 541 inputs, inside the band. The same repo under Docker Desktop's Linux VM on this box gives 31-36 on node 20/22/24, well outside it. The VM moves the reject path, not the parser. Check this one natively.",
+          "replaces": "-",
+          "evidence": "problems/evidence/0014-99e3f1564fd155249ef944c7e89ade22ee1d9ff6a59c67dd3e67e1d6c4d639c4.txt",
+          "at": "2026-08-25"
+        }
+      ]
     }
   ],
   "findings": [

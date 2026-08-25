@@ -2828,6 +2828,241 @@ if (gate.server)
   });
 
 // =====================================================================
+// 9b. Findings and the board
+// =====================================================================
+
+const findBody = (k, o) =>
+  signBody(k, "finding", { problem: o.problem, kind: o.kind, body: o.body, replaces: o.replaces ?? "-" });
+
+// A fresh key that has just earned standing. Findings are capped per key per day, so the
+// chain tests get one key of their own and everything else gets a new one: a 429 in the
+// middle of a chain test would look exactly like a chain bug.
+let standingSeq = 0;
+const standingKey = async () => {
+  const k = mkKey();
+  is(await post(SRV, "solution", solBody(k, { problem: "0002", repo: `https://example.com/standing-${standingSeq++}`, score: 0.5 })), 201, "the solution that earns standing");
+  return k;
+};
+
+if (gate.server)
+  describe("findings: the write that is not a measurement", () => {
+    const state = {};
+
+    test("a key with no work behind it cannot file one -> 403 pointing at the queue", async () => {
+      const c0 = commits(TREE);
+      const k = mkKey();
+      const r = await post(SRV, "finding", findBody(k, { problem: "0001", kind: "deadend", body: "I have done nothing and wish to comment" }));
+      is(r, 403, "a finding from a key with no standing");
+      // The refusal has to be actionable or it is just a wall: it names how to earn it.
+      assert.match(JSON.stringify(r.json), /\/work/, "the 403 has to point at the verification queue, which is what standing buys");
+      assert.equal(commits(TREE), c0, "a refused finding is not a commit");
+      assert.equal(dirty(TREE), "");
+    });
+
+    test("filing a PROBLEM does not earn standing", async () => {
+      // Deliberate: problems are cheap to write, which makes them the spam vector.
+      const P = await newProblem(SRV, { title: "A problem opened by a key with nothing else" });
+      const r = await post(SRV, "finding", findBody(P.key, { problem: P.id, kind: "blocked", body: "my own problem, my own opinion about it" }));
+      is(r, 403, "standing from an opened problem");
+    });
+
+    test("one solution earns it -> 201, and the record is derived from the key", async () => {
+      state.k = await standingKey();
+      const c0 = commits(TREE);
+      const body = "ran the table-driven variant end to end: 1.2x, and the cost is exception handling";
+      const r = await post(SRV, "finding", findBody(state.k, { problem: "0001", kind: "deadend", body }));
+      is(r, 201, "a finding from a key with standing");
+      assert.match(r.json?.fid ?? "", /^[0-9a-f]{16}$/, "a 201 has to return the fid");
+      state.fid = r.json.fid;
+      assert.equal(commits(TREE), c0 + 1, "an accepted finding is a commit");
+      const n = (problemAt(TREE, "0001").findings ?? []).find((x) => x.fid === state.fid);
+      assert.ok(n, "the finding is not in HEAD");
+      assert.equal(n.author, sg.fingerprint(state.k.pub), "author has to come from the key (invariant 4)");
+      assert.equal(n.body, body);
+      assert.equal(n.replaces, "-");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("a finding changes NOTHING: not status, not the frontier", async () => {
+      // Invariant 15. If this ever fails, findings have become a vote.
+      // The key is minted FIRST: earning standing means submitting a solution, and that
+      // legitimately moves the frontier of the problem it was submitted to. Snapshotting
+      // before it would blame the finding for the solution's work.
+      const k = await standingKey();
+      const before = problemAt(TREE, "0002");
+      const snap = { status: before.status, frontier: JSON.stringify(before.frontier) };
+      is(await post(SRV, "finding", findBody(k, { problem: "0002", kind: "blocked", body: "the pinned commit in this how is unreachable from here" })), 201, "a blocked finding");
+      const after = problemAt(TREE, "0002");
+      assert.equal(after.status, snap.status, "a finding moved the status: that is a vote, not a measurement");
+      assert.equal(JSON.stringify(after.frontier), snap.frontier, "a finding moved the frontier");
+    });
+
+    test("kind is a closed drawer: anything outside it is a 400", async () => {
+      for (const kind of ["+1", "question", "interesting", "comment", ""]) {
+        const c0 = commits(TREE);
+        let r;
+        try {
+          r = await post(SRV, "finding", findBody(state.k, { problem: "0001", kind, body: "x" }));
+        } catch {
+          continue; // sign.mjs refused to build the payload at all, which is the same answer
+        }
+        is(r, 400, `kind ${JSON.stringify(kind)}`);
+        assert.equal(commits(TREE), c0);
+      }
+    });
+
+    test("one live finding per (kind, key): a second needs replaces, and replaces IN PLACE", async () => {
+      const before = (problemAt(TREE, "0001").findings ?? []).length;
+      const second = findBody(state.k, { problem: "0001", kind: "deadend", body: "correction: 1.4x once the fast path stops throwing" });
+      const r = await post(SRV, "finding", second);
+      is(r, 409, "a second deadend under one key without replaces");
+      assert.equal(r.json?.replaces, state.fid, "the 409 has to carry the fid to replace, or the correction is unguessable");
+
+      const ok = await post(SRV, "finding", findBody(state.k, { problem: "0001", kind: "deadend", body: "correction: 1.4x once the fast path stops throwing", replaces: state.fid }));
+      is(ok, 201, "the correction");
+      const list = problemAt(TREE, "0001").findings ?? [];
+      assert.equal(list.length, before, "a correction APPENDED instead of replacing: that is how a problem page grows without bound");
+      assert.ok(!list.some((x) => x.fid === state.fid), "the replaced record is still there");
+      state.fid = ok.json.fid;
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("a different kind under the same key is a different slot", async () => {
+      const before = (problemAt(TREE, "0001").findings ?? []).length;
+      is(await post(SRV, "finding", findBody(state.k, { problem: "0001", kind: "ambiguous", body: "how does not say whether the warm cache counts, and the two readings differ by 3x" })), 201, "an ambiguous finding alongside a deadend");
+      assert.equal((problemAt(TREE, "0001").findings ?? []).length, before + 1);
+    });
+
+    test("the same body twice reads as already here, not as a chain error", async () => {
+      const body = findBody(state.k, { problem: "0001", kind: "deadend", body: "correction: 1.4x once the fast path stops throwing", replaces: state.fid });
+      const first = await post(SRV, "finding", body);
+      is(first, 201, "a fresh correction");
+      const replay = await post(SRV, "finding", body);
+      is(replay, 409, "the same signed body a second time");
+      assert.match(JSON.stringify(replay.json), /already here/i, "a replay has to read as a replay, not as sign-with-replaces-X");
+    });
+
+    test("a body over the cap is a 400, not a truncation", async () => {
+      const c0 = commits(TREE);
+      let r;
+      try {
+        r = await post(SRV, "finding", findBody(state.k, { problem: "0001", kind: "blocked", body: "x".repeat(sg.MAXLEN.body + 1) }));
+      } catch (e) {
+        assert.match(String(e.message), /body/, "the client-side refusal has to name the field");
+        return;
+      }
+      is(r, 400, "an oversized body");
+      assert.equal(commits(TREE), c0);
+    });
+
+    test("there is no parent field: a thread cannot be started", async () => {
+      // The structural cut. A finding that could name another finding would be a reply,
+      // and replies are what turn a registry into a forum.
+      const sent = { ...findBody(await standingKey(), { problem: "0001", kind: "blocked", body: "corpus 404s from two networks" }), parent: state.fid, replies_to: state.fid };
+      const r = await post(SRV, "finding", sent);
+      is(r, 201, "an extra field is ignored, not honoured");
+      const n = (problemAt(TREE, "0001").findings ?? []).find((x) => x.fid === r.json.fid);
+      assert.ok(n, "the finding is not in HEAD");
+      for (const f of ["parent", "replies_to"]) assert.ok(!(f in n), `${f} reached the stored record: findings can now be threaded`);
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("nobody can file one on a problem that does not exist", async () => {
+      is(await post(SRV, "finding", findBody(state.k, { problem: "9999", kind: "blocked", body: "x" })), 404, "a finding on a missing problem");
+    });
+
+    test("the problem view prints findings, and says they change nothing", async () => {
+      const r = await hit(SRV, { path: "/0001", headers: { accept: "text/plain" } });
+      is(r, 200, "GET /0001");
+      assert.match(r.text, /findings:/, "the problem view does not show findings at all");
+      assert.match(r.text, /DEADEND|BLOCKED|AMBIGUOUS/, "the kind is not visible, so a reader cannot tell a dead end from a broken problem");
+      assert.match(r.text, /change nothing/i, "the view has to say findings decide nothing, or a reader will read them as a verdict");
+    });
+  });
+
+if (gate.server)
+  describe("the board (/keys)", () => {
+    test("it counts settled solutions, verdict heads and opened problems", async () => {
+      const r = await hit(SRV, { path: "/api/keys" });
+      is(r, 200, "GET /api/keys");
+      const board = r.json?.board ?? [];
+      assert.ok(board.length, "the board is empty although the registry has records");
+      // Recompute independently from index.json: the board must be a FOLD, so a second
+      // implementation reading the same bytes has to reach the same numbers.
+      const idx = JSON.parse((await hit(SRV, { path: "/api/index.json" })).text);
+      const want = new Map();
+      const row = (key) => {
+        if (typeof key !== "string") return null;
+        const who = sg.fingerprint(key);
+        if (!want.has(who)) want.set(who, { solved: 0, checked: 0, filed: 0 });
+        return want.get(who);
+      };
+      for (const p of idx.problems) {
+        row(p.key) && row(p.key).filed++;
+        for (const n of p.findings ?? []) row(n.key);
+        for (const s of p.solutions ?? []) {
+          // The row exists for every author, settled or not: solved counts wins, the
+          // board still has to show a key that has only ever submitted.
+          const a = row(s.key);
+          if (a && s.settled) a.solved++;
+          for (const v of sg.verdictHeads(s.verifications ?? []).heads) {
+            const c = row(v.key);
+            if (c) c.checked++;
+          }
+        }
+      }
+      for (const row of board) {
+        const w = want.get(row.key);
+        assert.ok(w, `the board lists ${row.key}, which has no record in index.json`);
+        assert.equal(row.solved, w.solved, `solved for ${row.key}`);
+        assert.equal(row.checked, w.checked, `checked for ${row.key}`);
+        assert.equal(row.filed, w.filed, `filed for ${row.key}`);
+      }
+    });
+
+    test("submitting is not solving, and the order is deterministic", async () => {
+      const board = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board;
+      for (const row of board)
+        assert.ok(row.solved <= row.attempts, `${row.key}: more solved than submitted, so solved is counting claims`);
+      const sorted = [...board].sort((a, b) => b.solved - a.solved || b.checked - a.checked || b.filed - a.filed || a.key.localeCompare(b.key));
+      assert.deepEqual(board.map((r) => r.key), sorted.map((r) => r.key), "the board order is not deterministic to the last element, so paging can drop rows");
+    });
+
+    test("there is no composite score to game", () => {
+      // A single number is a weighting and a weighting is an opinion. If one ever appears
+      // here, /keys has stopped being a fold over facts.
+      return hit(SRV, { path: "/api/keys" }).then((r) => {
+        for (const row of r.json.board ?? [])
+          for (const f of ["score", "rank", "points", "rating", "reputation"])
+            assert.ok(!(f in row), `the board grew a ${f} field: that is a weighting nobody signed`);
+      });
+    });
+
+    test("standing on the board matches who the write path actually lets in", async () => {
+      const board = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board;
+      for (const row of board)
+        assert.equal(row.standing, row.attempts > 0 || row.checked > 0, `standing for ${row.key} disagrees with the rule the server enforces`);
+      const k = mkKey();
+      const r = await post(SRV, "finding", findBody(k, { problem: "0001", kind: "blocked", body: "x" }));
+      is(r, 403, "a key absent from the board cannot write");
+    });
+
+    test("the text board explains every column and points at the queue", async () => {
+      const r = await hit(SRV, { path: "/keys", headers: { accept: "text/plain" } });
+      is(r, 200, "GET /keys");
+      for (const w of ["solved", "checked", "filed", "standing"])
+        assert.match(r.text, new RegExp(`^${w}\\s`, "m"), `the board does not explain the ${w} column`);
+      assert.match(r.text, /\/work|\/start/, "the board does not say what to do next");
+    });
+
+    test("the front door advertises the board", async () => {
+      const r = await hit(SRV, { path: "/", headers: { accept: "text/plain" } });
+      assert.match(r.text, /GET \/keys/, "an agent landing on / is not told the board exists");
+      assert.match(r.text, /\/api\/finding/, "an agent landing on / is not told findings can be written");
+    });
+  });
+
+// =====================================================================
 // 10. Concurrency and the write lock
 // =====================================================================
 
@@ -3101,6 +3336,38 @@ describe("repo invariants", () => {
     const llms = text("llms.txt") ?? "";
     for (const d of sg.DOMAINS) assert.ok(llms.includes(d), `llms.txt does not list the domain ${d}`);
     for (const n of sg.NEEDS) assert.ok(llms.includes(n), `llms.txt does not list the need ${n}`);
+    // The third drawer. It is closed for a sharper reason than the other two: the open
+    // version of `kind` is a comment box.
+    assert.deepEqual(j.properties.findings?.items?.properties?.kind?.enum, sg.KINDS, "_schema.json knows a different set of finding kinds than sign.mjs");
+    for (const k of sg.KINDS) assert.ok(llms.includes(k), `llms.txt does not list the finding kind ${k}`);
+    assert.equal(j.properties.findings?.items?.properties?.body?.maxLength, sg.MAXLEN.body, "the schema caps a finding body at a different length than sign.mjs");
+  });
+
+  // llms.txt is NORMATIVE: an agent implements the signature from it. A grammar line
+  // there with fewer fields than payload() actually joins does not fail loudly, it makes
+  // every signature that agent produces come back 403 with no way to see why. This is
+  // not hypothetical - the `problem` line lost [subject] exactly that way.
+  test("every grammar line in llms.txt has as many fields as payload() joins", () => {
+    const llms = text("llms.txt") ?? "";
+    const real = {
+      solution: sg.payload("solution", { problem: "0001", repo: "https://e.com/r", score: 1, model: "m", note: "n", replaces: "-", builds_on: "-", ref: "-" }),
+      verification: sg.payload("verification", { problem: "0001", solution: "a".repeat(16), score: 1, verdict: "ok", output_sha256: "b".repeat(64), tolerance: 0.02, replaces: "-" }),
+      problem: sg.payload("problem", { title: "t".repeat(5), problem: "p".repeat(5), how: "h", metric: "m", higher_is_better: true, baseline: null, tolerance: 0.02, domain: "other", needs: [] }),
+      finding: sg.payload("finding", { problem: "0001", kind: "deadend", body: "b", replaces: "-" }),
+    };
+    for (const [action, msg] of Object.entries(real)) {
+      const line = llms.split("\n").find((l) => l.trim().startsWith(`${action} `) && l.includes(`${sg.PREFIX}|${action}|`));
+      assert.ok(line, `llms.txt carries no grammar line for ${action}`);
+      const declared = line.slice(line.indexOf(`${sg.PREFIX}|`)).trim().split("|");
+      assert.deepEqual(
+        declared.slice(0, 2), [sg.PREFIX, action],
+        `the ${action} grammar line does not start with the current prefix`
+      );
+      assert.equal(
+        declared.length - 2, msg.split("|").length - 2,
+        `llms.txt declares ${declared.length - 2} fields for ${action}, payload() joins ${msg.split("|").length - 2}. An agent implementing from the documentation signs the wrong string.`
+      );
+    }
   });
 
   test("every problem in the registry has a drawer and canonical needs", () => {

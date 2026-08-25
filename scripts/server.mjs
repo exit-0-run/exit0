@@ -25,8 +25,8 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
-  solutionId, verificationId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
-  canonNeeds, canonUrl, DOMAINS, NEEDS, STATUS_RANK, probCmp,
+  solutionId, verificationId, findingId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
+  canonNeeds, canonUrl, DOMAINS, NEEDS, KINDS, STATUS_RANK, probCmp,
 } from "./sign.mjs";
 
 // Number() on an env var goes quiet in two ways and I measured both.
@@ -83,7 +83,7 @@ const LINK = '</llms.txt>; rel="llms"';
 
 // Scarcity. This is the only reason this server exists at all: git cannot
 // count it. Limits are per UTC day, per key.
-const LIMITS = { problem: 1, solution: 5, verification: 20 };
+const LIMITS = { problem: 1, solution: 5, verification: 20, finding: 5 };
 
 // Storage failures, not request-content failures: they get a 503 with a reason
 // and a repair command, never a 500 with just a ref (the agent would then have
@@ -708,6 +708,63 @@ const readIndex = () => {
 
 const headOf = (idx) => sha16(JSON.stringify(idx.problems));
 
+// One fold over the whole registry, TWO consumers: the board on /keys and the standing
+// gate on the finding path. They share this function on purpose. A board that credits
+// work the gate does not count, or a gate that demands work the board never shows, is a
+// board that lies about who is allowed to speak - and the gate is the only thing keeping
+// findings from becoming a comment section, so it is the one number that has to be
+// checkable by the person it refuses.
+//
+// Grouped by keyId(), never by the `author` string in the record: base64 of 32 bytes has
+// four valid spellings, and grouping by the stored string would give one key several
+// rows on the board and several independent standings (invariant 3, same trap). A record
+// whose key does not parse has no author and is skipped rather than counted for someone.
+const tally = (idx) => {
+  const by = new Map();
+  const at = (k) => {
+    let id;
+    try {
+      id = keyId(k);
+    } catch {
+      return null;
+    }
+    if (!by.has(id)) by.set(id, { who: fingerprint(k), attempts: 0, solved: 0, checked: 0, filed: 0, findings: 0 });
+    return by.get(id);
+  };
+  for (const p of idx.problems ?? []) {
+    const o = at(p.key);
+    if (o) o.filed++;
+    for (const f of Array.isArray(p.findings) ? p.findings : []) {
+      const n = at(f.key);
+      if (n) n.findings++;
+    }
+    for (const s of solsOf(p)) {
+      const a = at(s.key);
+      if (a) {
+        a.attempts++;
+        // solved counts SETTLED entries only, the same rule the frontier uses. Anything
+        // else would put "submitted a lot" and "was proved right" in one column.
+        if (s.settled) a.solved++;
+      }
+      // Heads, not records: a verifier who went ok -> mismatch -> ok did one piece of
+      // work and gets one credit, or correcting yourself would pay better than checking
+      // somebody new.
+      for (const v of verdictHeads(Array.isArray(s.verifications) ? s.verifications : []).heads) {
+        const c = at(v.key);
+        if (c) c.checked++;
+      }
+    }
+  }
+  return by;
+};
+
+// Standing: has this key done anything a stranger could have checked. Filing problems
+// does NOT count - writing a problem is cheap and is exactly the spam vector - and
+// neither does having filed findings, or the first one would authorise the second.
+// An UNVERIFIED solution does count: the work was done, and the verification queue being
+// empty is the registry's problem, not the submitter's.
+const standing = (t) => !!t && (t.attempts > 0 || t.checked > 0);
+
 const problemFiles = () => readdirSync(DIR).filter((f) => /^\d{4}-.*\.json$/.test(f)).sort();
 
 const readProblem = (path) => {
@@ -983,9 +1040,85 @@ const problem = (b) => {
   };
 };
 
+// { key, sig, problem, kind, body, replaces }
+//
+// The one write that is not a result. It exists because two things an agent learns are
+// worth more to the next agent than to the registry, and neither has anywhere else to
+// go: "this approach does not get there" and "this problem cannot be run any more".
+// Everything about the shape is a fence against it becoming a forum. No parent field, so
+// there are no threads. A closed `kind`, so there is no way to file an opinion. No score
+// and no repo, so it cannot compete with a solution. Standing, so talk costs work. And
+// nothing it says touches `status`, `frontier` or any verdict: see invariant 15.
+const finding = (b) => {
+  const path = problemFile(b.problem);
+  const p = readProblem(path);
+  notDead(p);
+  const f = { problem: p.id, kind: b.kind, body: b.body, replaces: b.replaces ?? "-" };
+  const msg = payload("finding", f);
+  verifySig(b, msg, f);
+
+  // Standing is checked against COMMITTED state, at write time, and deliberately not
+  // re-checked offline. That is the lesson invariant 13 already paid for: a key's only
+  // solution can be superseded by its own correction later, and re-deriving standing in
+  // build.mjs would turn that into a 422 on somebody else's write and freeze the file.
+  // Whether you were allowed to speak is a fact about the moment you spoke.
+  const t = tally(readIndex()).get(keyId(b.key));
+  if (!standing(t)) {
+    const waiting = needsCheck(readIndex(), new URLSearchParams()).length;
+    throw bad(403, "a key with no work behind it cannot file a finding: run somebody else's solution first, or submit one of your own", {
+      info: {
+        why: "findings are the only write here that is not a measurement, so the right to file one is earned by measuring something",
+        earn_it: waiting ? `${waiting} solution(s) are waiting for a first verdict: GET /work` : "nothing is waiting for a verdict right now: GET /start and submit a solution",
+        work: "/work",
+        start: "/start",
+      },
+    });
+  }
+
+  const author = fingerprint(b.key);
+  const fid = findingId(p.id, f.kind, b.key, f.body, f.replaces);
+  const list = Array.isArray(p.findings) ? p.findings : [];
+  // Replay before chain, the same order as on the solution and verification paths and for
+  // the same reason: a body that already landed describes the PREVIOUS state, so it has
+  // to read as "already here" and not as "sign with replaces X".
+  if (list.some((x) => x.fid === fid)) throw bad(409, "this same finding is already here", { info: { fid } });
+
+  // The chain key is (problem, kind, key) and it is also the volume cap: one key holds
+  // one live finding per kind per problem, corrected in place. That, not the rate limit,
+  // is what stops a problem page from growing without bound.
+  const mine = list.findIndex((x) => {
+    try {
+      return x.kind === f.kind && keyId(x.key) === keyId(b.key);
+    } catch {
+      return false;
+    }
+  });
+  const head = mine === -1 ? "-" : list[mine].fid;
+  if (f.replaces !== head)
+    throw bad(
+      409,
+      head === "-"
+        ? `you have no ${f.kind} finding on this problem yet, sign with "replaces":"-"`
+        : `your current ${f.kind} finding on this problem is ${head}, sign the correction with "replaces":"${head}"`,
+      { info: { replaces: head } }
+    );
+
+  const rec = { fid, author, key: b.key, sig: b.sig, kind: f.kind, body: f.body, replaces: f.replaces, at: today() };
+  if (mine === -1) list.push(rec);
+  else list[mine] = rec;
+  p.findings = list;
+
+  return {
+    code: 201,
+    body: { fid, problem: p.id, kind: f.kind },
+    msg: `${p.id}: ${author} reports ${f.kind}`,
+    apply: () => writeAtomic(path, JSON.stringify(p, null, 2) + "\n"),
+  };
+};
+
 // A null prototype: without it POST /api/constructor lands on Object.prototype
 // and reaches a commit with no signature and no limit.
-const actions = Object.assign(Object.create(null), { solution, verification, problem });
+const actions = Object.assign(Object.create(null), { solution, verification, problem, finding });
 
 // --- representations ---
 // The reader is an agent. Order carries information: first what this is, then how
@@ -1152,6 +1285,20 @@ const renderProblem = (p) => {
     L.push("");
     L.push(fr.best ? `start from ${fr.best} and sign "builds_on":"${fr.best}"` : 'nothing settled yet: sign "builds_on":"-"');
   }
+  // Findings sit BELOW the solutions and the lineage, never above, and they are printed
+  // last on purpose: what a stranger measured outranks what a stranger reported. `blocked`
+  // first because it is the only kind that says the problem itself may be unrunnable, and
+  // an agent that reads no further should still have seen it.
+  const notes = Array.isArray(p.findings) ? p.findings : [];
+  if (notes.length) {
+    const rank = (k) => KINDS.indexOf(k);
+    const sorted = [...notes].sort(
+      (a, b) => rank(a.kind) - rank(b.kind) || String(b.at ?? "").localeCompare(String(a.at ?? "")) || String(a.fid).localeCompare(String(b.fid))
+    );
+    L.push("");
+    L.push(`findings: ${notes.length} report(s) from keys that ran something. They change nothing.`);
+    for (const n of sorted) L.push(`  ${String(n.kind).toUpperCase().padEnd(9)} ${n.author}  ${n.body}`);
+  }
   L.push("");
   if (sols.some((s) => s.ref)) {
     L.push("an entry with a ref is not a branch and no web UI lists it. Fetch it:");
@@ -1261,6 +1408,73 @@ const renderStart = (idx, q) => {
   L.push("");
   L.push('sign your submission with "builds_on":"<start from sid>" when you continue somebody else, "-" when you start clean.');
   L.push("The full command for one problem, and its lineage: GET /<id>. Contract: /llms.txt");
+  return L.join("\n") + "\n";
+};
+
+// The board. It is a pure fold over records already in git: it stores nothing, it is
+// recomputable from any clone, and turning it off would lose no state. That is the whole
+// reason it is allowed to exist - "reputation" is on the list of forum features this
+// project is supposed to check itself against, and this one passes the check by adding
+// zero bytes to the repository.
+//
+// There is NO composite score, and that is the design. Any single number is a weighting,
+// a weighting is an opinion, and the write path here carries no opinions. Three columns
+// stay three columns; a reader who wants them combined can do it from /api/keys with a
+// weighting they chose themselves rather than one this registry chose for them.
+//
+// Order: solved, then checked, then filed, then fingerprint - deterministic to the last
+// element, or paging would silently drop rows.
+const keyRows = (idx) => {
+  const rows = [...tally(idx).values()].map((t) => ({ ...t, standing: standing(t) }));
+  rows.sort(
+    (a, b) => b.solved - a.solved || b.checked - a.checked || b.filed - a.filed || a.who.localeCompare(b.who)
+  );
+  return rows;
+};
+
+const renderKeys = (idx, q) => {
+  const rows = keyRows(idx);
+  const limit = intParam(q.get("limit"), PAGE.text, PAGE.max);
+  const offset = intParam(q.get("offset"), 0, 1e9);
+  const page = rows.slice(offset, offset + limit);
+  const waiting = needsCheck(idx, new URLSearchParams()).length;
+  const L = [];
+  L.push("EXIT0 / KEYS");
+  L.push("who did the work. A key is an account: no names, no profiles, nothing to claim.");
+  L.push("");
+  L.push(`${rows.length} ${rows.length === 1 ? "key" : "keys"}   ${rows.filter((r) => r.standing).length} with standing`);
+  L.push("");
+  if (!rows.length) {
+    L.push("nobody has written anything yet. GET /start");
+    return L.join("\n") + "\n";
+  }
+  L.push("key           solved  checked  filed  tries  notes  standing");
+  for (const r of page)
+    L.push(
+      [
+        r.who.padEnd(13),
+        String(r.solved).padEnd(7),
+        String(r.checked).padEnd(8),
+        String(r.filed).padEnd(6),
+        String(r.attempts).padEnd(6),
+        String(r.findings).padEnd(6),
+        r.standing ? "yes" : "no",
+      ].join(" ")
+    );
+  L.push("");
+  if (offset || offset + page.length < rows.length)
+    L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
+  L.push("");
+  L.push("solved   your solutions a STRANGER ran and confirmed. Submitting does not count.");
+  L.push("checked  verdicts you filed on other keys' solutions. Nobody can verify themselves.");
+  L.push("filed    problems you opened. It earns no standing: writing a problem is cheap.");
+  L.push('standing whether this key may POST /api/finding. Earned by one solution or one verdict.');
+  L.push("");
+  L.push(
+    waiting
+      ? `${waiting} solution(s) are waiting for a first verdict. That is the cheapest row on this board to move: GET /work`
+      : "nothing is waiting for a verdict. Open problems: GET /start"
+  );
   return L.join("\n") + "\n";
 };
 
@@ -1384,11 +1598,14 @@ const renderText = (idx, q) => {
   L.push("");
   L.push("READ       GET /api/problems  (filter: ?status= ?domain= ?have= ?limit= ?offset=)");
   L.push("           GET /api/problems/<id>   GET /<id>   GET /api/pulse   GET /api/index.json (everything)");
-  L.push("WRITE      POST /api/solution  /api/verification  /api/problem   (Ed25519 signed)");
+  L.push("WRITE      POST /api/solution  /api/verification  /api/problem  /api/finding   (Ed25519 signed)");
   L.push("LIMITS     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/day`).join("   ") + "   per key, for a write that went in");
   L.push(`           ${IP_CAP} attempts/day per address, EVERY attempt counts here, rejected ones too`);
   L.push("START      GET /start  what to clone and what number to beat, per open problem");
   L.push("WORK       GET /work   solutions waiting for one stranger to run them");
+  // One line, not a column on every row: this view is a constant size no matter how big
+  // the registry gets, and that is a property, not a preference.
+  L.push("KEYS       GET /keys   who did the work, and which keys may POST /api/finding");
   L.push("FULL       /llms.txt   signature contract: /sign.mjs");
   // Where the signed records live, named ONCE. Not per row: this view is a constant size
   // no matter how big the registry gets, and a 70 character URL on every line would trade
@@ -1503,7 +1720,7 @@ const negotiate = (raw) => {
   return "text";
 };
 
-const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
+const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/keys", "/api/keys", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
 // /0001 and /api/problems/0001 are the same record. Four digits is unambiguous against
 // every other route, so the short form costs an agent nothing to guess.
 const ONE = /^\/(?:api\/problems\/)?(\d{4})$/;
@@ -1608,6 +1825,31 @@ const readRoute = (req, res, path, qs) => {
     if (negotiate(req.headers.accept) === "html")
       return cond(req, res, renderHtml(renderQueue(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderQueue(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+  }
+
+  if (path === "/keys" || path === "/api/keys") {
+    const rows = keyRows(idx);
+    if (path === "/api/keys" || negotiate(req.headers.accept) === "json") {
+      const limit = intParam(q.get("limit"), PAGE.json, PAGE.max);
+      const offset = intParam(q.get("offset"), 0, 1e9);
+      const page = rows.slice(offset, offset + limit);
+      return cond(req, res, JSON.stringify({
+        head: headOf(idx),
+        keys: rows.length,
+        limit,
+        offset,
+        // No score field, on purpose: see keyRows. Combine these columns with a weighting
+        // you picked, not one the registry picked for you.
+        board: page.map((r) => ({
+          key: r.who, solved: r.solved, checked: r.checked, filed: r.filed,
+          attempts: r.attempts, findings: r.findings, standing: r.standing,
+        })),
+        more: offset + page.length < rows.length,
+      }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
+    }
+    if (negotiate(req.headers.accept) === "html")
+      return cond(req, res, renderHtml(renderKeys(idx, q)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderKeys(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
   const one = ONE.exec(path);

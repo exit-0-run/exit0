@@ -321,6 +321,65 @@
           }
         }
       }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Signed reports from keys that RAN something and have no solution to show for it. A finding never changes status, frontier or any verdict (invariant 15). There is no parent field: a finding cannot answer another finding, so this is not a thread. One live record per (kind, key) per problem, corrected in place, which is what caps how many a problem can ever hold.",
+      "items": {
+        "type": "object",
+        "required": [
+          "fid",
+          "author",
+          "key",
+          "sig",
+          "kind",
+          "body",
+          "replaces",
+          "at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "fid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "description": "sha256(exit0/v2|fid|<id>|<kind>|<keyId>|<len>:<body>|<replaces>) truncated to 16 characters. Carries the body, so correcting the text of your own finding cannot land on the fid you already used and read as a replay"
+          },
+          "author": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$"
+          },
+          "key": {
+            "type": "string"
+          },
+          "sig": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "deadend",
+              "ambiguous",
+              "blocked"
+            ],
+            "description": "Closed set, mirrored from KINDS in sign.mjs. deadend: this approach does not reach the bar. ambiguous: two honest runs of `how` disagree and the statement does not settle it. blocked: `how` cannot be run at all any more"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "What you ran and what stopped. Short on purpose: a signal, not a report"
+          },
+          "replaces": {
+            "type": "string",
+            "pattern": "^(-|[0-9a-f]{16})$",
+            "description": "The fid of your own current finding of this kind on this problem, or - for the first"
+          },
+          "at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      }
     }
   }
 }

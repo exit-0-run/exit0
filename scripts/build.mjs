@@ -11,8 +11,8 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
-  canonUrl, canonText, canonLine, solutionId, verificationId,
-  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, canonNeeds, DOMAINS, probCmp,
+  canonUrl, canonText, canonLine, solutionId, verificationId, findingId,
+  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, canonNeeds, DOMAINS, KINDS, probCmp,
 } from "./sign.mjs";
 
 const DIR = "problems";
@@ -425,6 +425,49 @@ for (const { path, p } of loaded) {
     });
   }
 
+  // Findings. Everything here is checkable from the file alone: the signature, the fid,
+  // the canonical body, and the one-live-record-per (kind, key) rule that caps how many
+  // of these a problem can ever hold.
+  //
+  // STANDING IS NOT RE-DERIVED HERE, on purpose. It is a fact about the moment the write
+  // happened, and re-deriving it offline would repeat the mistake invariant 13 already
+  // paid for: a key's only solution can be superseded by that key's own later correction,
+  // and this pass runs BEFORE every commit (invariant 2), so a finding that went stale
+  // would not merely redden --check - it would 422 an unrelated write and freeze the file.
+  const notes = Array.isArray(p.findings) ? p.findings : [];
+  if (p.findings !== undefined && !Array.isArray(p.findings)) err("findings: an array or absent");
+  const seenFid = new Set();
+  const liveBy = new Map();
+  notes.forEach((n, i) => {
+    const at = `findings[${i}]`;
+    if (!KINDS.includes(n.kind)) err(`${at}: kind is not one of ${KINDS.join(", ")}`);
+    sameField(canonText, n.body, `${at}.body`, MAXLEN.body, err);
+    if (seenFid.has(n.fid)) err(`${at}: two records share the fid ${n.fid}`);
+    seenFid.add(n.fid);
+    if (!canonicalKey(n.key)) err(`${at}: key is not in canonical base64 form`);
+    else {
+      if (fingerprint(n.key) !== n.author) err(`${at}: author does not match the key fingerprint`);
+      // One live record per (kind, key): the server replaces in place, so a second one
+      // here means the file was edited by hand into a state the write path cannot reach.
+      const slot = `${n.kind}|${keyId(n.key)}`;
+      if (liveBy.has(slot)) err(`${at}: this key already has a ${n.kind} finding on this problem (${liveBy.get(slot)}); a correction REPLACES, it does not append`);
+      else liveBy.set(slot, at);
+      try {
+        if (findingId(p.id, n.kind, n.key, n.body, n.replaces) !== n.fid) err(`${at}: fid does not match the content of the entry`);
+      } catch (e) {
+        err(`${at}: cannot compute the fid (${e.message})`);
+      }
+    }
+    if (n.replaces !== undefined && n.replaces !== "-" && n.replaces === n.fid) err(`${at}: this record replaces itself`);
+    let nmsg = null;
+    try {
+      nmsg = payload("finding", { problem: p.id, kind: n.kind, body: n.body, replaces: n.replaces });
+    } catch (e) {
+      err(`${at}: ${e.message}`);
+    }
+    sigOk(n.key, n.sig, nmsg, err, at);
+  });
+
   p.solutions.forEach((s, i) => {
     const at = `solutions[${i}]`;
     sameField(canonUrl, s.repo, `${at}.repo`, MAXLEN.repo, err);
@@ -512,13 +555,18 @@ const ordered = (o, keys) => {
 };
 
 const shape = (p) => {
-  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions"]);
+  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions", "findings"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
     const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "ref", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
     sol.verifications = s.verifications.map((v) => ordered(v, ["vid", "verifier", "key", "sig", "score", "verdict", "output_sha256", "replaces", "evidence", "at"]));
     return sol;
   });
+  // findings LAST in the file, after solutions, because that is their standing in this
+  // registry: a report is what you read once the measurements have run out.
+  if (Array.isArray(p.findings) && p.findings.length)
+    out.findings = p.findings.map((n) => ordered(n, ["fid", "author", "key", "sig", "kind", "body", "replaces", "at"]));
+  else delete out.findings;
   return out;
 };
 

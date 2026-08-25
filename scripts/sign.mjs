@@ -18,7 +18,7 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");
 
 // Budgets are in utf-8 BYTES, not characters.
-export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, ref: 80, output: 32768 };
+export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, ref: 80, body: 400, output: 32768 };
 
 export const bad = (code, msg, extra) => {
   const e = new Error(msg);
@@ -214,8 +214,31 @@ export const DOMAINS = ["routing", "compression", "memory", "retrieval", "agents
 // about the COMMAND in `how`, not about the problem being interesting.
 export const NEEDS = ["gpu", "api-key", "dataset", "docker", "browser"];
 
+// KIND is the third closed drawer, and the only one that is not about a problem's
+// content. It answers "what kind of thing is a stranger telling me here", and it is
+// closed for a reason the other two do not have: the OPEN version of this field is a
+// comment box, and a comment box is the feature this registry exists not to be. Every
+// value here is a report about RUNNING something, so a finding is still a result and
+// not an opinion:
+//   deadend   I ran this approach, it does not reach the bar. Do not spend the compute.
+//   ambiguous `how` does not pin a number down: two honest runs disagree and the
+//             statement does not settle which is right.
+//   blocked   `how` cannot be run at all any more: the corpus 404s, the pinned commit
+//             is gone, the dependency was yanked. Problems rot and nothing else notices.
+// "interesting", "agree", "+1" and "have you tried" are absent on purpose. If a value
+// does not describe an attempt to run something, it does not belong in this drawer.
+export const KINDS = ["deadend", "ambiguous", "blocked"];
+
 const domainT = (v) => {
   if (typeof v !== "string" || !DOMAINS.includes(v)) throw bad(400, `domain: one of ${DOMAINS.join(", ")}`, { canonical: "other" });
+  return v;
+};
+
+// No canonical suggestion here, unlike domain. domain has a defensible default
+// ("other" is a real drawer); a finding whose kind we had to guess would be a
+// statement the registry made up on the sender's behalf.
+const kindT = (v) => {
+  if (typeof v !== "string" || !KINDS.includes(v)) throw bad(400, `kind: one of ${KINDS.join(", ")}`);
   return v;
 };
 
@@ -313,6 +336,22 @@ export const payload = (action, f) => {
       // checked, and this one points a stranger at code they are about to run.
       optUrl(f.subject, "subject"),
     ].join("|");
+  // A finding is the ONLY write that carries prose as its point rather than as a label,
+  // which is why it is the shortest payload here and why it has no score, no repo and no
+  // ref. Those three were all drafted and all cut: a number nobody can run is a claim,
+  // and this registry already has a place for a runnable claim with a number on it. It is
+  // called a solution. Keeping the two from overlapping is what keeps either legible.
+  // There is deliberately no parent field. A finding cannot answer another finding, so
+  // there are no threads, no last word, and no depth to moderate.
+  if (action === "finding")
+    return [
+      PREFIX,
+      "finding",
+      pid(f.problem),
+      kindT(f.kind),
+      F(assertCanon(canonText, f.body, "body", MAXLEN.body)),
+      replacesT(f.replaces),
+    ].join("|");
   throw bad(404, "unknown action");
 };
 
@@ -342,6 +381,23 @@ export const solutionId = (problemId, repo, score, key, replaces, ref) =>
 // vid is a chain link too, for the same reason sid is: a verifier who goes
 // ok -> mismatch -> ok would otherwise land back on the first vid, and with it the
 // first signed body would describe the current state again and go in a second time.
+// fid is a chain link for the same reason sid and vid are, and it carries the BODY,
+// not only the kind: without the body a key that corrects the text of its own finding
+// lands on the fid it already used, and the correction reads as a replay.
+// The chain key is (problem, kind, key), which is also the volume cap and the reason
+// this feature cannot turn into a comment section. One key holds at most one live
+// finding per kind per problem, corrected in place, so the most a problem can ever
+// accumulate is (distinct keys x KINDS.length) - and standing has to be earned before
+// the first one of those. Rate limits cap how fast; this caps how many, which is the
+// number that decides whether a page stays readable.
+export const findingId = (problemId, kind, key, body, replaces) =>
+  sha(
+    Buffer.from(
+      [PREFIX, "fid", pid(problemId), kindT(kind), keyId(key), F(assertCanon(canonText, body, "body", MAXLEN.body)), replacesT(replaces)].join("|"),
+      "utf8"
+    )
+  ).slice(0, 16);
+
 export const verificationId = (sid, key, outSha, verdict, score, replaces) =>
   sha(
     Buffer.from(
@@ -543,7 +599,7 @@ const USAGE = [
   "usage:",
   "  node scripts/sign.mjs keygen [file.pem] [--force]",
   "  node scripts/sign.mjs whoami [file.pem]",
-  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem> <json|@file|->",
+  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding> <json|@file|->",
   "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
   "",
   "The third argument of sign is EXACTLY the body you are about to POST.",
@@ -617,8 +673,19 @@ const canonBody = (action, b, changed) => {
       tolerance: b.tolerance ?? 0.02,
       domain: b.domain,
       needs: fix("needs", b.needs, canonNeeds(b.needs)),
+      // Dropped here in silence until now, the same way builds_on and ref were: the
+      // signature is computed from THIS object, so the loss produces no error at all,
+      // it produces a valid problem whose subject repository quietly went missing.
+      ...(b.subject === undefined || b.subject === null || b.subject === "" ? {} : { subject: fix("subject", b.subject, canonUrl(b.subject, "subject")) }),
     };
-  throw bad(404, `unknown action "${action}": solution, verification or problem`);
+  if (action === "finding")
+    return {
+      problem: pid(b.problem),
+      kind: kindT(b.kind),
+      body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
+      replaces: replacesT(b.replaces),
+    };
+  throw bad(404, `unknown action "${action}": solution, verification, problem or finding`);
 };
 
 const cli = (argv) => {

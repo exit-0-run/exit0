@@ -3526,6 +3526,40 @@ describe("repo invariants", () => {
     assert.match(m, /StrictHostKeyChecking=yes/, "mirror.sh accepts a new host key on the fly");
   });
 
+  // Every flag these scripts hand to git has to be a flag git actually knows. Reading the
+  // script for dangerous strings does not catch the opposite failure: a flag that does not
+  // exist. deploy/mirror.sh carried `git merge --no-rebase` (a `git pull` option) for as
+  // long as the reconcile path existed, so the ONE branch written to handle two writers
+  // diverging could never run - and it failed with "cannot merge automatically", which
+  // reads like a conflict rather than like a typo. A static read cannot see that. Asking
+  // git can.
+  test("deploy: every git flag in the deploy scripts is a flag this git knows", () => {
+    const probe = mkdtempSync(join(tmpdir(), "exit0-gitflags-"));
+    trees.push(probe);
+    spawnSync("git", ["init", "-q", probe], { encoding: "utf8" });
+    let checked = 0;
+    for (const script of ["deploy/mirror.sh", "deploy/install.sh", "deploy/backup.sh", "deploy/watch.sh"]) {
+      const body = text(script);
+      if (!body) continue;
+      for (const raw of body.split("\n")) {
+        const line = raw.trim();
+        if (line.startsWith("#")) continue;
+        const m2 = /(?:^|[;&|(]\s*|!\s*)(?:\$GIT|git)\s+([a-z-]+)((?:\s+--[a-z][a-z0-9-]*)+)/.exec(line);
+        if (!m2) continue;
+        const [, sub, flagBlob] = m2;
+        const flags = flagBlob.trim().split(/\s+/);
+        const r = spawnSync("git", ["-C", probe, sub, ...flags, "exit0-nonexistent-argument"], { encoding: "utf8" });
+        const err = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+        assert.ok(
+          !/unknown option|unknown switch|unrecognized option/i.test(err),
+          `${script}: git ${sub} ${flags.join(" ")} -> ${err.split("\n")[0]}`
+        );
+        checked++;
+      }
+    }
+    assert.ok(checked > 0, "no git invocation with flags was found in the deploy scripts, so this test proves nothing");
+  });
+
   // One branch, two writers: code arrives from a laptop, registry data is committed on the
   // host, and since the code and registry repositories were merged into one they land on
   // the same branch. A non-fast-forward is therefore EXPECTED, not exotic, and a push that
@@ -3535,10 +3569,11 @@ describe("repo invariants", () => {
 
     // Rewriting is the one repair that is not allowed here. Every accepted write is a
     // commit and the history IS the audit trail, so a rebase would rewrite the evidence.
-    assert.match(m, /merge --no-rebase/, "mirror.sh does not merge the divergence, so a crossed push freezes the public copy forever");
-    // Comments stripped first: the prose right above the merge explains why there is no
-    // rebase, so matching the raw text finds the word in the very sentence forbidding it.
-    const code = m.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n").replace(/--no-rebase/g, "");
+    // The BEHAVIOUR, not a particular spelling of it. This assertion used to be
+    // /merge --no-rebase/ and it pinned a flag `git merge` does not accept, so the test
+    // was green for exactly as long as the code was broken. Pin what the script must DO.
+    const code = m.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+    assert.match(code, /\$GIT merge\b/, "mirror.sh does not merge the divergence, so a crossed push freezes the public copy forever");
     assert.ok(!/\brebase\b/.test(code), "mirror.sh rebases somewhere: that rewrites commits which are the audit trail");
     assert.ok(!/--force|push -f\b/.test(code), "mirror.sh forces a push on the reconcile path");
     assert.match(m, /merge --abort/, "a conflicted merge is left half-applied in the live registry");
@@ -3557,8 +3592,16 @@ describe("repo invariants", () => {
         validated = false; // each push consumes its validation; the merged state needs a fresh one
       }
     }
-    // A write in flight must not be merged over.
-    assert.match(m, /status --porcelain --no-optional-locks/, "mirror.sh merges without checking for a write in flight");
+    // A write in flight must not be merged over. Position, not spelling: this assertion
+    // was pinned to the literal "status --porcelain --no-optional-locks", which put the
+    // git-level flag AFTER the subcommand where git rejects it. A guard whose command
+    // errors fails OPEN - the substitution is empty and [ -z "" ] passes - so the test was
+    // green precisely because it was pinning the broken form. Whether each flag is real is
+    // the job of the git-flag test above; what matters here is that the guard runs first.
+    const iGuard = code.search(/status --porcelain/);
+    const iMerge = code.search(/\$GIT merge\b/);
+    assert.ok(iGuard > 0, "mirror.sh merges without checking for a write in flight");
+    assert.ok(iGuard < iMerge, "mirror.sh checks for a write in flight only AFTER merging over it");
   });
 
   // The other half of the same problem. $SRC is a clone of the repository the registry

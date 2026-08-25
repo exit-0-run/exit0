@@ -106,7 +106,14 @@ fi
 
 # Only ever from a clean tree. A dirty tree means a write is in flight, and merging under
 # one would fold a half-written record into the history. Ten minutes from now it is clean.
-[ -z "$($GIT status --porcelain --no-optional-locks)" ] \
+#
+# --no-optional-locks goes BEFORE the subcommand: it is a git-level option, and
+# `git status --no-optional-locks` is rejected outright. It sat after `status` here, and a
+# guard built out of a command that errors FAILS OPEN - the substitution returns the empty
+# string, `[ -z "" ]` is true, and the guard waved every dirty tree through while reading
+# like it was protecting one. The rest of the repo already had this right
+# (server.mjs gitRead, build.mjs gitRead); this line was the outlier.
+[ -z "$($GIT --no-optional-locks status --porcelain)" ] \
   || { say "diverged from $MIRROR but the tree is dirty (write in flight). Leaving it; the next run retries."; exit 0; }
 
 say "diverged from the public copy, merging it in"
@@ -115,7 +122,12 @@ GIT_SSH_COMMAND="$SSH" $GIT fetch --quiet "$MIRROR" "$BRANCH" 2>"$TMP/.fetch" \
 
 # MERGE, never rebase and never force. Every accepted write is a commit and the history IS
 # the audit trail, so rewriting these commits would rewrite the evidence. A merge only adds.
-if ! $GIT merge --no-rebase --no-edit FETCH_HEAD >"$TMP/.merge" 2>&1; then
+# There is no --no-rebase here and there must not be: that is a `git pull` flag, `git merge`
+# rejects it outright ("unknown option"). It sat here and made this whole branch dead code -
+# the ONE path that exists to handle two writers diverging could not run at all, and it
+# failed with "cannot merge automatically", which reads like a conflict and is not one.
+# git merge does not rebase, so the guarantee needs no flag.
+if ! $GIT merge --no-edit FETCH_HEAD >"$TMP/.merge" 2>&1; then
   $GIT merge --abort >/dev/null 2>&1
   die "cannot merge the public copy automatically, registry left untouched: $(head -3 "$TMP/.merge" | tr '\n' ' ')"
 fi

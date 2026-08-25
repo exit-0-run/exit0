@@ -503,6 +503,36 @@ export const verdictHead = (list, key) => {
   return { head: errors.length || heads.length !== 1 ? null : heads[0].vid, errors };
 };
 
+// HOW MANY independent keys stand behind a solution, folded out of the same heads.
+// One "ok" is one run on one machine, and this registry has the receipt: the first
+// confirmation it ever took said in its own note that the same repository measures 31-36
+// under Docker against the 65.41 that verifier had just measured natively, and a later
+// finding cut the headline ratio by an order of magnitude. Two independent runs that agree
+// are worth far more than one, and two that disagree are worth more still - so the count
+// belongs beside the verdict on every surface that prints one, or "checked once" and
+// "checked four times" go on reading as the same word.
+//
+// HEADS, never records in the array (invariant 8), and heads are one per keyId(), so a
+// verifier who went ok -> mismatch -> ok is counted once under their current verdict, and a
+// second base64 spelling of one key cannot become a second confirmation (invariant 3).
+// It DECIDES nothing: "solved" is still oks > mismatches in build.mjs, and this moves no
+// threshold. It STORES nothing: a fold over records already in git, recomputable in any
+// clone, which is the same justification invariant 16 gives the board.
+//
+// low/high are the range of the counting scores, ok and mismatch together: what independent
+// runs of one command actually measured. Two numbers, never a summary of them - a spread is
+// evidence a reader has to look at, not a flag this registry gets to interpret.
+export const verdictStrength = (list) => {
+  const { heads } = verdictHeads(list);
+  const scores = heads.map((v) => Number(v.score)).filter((n) => Number.isFinite(n));
+  return {
+    confirms: heads.filter((v) => v.verdict === "ok").length,
+    disputes: heads.filter((v) => v.verdict === "mismatch").length,
+    low: scores.length ? Math.min(...scores) : null,
+    high: scores.length ? Math.max(...scores) : null,
+  };
+};
+
 export const evidencePath = (problemId, outSha) =>
   `problems/evidence/${pid(problemId)}-${hex64(outSha, "output_sha256")}.txt`;
 

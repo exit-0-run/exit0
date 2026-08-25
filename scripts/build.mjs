@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
   canonUrl, canonText, canonLine, solutionId, verificationId, findingId,
-  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, canonNeeds, DOMAINS, KINDS, probCmp,
+  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, verdictStrength, canonNeeds, DOMAINS, KINDS, probCmp,
 } from "./sign.mjs";
 
 const DIR = "problems";
@@ -623,8 +623,13 @@ const rows = listed.slice(0, ROWS).map((p) => {
   // somebody hit a number and it is there to be beaten. The number comes from a derived
   // field, never from user content, so it needs no cell() - but it goes through one
   // anyway, because the day somebody makes it a string is the day that reasoning rots.
+  // How many distinct keys ran that number. "best 72.4" reads the same whether one stranger
+  // reproduced it or four did, and this table is the surface every passer-by reads first.
+  // Counted from the verdict heads (invariant 8), never from the length of the array.
+  const front = p.frontier && p.frontier.best ? sols.find((s) => s.sid === p.frontier.best) : null;
+  const keys = front ? verdictStrength(front.verifications).confirms : 0;
   const state = p.frontier && p.frontier.best_score !== null && p.frontier.best_score !== undefined
-    ? `${badge[p.status]} best ${cell(String(p.frontier.best_score))}, beat it${p.frontier.caveat ? ", verdict has conditions" : ""}`
+    ? `${badge[p.status]} best ${cell(String(p.frontier.best_score))}, beat it, confirmed by ${keys} ${keys === 1 ? "key" : "keys"}${p.frontier.caveat ? ", verdict has conditions" : ""}`
     : badge[p.status];
   return `| ${p.id} | ${cell(p.title)} | ${cell(p.domain)} | ${cell(needs)} | ${state} | ${link}${sporne ? ` (${sporne} disputed)` : ""} |`;
 });

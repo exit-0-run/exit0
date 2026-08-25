@@ -819,6 +819,47 @@ if (gate.sign)
       const up = [S({ score: 1 }), S({ score: 9 })].sort(sg.solCmp({ acceptance: { higher_is_better: true } }));
       assert.equal(up[0].score, 9);
     });
+
+    // How MANY keys stand behind a verdict is a number the whole registry now prints, so it
+    // gets the same scrutiny as the verdict itself. The two ways to get it wrong are to
+    // count array entries (a verifier who corrected themselves would pay three times) and to
+    // group by the key STRING (invariant 3: 32 bytes have four base64 spellings, so one key
+    // would become several confirmations). Both are tested here, on records built by hand:
+    // verdictHeads is structural, it reads key/vid/replaces only, so no signature is needed
+    // to exercise the shape - and a signature would hide the shape behind its own failure.
+    test("verdictStrength counts KEYS at the head of their chain, never records", () => {
+      const kA = mkKey();
+      const kB = mkKey();
+      const rec = (pub, vid, replaces, verdict, score) => ({ key: pub, vid, replaces, verdict, score, at: "2026-08-25" });
+
+      assert.deepEqual(sg.verdictStrength([]), { confirms: 0, disputes: 0, low: null, high: null }, "nothing to count is zero, not a crash");
+      assert.deepEqual(sg.verdictStrength(undefined).confirms, 0, "it runs inside build.mjs, where a throw is a crash instead of an error list");
+
+      // ok -> mismatch -> ok: three records, one piece of work, one CURRENT verdict.
+      const abc = [
+        rec(kA.pub, "a1", "-", "ok", 0.4),
+        rec(kA.pub, "a2", "a1", "mismatch", 0.9),
+        rec(kA.pub, "a3", "a2", "ok", 0.41),
+      ];
+      assert.deepEqual(sg.verdictStrength(abc), { confirms: 1, disputes: 0, low: 0.41, high: 0.41 }, "a corrected chain counted more than once: correcting yourself would pay better than checking somebody new");
+      // Order in the file is not state (invariant 8): the same records shuffled say the same.
+      assert.deepEqual(sg.verdictStrength([abc[2], abc[0], abc[1]]), sg.verdictStrength(abc));
+
+      // The same key in another of its four base64 spellings continues ONE chain. If it were
+      // grouped by the string it would open a second chain and read as a second confirmation.
+      const [alt] = b64alts(kA.pub);
+      assert.ok(alt, "no alternative spelling of this key to test with");
+      assert.equal(sg.verdictStrength([...abc, rec(alt, "a4", "a3", "ok", 0.42)]).confirms, 1, "a second spelling of one key became a second confirmation (invariant 3)");
+
+      // Two keys, and they did not measure the same number. The spread is the evidence.
+      const two = [...abc, rec(kB.pub, "b1", "-", "mismatch", 0.9)];
+      assert.deepEqual(sg.verdictStrength(two), { confirms: 1, disputes: 1, low: 0.41, high: 0.9 });
+      assert.equal(sg.verdictStrength([...abc, rec(kB.pub, "b1", "-", "ok", 0.39)]).confirms, 2, "two independent keys are two confirmations");
+
+      // A key outside the grammar has no verifier, so it is skipped rather than counted for
+      // somebody - and it must not take the rest of the fold down with it.
+      assert.equal(sg.verdictStrength([...abc, rec("not a key", "z1", "-", "ok", 1)]).confirms, 1);
+    });
   });
 
 // =====================================================================
@@ -1960,10 +2001,28 @@ if (gate.server)
       assert.equal(entry.tolerance, P.fields.tolerance, "without the tolerance a verifier has nothing to sign");
       assert.deepEqual(entry.needs, [], "the queue has to say what running it requires");
 
-      // It has to disappear once verified: the queue is demand, not an archive.
+      // One verdict settles it and does NOT finish it. A result standing on a single key has
+      // been run once, on one machine, so it comes back as SECOND RUN - work that is cheap
+      // and useful, and the only thing this registry had to offer once every entry had a
+      // verdict. It leaves the queue on the second INDEPENDENT confirmation, never before.
       is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "queue ok\n" })), 201, "a verification");
-      const after = await hit(SRV, { path: "/api/work" });
-      assert.ok(!(after.json?.work ?? []).some((x) => x.solution === s.json.sid), "a verified solution stayed in the queue");
+      // limit=500: a SECOND RUN row ranks last on purpose, and the default page is 100.
+      const after = await hit(SRV, { path: "/api/work?limit=500" });
+      const again = (after.json?.work ?? []).find((x) => x.solution === s.json.sid);
+      assert.ok(again, "a settled solution left the queue after ONE run: /work empties and there is nothing cheap left to do");
+      assert.equal(again.need, "second");
+      assert.equal(again.confirmed_by, 1, "the queue has to say how much evidence is already there");
+      assert.equal(again.disputed_by, 0);
+
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.42, verdict: "ok", output: "queue ok twice\n" })), 201, "a second, independent verification");
+      const settled = await hit(SRV, { path: "/api/work?limit=500" });
+      assert.ok(!(settled.json?.work ?? []).some((x) => x.solution === s.json.sid), "two independent confirmations and it is still being handed out as work");
+
+      // The count is visible where the claim is, and it is not the number of records.
+      const one = await hit(SRV, { path: `/${P.id}` });
+      assert.match(one.text, /confirmed by 2 keys, 0 mismatch/, "the problem page shows OK either way, so the count is the only thing that separates one run from two");
+      const bdg = await hit(SRV, { path: `/${s.json.sid}/badge.svg` });
+      assert.match(bdg.text, /verified by 2/, "the badge is the most-read thing here and it counts the same keys");
     });
 
     test("the /work queue: a dispute comes back as TIEBREAK, the have filter works", async () => {
@@ -1980,6 +2039,46 @@ if (gate.server)
       const withNothing = await hit(SRV, { path: "/api/work?have=none" });
       assert.ok(!(withNothing.json?.work ?? []).some((x) => x.solution === s.json.sid), "have=none returned work that requires a gpu");
       is(await hit(SRV, { path: "/api/work?have=quantum" }), 400, "a have outside the set");
+
+      // What the two keys DISAGREE about. Both verdicts were on the page already, one line
+      // apart, and the thing a reader has to see - that two honest runs of one command came
+      // back with different numbers - was left for them to work out by subtraction.
+      const page = await hit(SRV, { path: `/${P.id}` });
+      assert.match(page.text, /confirmed by 1 key, 1 mismatch/, "the page says OK and DISPUTED but never how many keys are behind either");
+      assert.match(page.text, /independent scores 0\.42 - 0\.9/, "the spread between independent runs is the signal, and it was nowhere on the page");
+    });
+
+    // A count nobody can see is not a count. One key and two keys had rendered identically
+    // as SOLVED, as OK and as a green badge, on every surface a reader meets first.
+    test("SOLVED on one key reads differently from SOLVED on two", async () => {
+      const P = await newProblem(SRV, { title: "A problem for counting confirmations", needs: [] });
+      const s = await post(SRV, "solution", solBody(mkKey(), { problem: P.id, repo: "https://example.com/strength", score: 0.42 }));
+      is(s, 201, "a solution to confirm");
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.4207, verdict: "ok", output: "strength one\n" })), 201, "the first confirmation");
+
+      // Filtered, not the front page itself: the listing is capped at 40 rows and this suite
+      // files enough problems to push a solved one past the cut.
+      const rowOf = async () => {
+        const r = await hit(SRV, { path: "/?status=solved&limit=500", headers: { accept: "text/plain" } });
+        is(r, 200, "GET /?status=solved");
+        const line = r.text.split("\n").find((l) => l.startsWith(`[${P.id}]`));
+        assert.ok(line, `no row for ${P.id} in the solved listing`);
+        return line;
+      };
+      assert.match(await rowOf(), / 1 key /, "the listing calls it SOLVED and never says how thin the evidence is");
+      const before = await hit(SRV, { path: `/api/problems?status=solved&limit=500` });
+      assert.equal((before.json?.problems ?? []).find((x) => x.id === P.id)?.confirmed_by, 1);
+      const start = await hit(SRV, { path: "/api/start?limit=500" });
+      assert.equal((start.json?.start ?? []).find((x) => x.problem === P.id)?.best_keys, 1, "/start hands out a floor without saying what it rests on");
+
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: s.json.sid, score: 0.4184, verdict: "ok", output: "strength two\n" })), 201, "a second, independent confirmation");
+      assert.match(await rowOf(), / 2 keys /, "a second independent run changed nothing a reader can see");
+      const after = await hit(SRV, { path: `/api/problems?status=solved&limit=500` });
+      assert.equal((after.json?.problems ?? []).find((x) => x.id === P.id)?.confirmed_by, 2);
+
+      const one = await hit(SRV, { path: `/${P.id}` });
+      assert.match(one.text, /confirmed by 2 keys, 0 mismatch/);
+      assert.match(one.text, /independent scores 0\.4184 - 0\.4207/, "two keys inside the band still measured two different numbers, and that is worth printing");
     });
 
     test("the badge: SVG with nothing from the network, its content computed from derived fields", async () => {
@@ -2073,7 +2172,7 @@ if (gate.server)
       const t1 = await hit(SRV, { path: "/work?limit=1" });
       is(t1, 200, "GET /work?limit=1");
       const t2 = await hit(SRV, { path: "/work?limit=1&offset=1" });
-      const sidOf = (txt) => txt.split("\n").filter((l) => /^(FIRST CHECK|TIEBREAK)/.test(l)).map((l) => l.split(/\s+/)[2]);
+      const sidOf = (txt) => txt.split("\n").filter((l) => /^(FIRST CHECK|TIEBREAK|SECOND RUN)/.test(l)).map((l) => l.split(/\s+/)[2]);
       assert.equal(sidOf(t1.text).length, 1, "the text queue ignores limit");
       assert.notEqual(sidOf(t2.text)[0], sidOf(t1.text)[0], "the text queue ignores offset");
       assert.match(t1.text, /showing 1-1 of \d+/, "a cut text view has to say where it cut and how to go on");

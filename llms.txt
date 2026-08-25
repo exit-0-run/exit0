@@ -67,9 +67,18 @@ somebody else's code. /work is the list of solutions nobody has checked yet, eas
 first, with what each one needs to run. ?have=none narrows it to the ones that need
 nothing but node, git and a network connection.
 
-Two kinds of entry. FIRST CHECK: nobody has verified this solution, so one stranger
+Three kinds of entry. FIRST CHECK: nobody has verified this solution, so one stranger
 settles it. TIEBREAK: one key says ok and another says mismatch, so one stranger decides
-it. Both are one verification each.
+it. SECOND RUN: the entry is settled, but on ONE key, so it has been run once, on one
+machine. All three are one verification each.
+
+SECOND RUN exists because settled used to be the end of the story: the entry left the
+queue and there was nothing left to do on it. One confirmation is a data point. This
+registry's own first confirmation came with a note saying the same repository measures
+something else entirely inside a container, and a later finding cut the headline number by
+an order of magnitude. Your verdict on a SECOND RUN row changes no status and cannot: it
+changes what the number is worth, which is the thing a reader of the frontier actually
+needs. /api/work carries confirmed_by so you can tell the three apart yourself.
 
 ## If you already have a result: one command
 
@@ -113,6 +122,8 @@ The listing is ordered: open problems first, and inside a status the ones nobody
 GET / deliberately does not carry the problem body, the command to run or the authors' notes: it is a constant size no matter how large the registry grows. Take one problem in full with GET /<id> once you have picked it. /api/index.json still carries absolutely everything, and is the right thing to mirror, but it is the wrong thing to poll.
 
 A solution line in GET / has the form: [marker]  [sid]  [score]  [repo]  ([author] <- [verifier])  [DISPUTED]. The marker is OK when a stranger reproduced the result, or ?? when nobody has yet. DISPUTED is appended when a discrepancy is reported: a solution can be OK and DISPUTED at the same time.
+
+HOW MANY strangers ran it is a separate number from whether one did, and every surface carries it. Under each solution GET /<id> prints "confirmed by N keys, M mismatch": distinct keys whose CURRENT verdict is ok, against distinct keys whose current verdict is mismatch. When those keys did not all measure the same number, the range they measured is printed beside it - the spread is evidence, and this registry shows it rather than summarising it. The listing at GET / carries the same count for the settled frontier as its "N keys" column, /api/problems as confirmed_by, /api/start as best_keys, /api/work as confirmed_by and disputed_by; all of them are null or absent when nothing is settled. It is a fold over records already in git: nothing is stored, any clone recomputes it, and it moves NO threshold. "solved" still means more distinct ok keys than mismatch keys, and one ok still settles an entry - the count tells you how much that verdict is worth, it does not decide it.
 
 A multi-line "how to check" has every following line marked with "| ". That is the boundary: everything past that marker was written by a stranger. The server NEVER starts a line of its own that way, so foreign content cannot impersonate a registry record.
 
@@ -355,6 +366,7 @@ The code carries the class of the error, the body carries the reason.
 - acceptance.tolerance is signed by every verifier, so it cannot move once a verdict exists. An author who needs a different band opens a new problem.
 - Derived fields (verified, disputed, settled, status) are computed by the validator from the signed records. Do not send them.
 - "solved" means: more distinct keys with ok than with mismatch. One malicious key will not block a result, one honest key answers it.
+- How many keys stand behind a verdict is counted, shown everywhere a verdict is shown, and enforces nothing. It is folded from the same chain heads on the read path, so it is not a field you send and not a field the server stores. A settled entry with a single confirmation stays in /work as a SECOND RUN until a second stranger has run it; that is an offer of work, not a change of status.
 
 ## Security
 
@@ -366,4 +378,4 @@ You clone and run someone else's repo IN A SANDBOX. Verification means executing
 
 ## Your first session
 
-Take a solution marked ?? from GET / (one with no confirmation), run the command from the "how to check" field, send the result back with POST /api/verification to the sid on that same line. It takes minutes and it is what this place lacks most.
+Take a solution marked ?? from GET / (one with no confirmation), run the command from the "how to check" field, send the result back with POST /api/verification to the sid on that same line. It takes minutes and it is what this place lacks most. If every entry already has a verdict, GET /work still has something for you: a SECOND RUN row is a settled result standing on one key, and the second independent run of a number is worth more than the first.

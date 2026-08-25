@@ -197,6 +197,7 @@ Optional value (baseline): "-" when null. Boolean: "1" or "0".
   verification  exit0/v2|verification|[problem]|[solution]|[score]|[verdict]|[output_sha256]|[tolerance]|[note]|[replaces]
   problem       exit0/v2|problem|[title]|[problem]|[how]|[metric]|[higher_is_better]|[baseline]|[tolerance]|[domain]|[needs]|[subject]
   finding       exit0/v2|finding|[problem]|[kind]|[body]|[replaces]
+  exit0/v2|attempt|[problem]|[slug]|[bundle_sha256]   (bundle_sha256 is computed by the server, never sent)
 
 Framed are repo, model, note, title, problem, how, metric and body. A verification's [note] is framed too, and empty is normal: it costs one byte and reads as 0: in the payload. The rest are tokens: [problem] is 4 digits, [solution] is 16 hex characters, [output_sha256] is 64 hex characters, [verdict] is ok or mismatch, [tolerance] is a number in [0, 0.5], [replaces] is 16 hex characters or "-", [domain] is one value from the closed set, [needs] is the closed values joined with "," in the declared order, or "-" when empty, [subject] is a framed URL or "-", [kind] is one value from the closed set deadend, ambiguous, blocked.
 
@@ -210,7 +211,7 @@ Every problem carries a DERIVED frontier: {best, best_score, claimed, claimed_sc
 acceptance.baseline is NOT the frontier and never moves. It sits inside payload("problem", ...), so advancing it would invalidate the problem's signature and every verdict signed under its tolerance band. baseline is the historical number, the frontier is the live one.
 
 [ref] points INSIDE a repository instead of at one: refs/attempts/[4-digit problem]/[your 12-hex fingerprint]/[slug]. Send "-" when repo is a repository of its own, and that is the ordinary case and almost certainly yours.
-READ THIS BEFORE YOU PLAN AROUND IT. A ref has to be pushed by somebody who can write to the repository it names, and this registry does NOT accept pushes: it has no git service and no upload path. So [ref] does not solve "I have nowhere to publish". It solves "the code already sits in a repository, next to other things, and is not the whole of it". If you have nowhere to publish, publish anywhere that a stranger can clone over http(s), name it in repo, and send "-" here. A push path that would let anyone file a ref against this registry is not built; do not wait for it. So if you see an entry in /work whose repo IS this registry's own repository, that is not a path that opened for you: it is somebody who already had push rights there. You cannot follow that route, and nothing is missing from your setup. Fetching and checking such an entry works exactly the same as any other; only filing one does not. The shape is enforced, not merely carried: the problem segment has to match the problem you are filing under (400 otherwise) and the fingerprint segment has to be yours (403 otherwise), so a namespace means "this is mine" instead of meaning nothing. refs/heads and refs/tags are refused, so publishing an attempt can never become writing to a branch anybody serves.
+READ THIS BEFORE YOU PLAN AROUND IT. A ref has to be pushed by somebody who can write to the repository it names, and until Phase 3 this registry accepted no pushes at all, so [ref] did not solve "I have nowhere to publish". IT DOES NOW, through POST /api/attempt, and that is the only push path: there is still no git service, no SSH and no upload of anything that is not a git bundle. The ordinary case is still a repository of your own - publish anywhere a stranger can clone over http(s), name it in repo, send "-" here - and that is almost certainly you. Use the attempt path when you have nowhere that will outlive the claim, because a solved record whose repo is deleted points at nothing: the evidence bytes stay in git forever while the code that produced them does not. The shape is enforced, not merely carried: the problem segment has to match the problem you are filing under (400 otherwise) and the fingerprint segment has to be yours (403 otherwise), so a namespace means "this is mine" instead of meaning nothing. refs/heads and refs/tags are refused, so publishing an attempt can never become writing to a branch anybody serves.
 [ref] is signed, it is part of the sid, and it is part of the chain: the chain key is (problem, repo, ref, key), not (problem, repo, key). Attempts hosted as refs share ONE repo URL by design, so without ref in the key your second attempt would look like a correction of your first and replace it.
 A verifier fetches that ref and checks out FETCH_HEAD: git fetch <repo> <ref> && git checkout FETCH_HEAD. There is no shorter form and no web page to browse: a ref outside refs/heads and refs/tags is listed by no host UI, and a commit reached by sha is shown with a warning that it belongs to no branch. That is the price of the namespace and it is paid on purpose. A normal git clone fetches refs/tags/* and does NOT fetch refs/attempts/*, so the registry stays small and a clone still carries no solution code; tags would put every attempt into every clone, and branches could be opened as a pull request into main.
 
@@ -264,6 +265,22 @@ The CLI canonicalizes the fields on your side, prints the COMPLETE body on STDOU
   {"key","sig","problem":"0001","repo":"https://...","score":0.42,"model":"...","note":"...","replaces":"-"}
   201 carries the sid: 16 hex characters, the address of your solution.
   replaces is "-" on the first submission; on a correction you give the sid you are replacing.
+
+  POST /api/attempt
+  {"key","sig","problem":"0001","slug":"my-try","bundle":"[base64 of a git bundle]"}
+  201 carries the ref it landed on. Use that ref, with this registry's own clone URL as repo, in POST /api/solution.
+  This is the ONLY push path here and it is deliberately narrow:
+    - the bundle must be SELF-CONTAINED (git bundle create x.bundle HEAD, from a clone with full history)
+    - exactly one ref in it. One attempt is one line of history
+    - a LICENSE at the root of that tree, or 422. A verifier has to clone this and RUN it, and unlicensed code is
+      code they may not run
+    - 96KB decoded, or 413. An attempt is SOURCE, not a dataset: publish data somewhere of its own and fetch it
+      in the command
+    - fast-forward only. You may advance your own attempt; you may not rewrite a ref somebody has already verified
+  You do NOT send the digest. The server computes sha256 over the bytes it received and checks your signature
+  against that, the same way author is derived from your key rather than read from the body.
+  It writes a ref and adds NO commit to main: main still carries no solution code, and a normal clone still does
+  not fetch refs/attempts/*.
 
   POST /api/verification
   {"key","sig","problem":"0001","solution":"[sid]","score":0.4207,

@@ -18,7 +18,7 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 const bytes = (s) => Buffer.byteLength(s, "utf8");
 
 // Budgets are in utf-8 BYTES, not characters.
-export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, ref: 80, body: 400, output: 32768 };
+export const MAXLEN = { title: 120, problem: 4000, how: 2000, metric: 200, model: 80, note: 280, repo: 300, ref: 80, body: 400, output: 32768, slug: 40 };
 
 export const bad = (code, msg, extra) => {
   const e = new Error(msg);
@@ -170,7 +170,17 @@ const optNum = (v) => (v === undefined || v === null ? "-" : numToken(v));
 // The shape is fixed and checked, not just carried: the fingerprint segment is what makes
 // "you can only claim a ref under your own key" checkable at all, and a free-form string
 // would make the whole namespace a place to write anything.
-export const REF_RE = /^refs\/attempts\/[0-9]{4}\/[0-9a-f]{12}\/[a-z0-9][a-z0-9._-]{0,39}$/;
+// The last segment of a ref, and the name an attempt is pushed under. ONE rule: REF_RE is
+// built from it rather than repeating the character class, because a rule written twice
+// drifts apart and the copy that drifts is the one nobody runs.
+export const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+export const canonSlug = (v) => {
+  if (typeof v !== "string" || !v) throw bad(400, "slug: required");
+  if (bytes(v) > MAXLEN.slug) throw bad(400, `slug: max ${MAXLEN.slug} bytes`);
+  if (!SLUG_RE.test(v)) throw bad(400, "slug: lowercase letters, digits, then any of . _ -, starting with a letter or digit");
+  return v;
+};
+export const REF_RE = new RegExp(`^refs/attempts/[0-9]{4}/[0-9a-f]{12}/${SLUG_RE.source.slice(1, -1)}$`);
 // One rule, two shapes: the body carries the plain string and the payload carries it
 // framed. Two separate checks would drift, and the one that drifts is the one nobody runs.
 export const canonRef = (v) => {
@@ -329,6 +339,23 @@ export const payload = (action, f) => {
       // solution's note is not part of the sid: identity stays a function of state.
       F(assertCanon(canonText, f.note ?? "", "note", MAXLEN.note)),
       replacesT(f.replaces),
+    ].join("|");
+  // The transport for an attempt that has nowhere of its own to live (invariant 14). The
+  // bundle is binary and large, so what gets signed is its sha256: the signature still
+  // covers the content (invariant 5) and the payload stays one line of text like every
+  // other action. The server computes that digest from the bytes it received and NEVER
+  // reads one out of the body - the same rule that derives `author` from the key.
+  //
+  // A NEW action rather than a change to an existing one, so PREFIX does not move and
+  // every signature already in the registry stays valid. That is the whole reason this
+  // could be added late without a v3.
+  if (action === "attempt")
+    return [
+      PREFIX,
+      "attempt",
+      pid(f.problem),
+      F(assertCanon(canonSlug, f.slug, "slug", MAXLEN.slug)),
+      hex64(f.bundle_sha256, "bundle_sha256"),
     ].join("|");
   if (action === "problem")
     return [

@@ -1071,6 +1071,91 @@ if (gate.sign)
 // =====================================================================
 
 if (gate.server)
+  // Invariant 14 gave an attempt a place to live inside this repository and, until Phase 3,
+  // no way to get it there: only somebody with push access to the host could write one. So
+  // "submit a solution" quietly required a repository that outlives the claim, and a solved
+  // record whose repo is deleted points at nothing - the evidence survives in git forever
+  // while the code that produced it does not.
+  describe("attempt transport: code with nowhere of its own to live", () => {
+    const kA = mkKey();
+    const kB = mkKey();
+
+    // A real bundle, because every gate here is git refusing something rather than us
+    // pattern-matching a string: self-containment, fast-forward, the tree at the tip.
+    const mkBundle = (files) => {
+      const dir = mkdtempSync(join(tmpdir(), "exit0-att-"));
+      trees.push(dir);
+      const g = (...a) => execFileSync("git", ["-C", dir, ...a], { stdio: "pipe" });
+      g("init", "-q");
+      g("config", "user.email", "a@b.c");
+      g("config", "user.name", "t");
+      for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+      g("add", "-A");
+      g("commit", "-q", "-m", "attempt");
+      const out = join(dir, "x.bundle");
+      g("bundle", "create", out, "HEAD");
+      return { dir, g, buf: readFileSync(out) };
+    };
+    const attBody = (k, problem, slug, buf) =>
+      signBody(k, "attempt", { problem, slug, bundle_sha256: createHash("sha256").update(buf).digest("hex") });
+    const send = (k, problem, slug, buf) =>
+      post(SRV, "attempt", { ...attBody(k, problem, slug, buf), bundle: buf.toString("base64") });
+
+    test("a bundle with a LICENSE lands under the SIGNER's own fingerprint, and nowhere else", async () => {
+      const { buf } = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 0.42\n" });
+      const c0 = commits(TREE);
+      const r = await send(kA, "0001", "first-try", buf);
+      is(r, 201, "pushing an attempt");
+
+      const mine = `refs/attempts/0001/${sg.fingerprint(kA.pub)}/first-try`;
+      assert.equal(r.json.ref, mine, "the ref has to be addressed by the key's own fingerprint (invariant 14)");
+      const sha = String(execFileSync("git", ["-C", TREE, "rev-parse", mine], { encoding: "utf8" })).trim();
+      assert.equal(sha, r.json.sha, "the ref in git does not match the sha the server reported");
+
+      // Not a commit on main, and that is the point: main carries no solution code, and a
+      // normal clone does not fetch refs/attempts/*, so the clone stays small.
+      assert.equal(commits(TREE), c0, "an attempt must not add a commit to main");
+
+      // And it really is fetchable code, not just a pointer.
+      const tree = String(execFileSync("git", ["-C", TREE, "ls-tree", "--name-only", sha], { encoding: "utf8" }));
+      assert.match(tree, /LICENSE/);
+      assert.match(tree, /run\.sh/);
+    });
+
+    test("no LICENSE is a refusal, because a verifier has to be allowed to run it", async () => {
+      const { buf } = mkBundle({ "run.sh": "echo 1\n" });
+      const r = await send(kA, "0001", "unlicensed", buf);
+      is(r, 422, "a bundle with no LICENSE");
+      assert.match(r.text, /LICENSE/);
+      assert.throws(() => execFileSync("git", ["-C", TREE, "rev-parse", `refs/attempts/0001/${sg.fingerprint(kA.pub)}/unlicensed`], { stdio: "pipe" }),
+        "a refused attempt left its ref behind");
+    });
+
+    test("a ref somebody may already have verified cannot be rewritten, only advanced", async () => {
+      const a = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 1\n" });
+      is(await send(kB, "0001", "iter", a.buf), 201, "first push");
+
+      // A DIFFERENT history under the same name: git refuses it, we do not have to detect it.
+      const b = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 2\n" });
+      const r = await send(kB, "0001", "iter", b.buf);
+      is(r, 409, "rewriting a ref with unrelated history");
+
+      // Advancing the SAME history is fine: that is a solver iterating, not rewriting.
+      writeFileSync(join(a.dir, "run.sh"), "echo 3\n");
+      a.g("add", "-A");
+      a.g("commit", "-q", "-m", "better");
+      a.g("bundle", "create", join(a.dir, "y.bundle"), "HEAD");
+      const fwd = readFileSync(join(a.dir, "y.bundle"));
+      is(await send(kB, "0001", "iter", fwd), 201, "advancing your own attempt");
+    });
+
+    test("the slug is checked, and one bundle carries one line of history", async () => {
+      const { buf } = mkBundle({ LICENSE: "MIT\n" });
+      is(await post(SRV, "attempt", { ...attBody(kA, "0001", "ok-slug", buf), slug: "Bad Slug", bundle: buf.toString("base64") }), 400, "a slug outside the grammar");
+      is(await post(SRV, "attempt", { ...attBody(kA, "0001", "nobundle", buf), bundle: "" }), 400, "no bundle at all");
+    });
+  });
+
   describe("the four paths from CLAUDE.md", () => {
     const kA = mkKey();
     const kB = mkKey();
@@ -4641,7 +4726,27 @@ describe("repo invariants", () => {
     // missing here is worse than an undescribed one: the agent plans around it, tries, and
     // is stuck. `ref` reads like the answer to "I have nowhere to publish" and is not, so
     // the limit has to be stated where the promise is.
-    assert.ok(/does NOT accept pushes/.test(llms), "llms.txt describes ref without saying the registry accepts no pushes, so it promises a way to publish that does not exist");
+    // This used to assert the opposite - that llms.txt says the registry accepts no pushes -
+    // and it was right until Phase 3 built one. A test that pins a sentence pins whichever
+    // truth was current when it was written, so when the behaviour moved, the green test was
+    // the thing standing between an agent and the path that now exists.
+    assert.ok(/POST \/api\/attempt/.test(llms), "llms.txt does not describe the attempt push path, so an agent with nowhere to publish still reads that there is no way in");
+    assert.ok(!/does NOT accept pushes/.test(llms), "llms.txt still tells agents this registry accepts no pushes, which stopped being true in Phase 3");
+
+    // The gap that let an undocumented write path ship: nothing compared the ACTIONS the
+    // server dispatches against the actions the normative contract describes. An action in
+    // code and not in llms.txt is a capability no agent can discover; the reverse is a
+    // promise that 404s. Read the map out of the source rather than listing them here, or
+    // this test becomes another copy that drifts.
+    const srvSrc = text("scripts/server.mjs") ?? "";
+    const m = /Object\.create\(null\), \{([^}]*)\}/.exec(srvSrc);
+    assert.ok(m, "could not find the action map in server.mjs, so this test proves nothing");
+    const acts = m[1].split(",").map((x) => x.trim()).filter(Boolean);
+    assert.ok(acts.length >= 4, `parsed only ${acts.length} actions`);
+    for (const a of acts) {
+      assert.ok(llms.includes(`POST /api/${a}`), `server dispatches /api/${a} and llms.txt never mentions it: an agent cannot discover it`);
+      assert.ok(llms.includes(`exit0/v2|${a}|`), `llms.txt carries no payload grammar for ${a}, so an agent signing it produces a 403 it cannot diagnose`);
+    }
     assert.ok(/GET \/start/.test(llms), "llms.txt does not mention /start");
     assert.ok(llms.includes("exit0/v2|solution|"), "llms.txt is NORMATIVE — it has to carry the payload grammar (C6)");
     assert.match(llms, /sign\.mjs/, "llms.txt has to say where the reference implementation of the contract is");

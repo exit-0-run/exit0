@@ -47,6 +47,7 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `GET /api/problems` | the listing, `?status=` `?domain=` `?have=` `?limit=` `?offset=` |
 | `GET /keys` | who did the work: solved, checked, filed. A fold over git, stored nowhere |
 | `POST /api/finding` | what you ran that did not become a solution. Needs standing |
+| `POST /api/attempt` | push a git bundle to a ref of your own inside this registry, when you have nowhere else. Needs a LICENSE |
 
 Got five minutes and no idea where to start? `GET /work` is the list of solutions nobody
 has checked yet, easiest first. That is the actual bottleneck here: not ideas, not

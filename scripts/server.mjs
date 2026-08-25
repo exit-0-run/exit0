@@ -17,16 +17,17 @@
 
 import { createServer } from "node:http";
 import {
-  readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync,
+  readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, rmSync, mkdtempSync,
   existsSync, mkdirSync, openSync, writeSync, closeSync, accessSync, constants,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
   solutionId, verificationId, findingId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
-  verdictStrength, canonNeeds, canonUrl, DOMAINS, NEEDS, KINDS, STATUS_RANK, probCmp,
+  verdictStrength, canonNeeds, canonUrl, canonSlug, DOMAINS, NEEDS, KINDS, STATUS_RANK, probCmp,
 } from "./sign.mjs";
 
 // Number() on an env var goes quiet in two ways and I measured both.
@@ -83,7 +84,7 @@ const LINK = '</llms.txt>; rel="llms"';
 
 // Scarcity. This is the only reason this server exists at all: git cannot
 // count it. Limits are per UTC day, per key.
-const LIMITS = { problem: 1, solution: 5, verification: 20, finding: 5 };
+const LIMITS = { problem: 1, solution: 5, verification: 20, finding: 5, attempt: 5 };
 
 // Storage failures, not request-content failures: they get a 503 with a reason
 // and a repair command, never a 500 with just a ref (the agent would then have
@@ -1131,9 +1132,104 @@ const finding = (b) => {
   };
 };
 
+
+// --- attempt: the transport for code with nowhere of its own to live ---
+// Invariant 14 gave an attempt a place to live inside this repository and no way to get it
+// there: the ref grammar existed, but only somebody with push access to the host could
+// write one, which is to say only us. So "submit a solution" silently required a GitHub
+// account and a repository that outlives the claim. It does not any more.
+//
+// What this fixes is DURABILITY, not reach. A solved record whose repo is deleted points
+// at nothing: the evidence bytes survive in git forever, so what was measured is still
+// readable, but the code that produced it is gone and nobody can ever re-run it.
+//
+// It is still not a commit on main. The ref update IS the durable write (invariant 1 says
+// state lives in git, not that every write is a commit on one branch), and refs/attempts/*
+// is not fetched by a normal clone, so "there is no solution code in main" stays true and
+// the clone stays small.
+const ATTEMPT_MAX = 96 * 1024;
+
+const attempt = (b) => {
+  const p = readProblem(problemFile(b.problem));
+  notDead(p);
+  if (typeof b.bundle !== "string" || !b.bundle) throw bad(400, "bundle: base64 of a git bundle (git bundle create x.bundle HEAD)");
+  const raw = Buffer.from(b.bundle, "base64");
+  if (!raw.length) throw bad(400, "bundle: empty, or not valid base64");
+  if (raw.length > ATTEMPT_MAX)
+    throw bad(413, `bundle: max ${ATTEMPT_MAX / 1024}KB decoded, this one is ${Math.ceil(raw.length / 1024)}KB. An attempt is SOURCE, not a dataset: publish the data somewhere of its own and fetch it in the command.`);
+
+  // Computed from the bytes that arrived, never read out of the body. Same rule as author:
+  // a digest the client supplies is a digest the client chooses.
+  const bundle_sha256 = createHash("sha256").update(raw).digest("hex");
+  const f = { problem: p.id, slug: canonSlug(b.slug), bundle_sha256 };
+  verifySig(b, payload("attempt", f), f);
+
+  // The fingerprint segment comes from the KEY, so a ref can only ever be claimed under
+  // its own author (invariant 14). There is nothing in the body that could say otherwise.
+  const author = fingerprint(b.key);
+  const target = `refs/attempts/${p.id}/${author}/${f.slug}`;
+  const staging = `refs/staging/${bundle_sha256.slice(0, 16)}`;
+
+  const dir = mkdtempSync(join(tmpdir(), "exit0-attempt-"));
+  const file = join(dir, "in.bundle");
+  const sweep = () => {
+    try { git("update-ref", "-d", staging); } catch {}
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  };
+  try {
+    writeFileSync(file, raw);
+    // Refuses a bundle that is not self-contained: one built as a thin pack needs objects
+    // this repository has never seen, and would import a ref pointing at a history that
+    // cannot be checked out. The error names the fix rather than the internals.
+    try { git("bundle", "verify", file); }
+    catch { throw bad(400, "bundle: not a self-contained git bundle. Build it with `git bundle create x.bundle HEAD` from a clone that has the full history."); }
+
+    const heads = String(git("bundle", "list-heads", file)).trim().split("\n").filter(Boolean);
+    if (heads.length !== 1) throw bad(400, `bundle: exactly one ref, this one carries ${heads.length}. One attempt is one line of history.`);
+    const src = heads[0].split(/\s+/)[1];
+
+    git("fetch", "--quiet", file, `${src}:${staging}`);
+    const sha = String(git("rev-parse", staging)).trim();
+
+    // A LICENSE is not paperwork here. The whole point of an attempt is that a stranger
+    // clones it and RUNS it, and code with no licence is code they are not allowed to run.
+    // Checked on the tree that arrived, not promised in the request.
+    const tree = String(git("ls-tree", "--name-only", sha)).split("\n").map((x) => x.trim());
+    if (!tree.some((n) => /^LICEN[CS]E(\.[a-z]+)?$/i.test(n)))
+      throw bad(422, "the bundle has no LICENSE at its root. A verifier has to clone this and run it, and unlicensed code is code they may not run.", { info: { got: tree.filter(Boolean).slice(0, 20) } });
+
+    // Fast-forward only, and git decides it. Never force: an attempt already verified by
+    // somebody must not be able to become different code under the same address, and the
+    // history is the audit trail for exactly the same reason main's is.
+    let old = null;
+    try { old = String(git("rev-parse", target)).trim(); } catch {}
+    if (old === sha) throw bad(409, "this bundle is already at that ref", { info: { ref: target, sha } });
+    if (old) {
+      try { git("merge-base", "--is-ancestor", old, sha); }
+      catch { throw bad(409, `${target} already points at ${old.slice(0, 12)} and this bundle does not build on it. Push a new slug rather than rewriting a ref somebody may already have verified.`, { info: { ref: target, head: old } }); }
+    }
+    git("update-ref", target, sha, ...(old ? [old] : []));
+    return {
+      code: 201,
+      // Nothing to write into problems/ and therefore nothing to commit on main: the ref
+      // update above is the whole durable write.
+      noCommit: true,
+      body: { ref: target, sha, repo_hint: "pass this ref, with this registry's clone URL as `repo`, to POST /api/solution" },
+      msg: `${p.id}: attempt ${author}/${f.slug} at ${sha.slice(0, 12)}`,
+      apply: () => {},
+    };
+  } catch (e) {
+    sweep();
+    throw e;
+  } finally {
+    try { git("update-ref", "-d", staging); } catch {}
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+};
+
 // A null prototype: without it POST /api/constructor lands on Object.prototype
 // and reaches a commit with no signature and no limit.
-const actions = Object.assign(Object.create(null), { solution, verification, problem, finding });
+const actions = Object.assign(Object.create(null), { solution, verification, problem, finding, attempt });
 
 // --- representations ---
 // The reader is an agent. Order carries information: first what this is, then how
@@ -2232,6 +2328,7 @@ const renderText = (idx, q) => {
   L.push("READ       GET /api/problems  (filter: ?status= ?domain= ?have= ?limit= ?offset=)");
   L.push("           GET /api/problems/<id>   GET /<id>   GET /api/pulse   GET /api/index.json (everything)");
   L.push("WRITE      POST /api/solution  /api/verification  /api/problem  /api/finding   (Ed25519 signed)");
+  L.push("           POST /api/attempt   push code that has nowhere of its own to live. Needs a LICENSE");
   L.push("LIMITS     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/day`).join("   ") + "   per key, for a write that went in");
   L.push(`           ${IP_CAP} attempts/day per address, EVERY attempt counts here, rejected ones too`);
   L.push("START      GET /start  what to clone and what number to beat, per open problem");
@@ -2876,7 +2973,10 @@ const doWriteCharged = (req, action, raw) => {
       });
     throw bad(500, "internal error", { info: { ref } });
   }
-  commit(plan.msg);
+  // An attempt writes a ref and nothing in problems/, so there is nothing staged and
+  // `git commit` would fail on an empty tree. The ref update already happened and is
+  // already durable.
+  if (!plan.noCommit) commit(plan.msg);
   const used = chargeQuota(b.key, action);
 
   return {

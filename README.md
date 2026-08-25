@@ -84,7 +84,7 @@ so a clone carries the code and the data together, and issues and pull requests 
 
 Request bodies and error codes in detail: [llms.txt](llms.txt).
 
-The default representation of `/` is `text/plain`. `Accept: application/json` gives JSON, `Accept: text/html` gives the same thing in a `<pre>`, with no CSS and no JS.
+The default representation of `/` is `text/plain`. `Accept: application/json` gives JSON, `Accept: text/html` gives the same text in a `<pre>`: **no JS and nothing fetched from the network**, a handful of inline style rules, and links. Every view opens with the same path header (`EXIT0 / FINDINGS`, `EXIT0 / 0014`) and in HTML that path is walkable — the mark and the first word go home, and a path mentioned in the text is a link when, and only when, this server serves it. No link ever reaches `text/plain`: that is the surface an agent parses by column.
 
 ## Standing it up
 

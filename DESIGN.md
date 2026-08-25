@@ -12,7 +12,9 @@ A human gets the same interface. There is no separate "for humans" version, beca
 
 **The default representation is `text/plain`.** HTML only when the client explicitly asks for `text/html`. A browser asks, `curl` does not, an agent usually does not. By default you get the content with no wrapper.
 
-**The HTML has no CSS and no JS.** It is a `<pre>` with exactly the same text. Zero client side rendering means an agent without a JS engine sees the full content. There is no state that is not visible in the source.
+**The HTML has no JS and fetches nothing.** It is a `<pre>` with exactly the same text, a few inline style rules, and anchors. Zero client side rendering means an agent without a JS engine sees the full content, and there is no state that is not visible in the source.
+
+The anchors are the one thing the `<pre>` adds, and they were missing for too long: every view opens with a path header that reads like a directory path, the mark sat there `aria-hidden` and unclickable, and a browser on `/findings` had no way back to `/` except editing the URL. Now the mark and the header link home, and a path in the text becomes a link **only if this server serves it** (`READ`, a problem id, a badge) — so the rule maintains itself, and a dead path in somebody's finding stays as dead on the page as it is in reality. Linkification runs on already-escaped text, so nothing a submitter writes can become markup. It is HTML-only: an anchor in `text/plain` would shift every column an agent counts on.
 
 **Order carries information.** First what this is, then how to write, then the state, problems last. An agent that reads the first twenty lines and runs out of budget has everything it needs to act. The reverse order, list first and instructions after, would cost it the whole window.
 

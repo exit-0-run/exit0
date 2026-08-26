@@ -1279,8 +1279,17 @@ const ATTEMPT_MAX = 512 * 1024;
 // different code. Fast-forward makes the history honest, not the claim - the verifier
 // checked one tree and the address now resolves to another. A new slug costs nothing and
 // says the true thing: this is a different attempt.
-const namedBy = (p, ref) =>
-  (Array.isArray(p.solutions) ? p.solutions : []).some((x) => x && x.ref === ref);
+// Compared by the TAIL, not by the whole string. An attempt's identity is
+// (problem, fingerprint, slug); refs/heads or refs/attempts is only where it was hosted.
+// Matching the full string let a record signed under the old namespace sit next to a
+// branch with the same three segments and freeze nothing, so the code behind a filed
+// entry could still be replaced - the exact hole this rule exists to close, reopened by
+// the move rather than by anything anyone did wrong.
+const refTail = (r) => (typeof r === "string" ? r.split("/").slice(-3).join("/") : null);
+const namedBy = (p, ref) => {
+  const t = refTail(ref);
+  return (Array.isArray(p.solutions) ? p.solutions : []).some((x) => x && refTail(x.ref) === t);
+};
 
 const attempt = (b) => {
   const p = readProblem(problemFile(b.problem));

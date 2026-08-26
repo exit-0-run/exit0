@@ -1313,6 +1313,37 @@ if (gate.server)
       assert.equal(attemptsGit("rev-parse", r.json.ref), r.json.sha, "the frozen ref moved anyway");
     });
 
+    test("a record signed under the old namespace freezes the branch that replaced it", async () => {
+      // An attempt IS (problem, fingerprint, slug); the prefix is only where it was hosted.
+      // Two records in the registry were signed as refs/attempts/... before the move, and
+      // comparing whole strings meant the branch with the same three segments was not
+      // frozen by them - so the code behind a filed entry could still be swapped. The move
+      // reopened the hole this rule exists to close, which no test about prefixes catches.
+      const kC = mkKey();
+      const slug = "carried-over";
+      const oldRef = `refs/attempts/0001/${sg.fingerprint(kC.pub)}/${slug}`;
+      const problemPath = join(TREE, "problems", readdirSync(join(TREE, "problems")).find((f) => f.startsWith("0001-")));
+      const before = JSON.parse(readFileSync(problemPath, "utf8"));
+      // Written straight into the file: the point is a record that EXISTS under the old
+      // shape, which the write path now refuses to create, exactly as the two real ones do.
+      const rec = JSON.parse(JSON.stringify(before.solutions[0] ?? {}));
+      assert.ok(rec.sid, "0001 has no solution to model this on");
+      rec.ref = oldRef;
+      rec.sid = "f".repeat(16);
+      before.solutions.push(rec);
+      writeFileSync(problemPath, JSON.stringify(before, null, 2) + "\n");
+
+      const { buf } = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 1\n" });
+      const r = await send(kC, "0001", slug, buf);
+      is(r, 409, "pushing to the branch a pre-move record names");
+      assert.match(r.text, /frozen/);
+
+      // Put the tree back FROM HEAD, not by undoing the edit: a dirty registry is read-only
+      // mode (invariant 11) and every write test after this one would 503.
+      execFileSync("git", ["-C", TREE, "checkout", "-q", "HEAD", "--", "problems"], { stdio: "pipe" });
+      assert.equal(dirty(TREE), "", "the fixture left the registry tree dirty");
+    });
+
     test("a new solution cannot name the namespace attempts used to live in", async () => {
       const dead = `refs/attempts/0001/${sg.fingerprint(kA.pub)}/historical`;
       // It still PARSES - it has to, or build.mjs could not rebuild the payload of the two

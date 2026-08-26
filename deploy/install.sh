@@ -74,7 +74,7 @@ NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
 [ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null || die "node $("$NODE" -v): 20+ required"
 
 # --- 2. complete source; a copy missing any of these files is a dead service ---
-for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md .gitignore .gitattributes \
+for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md LICENSE .gitignore .gitattributes \
          problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md \
          deploy/watch.sh deploy/backup.sh "deploy/$WATCH.service" "deploy/$WATCH.timer" \
          deploy/mirror.sh "deploy/$MIRROR_UNIT.service" "deploy/$MIRROR_UNIT.timer"; do
@@ -153,7 +153,10 @@ cp -r "$SRC/scripts" "$SRC/deploy" "$SRC/assets" "$SRC/llms.txt" "$SRC/.gitignor
 # in the wrong language for a day while every other document was current. Copying it
 # before the build is safe, because step 8 regenerates the table and commits, so the tree
 # still comes out clean.
-for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md README.md; do
+# LICENSE is in this list and not in the "seed only" step below: the registry demands a
+# licence from every attempt it hosts, so shipping a deployment without one of its own is
+# the kind of inconsistency this project has no room for.
+for f in DESIGN.md CLAUDE.md QUICKSTART.md AGENTS.md README.md LICENSE; do
   if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$DIR/"; else echo "install: skipping missing document $f" >&2; fi
 done
 # _schema.json is the file contract, so it is code: build.mjs reads it and it must ship with the scripts.

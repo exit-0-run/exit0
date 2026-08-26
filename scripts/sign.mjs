@@ -10,6 +10,7 @@
 import { generateKeyPairSync, sign, verify, createPublicKey, createPrivateKey, createHash } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { isAbsolute } from "node:path";
 
 // The signature contract. A change here invalidates EVERY existing signature.
 export const PREFIX = "exit0/v2";
@@ -875,7 +876,11 @@ const cli = (argv) => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     writeFileSync(out, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
     const pub = pubToB64(publicKey);
-    console.log(`private key -> ./${out}   do NOT commit it, do not send it, do not show it`);
+    // "./" only when it helps. work.mjs calls keygen with an ABSOLUTE path, and prefixing
+    // that produced ".//private/tmp/..." on the first line a stranger ever sees from this
+    // tool - on the one path the whole registry is trying to get people to walk.
+    const shown = isAbsolute(out) || out.startsWith(".") ? out : `./${out}`;
+    console.log(`private key -> ${shown}   do NOT commit it, do not send it, do not show it`);
     console.log("public key:", pub);
     console.log("your name: ", fingerprint(pub));
     return;

@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-26",
+  "generated_at": "2026-08-27",
   "counts": {
-    "total": 19,
-    "open": 16,
+    "total": 20,
+    "open": 17,
     "solved": 1
   },
   "problems": [
@@ -678,6 +678,36 @@
         }
       ],
       "file": "problems/0019-smoke-entry-byte-size-of-a-pinned-file-w.json"
+    },
+    {
+      "id": "0020",
+      "title": "Halve the cold start of a widely used CLI, with byte-identical output",
+      "status": "open",
+      "domain": "infra",
+      "needs": [],
+      "problem": "A CLI that takes half a second to print its help spends that half second on every invocation, in every shell, in every CI step. Nobody profiles it because it is only startup, and most of it is module loading: work the tool does before it knows what it was asked to do.\nTake a public CLI that many people run and make it start twice as fast while printing exactly the same bytes.\nThe usual shortcuts are ruled out by the measurement rather than by trust. Printing less is caught because the output has to match byte for byte. Deferring work to a daemon or caching between runs is caught because every measured run is a fresh process, so anything you moved out of startup has to be paid by the run that needs it.",
+      "acceptance": {
+        "how": "Name in your README a public CLI, a pinned version, its upstream repository, and the exact argument vector you measure (for example --help, or --version, or a real invocation that does trivial work).\nYour repo runs `make bench`, which measures BOTH arms on the same machine in the same run and prints JSON: {speedup, ms_median, baseline_ms_median, runs, output_identical}.\nEach arm is at least 20 fresh processes. ms_median is the median wall time of one process from exec to exit, so nothing carries over between runs. The baseline arm is the untouched upstream CLI at the pinned version.\noutput_identical must be true: stdout and stderr of both arms, byte for byte, for the argument vector you named. If it is false the verdict is mismatch whatever the timing says, because a faster program that prints something else is a different program.\nA verifier clones, runs one command and sends speedup, which is baseline_ms_median divided by ms_median. The score is a RATIO and not milliseconds on purpose: milliseconds are a fact about the machine that ran them, so a verifier on other hardware would otherwise be forced to report a mismatch about nothing.",
+        "metric": "speedup - baseline_ms_median divided by ms_median, both arms from the same run",
+        "baseline": null,
+        "higher_is_better": true,
+        "tolerance": 0.15
+      },
+      "frontier": {
+        "best": null,
+        "best_score": null,
+        "claimed": null,
+        "claimed_score": null,
+        "attempts": 0,
+        "keys": 0,
+        "caveat": false
+      },
+      "opened_by": "d8f819414c0b",
+      "opened_at": "2026-08-27",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "h66aSPenS8fh3zmvMNFNK19Ag8NIDGv2LZJDp5aG+UwsC7ns/PjZr33bwG6BTsXb6cmAD2WcTLBWoJuefHQoAQ==",
+      "solutions": [],
+      "file": "problems/0020-halve-the-cold-start-of-a-widely-used-cl.json"
     }
   ]
 }

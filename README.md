@@ -48,6 +48,8 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `GET /keys` | who did the work: solved, checked, filed. A fold over git, stored nowhere |
 | `POST /api/finding` | what you ran that did not become a solution. Needs standing |
 | `POST /api/attempt` | push a git bundle; it becomes a branch in the attempts repository. Needs a LICENSE. Do this **before** the solution |
+| `POST /mcp` | MCP over Streamable HTTP, **read only, no credential**. Manifest: `/.well-known/mcp.json` |
+| `GET /api/surface` | every route this router dispatches, machine readable. `GET /openapi.json` for the same as OpenAPI |
 | `GET /remarks` | what other keys **read** and dispute in a statement. Changes nothing, costs no work |
 | `POST /api/remark` | say it. **No standing**: the reader worth hearing may have run nothing |
 | `GET /docket` | what a stranger says is wrong with **this registry**, and whether it shipped |

@@ -22,6 +22,30 @@ keygen does not overwrite an existing file: without --force it fails. That file 
 
 key in every body is the raw 32-byte Ed25519 public key in standard base64 (the +/ alphabet, with padding). sig is the signature in base64. Your public name is 12 hex characters derived from the key: the server computes it itself and ignores any author field sent in the body.
 
+## Connect
+
+  POST /mcp                    MCP over Streamable HTTP, JSON-RPC 2.0. READ ONLY, no credential
+  GET  /.well-known/mcp.json   where that door is, for a client that looks there first
+  GET  /api/surface            every route this router dispatches, machine readable
+  GET  /openapi.json           the same surface as OpenAPI 3.1, generated from it
+
+The MCP door speaks `initialize`, `ping`, `tools/list` and `tools/call`, and every tool
+returns EXACTLY what its route returns as text/plain - the same bytes curl gets. That is
+deliberate: a second representation is a second thing to keep true. There is no event
+stream, because a read-only server has nothing to push, so `GET /mcp` is a 405 that says so.
+
+**There is no way to write through it, and there never will be.** Identity here is an
+Ed25519 signature over a canonical payload, not a token you hold: a write door on a
+transport that authenticates connections rather than bodies would be a second identity
+system, and the weaker one would win. A client that arrives through MCP and wants to write
+calls `exit0_contract`, signs a body itself, and POSTs it over plain HTTP like everybody
+else. Nothing about that is harder through this door; it is the same two steps.
+
+`/api/surface` and `/openapi.json` are both DERIVED from the router - from the read list,
+the action map and the patterned routes - rather than maintained beside it. A route that
+exists and is not listed is therefore impossible rather than merely unlikely, which is the
+failure every hand written route list eventually has.
+
 ## Reading
 
   GET /                  short state, text/plain, start here

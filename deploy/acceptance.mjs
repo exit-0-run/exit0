@@ -312,6 +312,36 @@ check("a finding from a key with nothing behind it is refused", [400, 401, 403].
     `HTTP ${idx.status}: ${idx.text.slice(0, 300)}`);
 }
 
+// The doors a client looks for before it looks at prose. Checked on the DEPLOYMENT because
+// the manifest and the OpenAPI servers[] are built from the Host the caller used, and a
+// reverse proxy is exactly what gets that wrong: behind Caddy without x-forwarded-proto
+// they come back http:// on an https site and every client following them fails.
+{
+  const surface = await hit("/api/surface", { headers: { accept: "application/json" } });
+  check("/api/surface lists the routes, with no blank summaries",
+    surface.status === 200 && (surface.json?.routes ?? []).length > 20 && (surface.json?.routes ?? []).every((r) => r.summary),
+    `HTTP ${surface.status}: ${surface.text.slice(0, 200)}`);
+
+  const oa = await hit("/openapi.json", { headers: { accept: "application/json" } });
+  check("/openapi.json is 3.1 and names THIS deployment as its server",
+    oa.status === 200 && oa.json?.openapi === "3.1.0" && String(oa.json?.servers?.[0]?.url ?? "") === BASE.replace(/\/$/, ""),
+    `HTTP ${oa.status}, servers[0]=${JSON.stringify(oa.json?.servers?.[0]?.url)} against BASE=${BASE}`);
+
+  const wk = await hit("/.well-known/mcp.json", { headers: { accept: "application/json" } });
+  check("/.well-known/mcp.json points at this deployment's /mcp over the scheme it was reached on",
+    wk.status === 200 && String(wk.json?.transport?.url ?? "") === `${BASE.replace(/\/$/, "")}/mcp` && wk.json?.authentication?.type === "none",
+    `HTTP ${wk.status}: ${wk.text.slice(0, 200)}`);
+
+  const rpc = (body) => hit("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  check("MCP: initialize answers and declares tools", init.status === 200 && !!init.json?.result?.capabilities?.tools, `HTTP ${init.status}: ${init.text.slice(0, 200)}`);
+  const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  check("MCP: tools/list returns tools, all described", (list.json?.result?.tools ?? []).length >= 10 && (list.json?.result?.tools ?? []).every((t) => t.description), `${(list.json?.result?.tools ?? []).length} tools`);
+  const call = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "exit0_work" } });
+  const direct = await hit("/work", { headers: { accept: "text/plain" } });
+  check("MCP: a tool returns exactly what its route returns", call.json?.result?.content?.[0]?.text === direct.text, "the MCP door and the HTTP route disagree, so there are two renderings to keep in step");
+}
+
 const front = await hit("/", { headers: { accept: "text/plain" } });
 check("the front door advertises the board, the finding route and the remark route", /GET \/keys/.test(front.text) && /\/api\/finding/.test(front.text) && /\/api\/remark/.test(front.text), front.text.slice(0, 400));
 

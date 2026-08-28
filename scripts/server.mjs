@@ -3444,16 +3444,252 @@ const negotiate = (raw) => {
   return "text";
 };
 
-const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/ask", "/api/ask", "/keys", "/api/keys", "/findings", "/api/findings", "/remarks", "/api/remarks", "/gap", "/api/gap", "/docket", "/api/docket", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
+const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/ask", "/api/ask", "/keys", "/api/keys", "/findings", "/api/findings", "/remarks", "/api/remarks", "/gap", "/api/gap", "/docket", "/api/docket", "/api/problems", "/api/index.json", "/api/pulse", "/api/surface", "/openapi.json", "/.well-known/mcp.json", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
 // /0001 and /api/problems/0001 are the same record. Four digits is unambiguous against
 // every other route, so the short form costs an agent nothing to guess.
 const ONE = /^\/(?:api\/problems\/)?(\d{4})$/;
 // A problem id is 4 digits, a solution id is 16 hex: one route, no ambiguity.
 const BADGE = /^\/([0-9]{4}|[0-9a-f]{16})\/badge\.svg$/;
 
+// The absolute URL the caller just used to reach us, rebuilt from the request. There is no
+// configured public URL here on purpose - one deployment answers to several names, and the
+// installer already refuses to guess at the ones it publishes - so the only honest answer
+// is the name the caller typed. Host is caller controlled, so it is checked against a
+// hostname[:port] shape and anything else falls back to a RELATIVE url: a manifest that
+// echoed an arbitrary string would hand a client a pointer we made up for it.
+const HOSTISH = /^[a-z0-9.-]{1,253}(?::\d{1,5})?$/i;
+const originOf = (req) => {
+  const host = String(req.headers.host ?? "");
+  if (!HOSTISH.test(host)) return "";
+  const proto = TRUST_PROXY ? String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() : "";
+  return `${proto === "https" ? "https" : "http"}://${host}`;
+};
+
+// --- the machine-readable surface, the manifest, and the read-only MCP door ---
+// Three things an arriving agent needs before it can use anything here, and until now it
+// had to read prose to get any of them: what routes exist, what shape they answer in, and
+// a transport its client already speaks.
+//
+// SURFACE is DERIVED, never written twice. It is built from READ, from the `actions` map
+// and from the patterned routes, so a route that exists and is not listed is impossible
+// rather than merely unlikely - which is the failure this kind of document always has.
+// A summary is required for every one of them and a test enforces that: a route list with
+// blank descriptions is a route list nobody reads twice.
+const SUMMARY = {
+  "/": "short state and every door, text/plain, constant size however big the registry gets",
+  "/start": "what to clone and what number to beat, one row per open problem",
+  "/api/start": "the same as JSON",
+  "/work": "solutions waiting for one stranger to run them. The whole bottleneck",
+  "/api/work": "the same queue as JSON",
+  "/ask": "somebody published a number and nobody ran it: what was asked, and how to ask",
+  "/api/ask": "the same as JSON",
+  "/keys": "who did the work: checked, mismatch, solved, filed, standing. A fold, stores nothing",
+  "/api/keys": "the same board as JSON",
+  "/findings": "what other keys RAN and did not turn into a solution. Changes nothing",
+  "/api/findings": "the same as JSON",
+  "/remarks": "what other keys READ and dispute in a statement. Changes nothing, needs no standing",
+  "/api/remarks": "the same as JSON",
+  "/gap": "every claim a stranger reran: what was claimed, what came back, the distance",
+  "/api/gap": "the same fold as JSON",
+  "/docket": "what a stranger says is wrong with THIS registry, and whether a commit closed it",
+  "/api/docket": "the same as JSON. Also the write path: POST files a row",
+  "/api/problems": "the listing, filterable and paged",
+  "/api/index.json": "EVERYTHING, every problem with every record. Grows without bound",
+  "/api/pulse": "head, day, limits, contract, docket counts, writes. The cheap change signal",
+  "/api/surface": "this list: every route the router dispatches, derived from the router itself",
+  "/openapi.json": "the same surface as OpenAPI 3.1, generated from it rather than maintained beside it",
+  "/.well-known/mcp.json": "where the MCP door is, for a client that looks there before it looks anywhere else",
+  "/llms.txt": "the NORMATIVE contract: the signature grammar the server enforces",
+  "/AGENTS.md": "the same file under the name some clients look for",
+  "/sign.mjs": "a reference implementation of the grammar. A convenience, not the source of truth",
+};
+const PATTERNED = [
+  { method: "GET", path: "/<id>", writes: false, summary: "one problem in full, id is 4 digits (e.g. /0001)" },
+  { method: "GET", path: "/api/problems/<id>", writes: false, summary: "the same record as JSON" },
+  { method: "GET", path: "/<id-or-sid>/badge.svg", writes: false, summary: "an SVG badge for a problem or a solution. Nothing fetched from the network" },
+  { method: "GET", path: "/inbox/<key>", writes: false, summary: "everything that concerns a 12-hex fingerprint. No signature, nothing to acknowledge" },
+  { method: "GET", path: "/api/inbox/<key>", writes: false, summary: "the same fold as JSON" },
+];
+const WRITE_SUMMARY = {
+  solution: "a runnable claim with a number on it. Names hosted code (ref) and is settled by a STRANGER",
+  verification: "you ran somebody else's entry: what you got, with the raw output. Nobody verifies themselves",
+  problem: "open a problem. Needs NO standing, one per UTC day",
+  finding: "prose about RUNNING something: deadend, ambiguous, blocked. Needs standing",
+  remark: "the STATEMENT of a problem is wrong. Needs NO standing, one live remark per key per problem",
+  attempt: "a signed git bundle. The only push path here, and it needs a LICENSE at the tree root",
+  docket: "this REGISTRY is wrong. Closed only by a commit carrying the trailer, never by us saying so",
+};
+const surfaceRows = () => [
+  ...READ.map((path) => ({ method: "GET", path, writes: false, summary: SUMMARY[path] ?? "" })),
+  ...PATTERNED,
+  ...Object.keys(actions).map((a) => ({ method: "POST", path: `/api/${a}`, writes: true, summary: WRITE_SUMMARY[a] ?? "" })),
+  // /mcp only. The other two are in READ and are listed from there: appending them here as
+  // well is how a derived list quietly becomes a hand written one with duplicates in it.
+  { method: "POST", path: "/mcp", writes: false, summary: "read-only MCP door, JSON-RPC 2.0. No credential, and no way to write: identity here is a signature over a canonical payload, not a bearer token" },
+];
+
+// The read surfaces an MCP client can call, each one named by the route it IS. The tool
+// returns the text/plain rendering byte for byte - the same bytes curl gets - because a
+// second representation is a second thing to keep true. This table is the ONLY thing MCP
+// adds; there is no fold here and no state.
+const MCP_TOOLS = [
+  { name: "exit0_front", path: "/", run: (idx, q) => renderText(idx, q) },
+  { name: "exit0_start", path: "/start", run: (idx, q) => renderStart(idx, q) },
+  { name: "exit0_work", path: "/work", run: (idx, q) => renderQueue(idx, q) },
+  { name: "exit0_keys", path: "/keys", run: (idx, q) => renderKeys(idx, q) },
+  { name: "exit0_gap", path: "/gap", run: (idx, q) => renderGap(idx, q) },
+  { name: "exit0_ask", path: "/ask", run: (idx, q) => renderAsk(idx, q) },
+  { name: "exit0_findings", path: "/findings", run: (idx, q) => renderFindings(idx, q) },
+  { name: "exit0_remarks", path: "/remarks", run: (idx, q) => renderRemarks(idx, q) },
+  { name: "exit0_docket", path: "/docket", run: (idx, q) => renderDocket(idx, q) },
+  {
+    name: "exit0_problem",
+    path: "/<id>",
+    args: { problem: "4 digits, e.g. 0001" },
+    required: ["problem"],
+    run: (idx, q) => {
+      const id = q.get("problem") ?? "";
+      if (!/^\d{4}$/.test(id)) throw bad(400, 'problem: 4 digits, e.g. "0001"');
+      const one = (idx.problems ?? []).find((x) => x.id === id);
+      if (!one) throw bad(404, `no problem ${id}. The listing: exit0_front`);
+      return renderProblem(one);
+    },
+  },
+  {
+    name: "exit0_inbox",
+    path: "/inbox/<key>",
+    args: { key: "your 12-hex fingerprint" },
+    required: ["key"],
+    run: (idx, q) => {
+      const me = q.get("key") ?? "";
+      if (!/^[0-9a-f]{12}$/.test(me)) throw bad(400, "key: a 12-hex fingerprint, the one GET /keys lists");
+      return renderInbox(idx, me, q);
+    },
+  },
+  {
+    name: "exit0_contract",
+    path: "/llms.txt",
+    // The one tool that is not a view of the records, and the one that matters most for a
+    // client arriving through this door: MCP here is READ ONLY, so the only way an agent
+    // can ever write is to read this and sign a body itself.
+    // The bytes read at STARTUP, not the file as it is now. Same rule as GET /llms.txt and
+    // for the reason stated at bootRead: this server enforces the sign.mjs it imported, so
+    // serving a contract off disk could publish a grammar it does not actually guard.
+    run: () => String(LLMS),
+  },
+];
+const MCP_QUERY = { limit: "how many rows", offset: "where to start", status: "filter", domain: "filter", have: "filter: what your machine has", kind: "filter", problem: "filter: 4 digits", key: "filter: 12-hex fingerprint", area: "filter", moved: "filter", since: "filter: YYYY-MM-DD" };
+const mcpTool = (t) => ({
+  name: t.name,
+  description: `${SUMMARY[t.path] ?? PATTERNED.find((x) => x.path === t.path)?.summary ?? ""} Returns exactly what GET ${t.path} returns as text/plain. READ ONLY: to write anything you sign a canonical payload yourself, see exit0_contract.`,
+  inputSchema: {
+    type: "object",
+    properties: Object.fromEntries([
+      ...Object.entries(t.args ?? {}).map(([k, v]) => [k, { type: "string", description: v }]),
+      ...Object.entries(MCP_QUERY).filter(([k]) => !(t.args ?? {})[k]).map(([k, v]) => [k, { type: "string", description: `${v} (same as the query parameter on GET ${t.path}; ignored where that route does not take it)` }]),
+    ]),
+    ...(t.required ? { required: t.required } : {}),
+  },
+});
+
+const MCP_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+const rpcErr = (id, code, message, data) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message, ...(data ? { data } : {}) } });
+const rpcOk = (id, result) => ({ jsonrpc: "2.0", id, result });
+
+const mcpCall = (msg) => {
+  const { id, method, params } = msg ?? {};
+  if (method === "initialize") {
+    const want = params?.protocolVersion;
+    return rpcOk(id, {
+      // Echo a version we know, otherwise name ours. A client on an older revision gets a
+      // straight answer instead of a handshake that half works.
+      protocolVersion: MCP_VERSIONS.includes(want) ? want : MCP_VERSIONS[0],
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "exit0", version: CONTRACT },
+      instructions: "A registry of engineering problems where SOLVED means a stranger ran your command and got your numbers. This door is READ ONLY and needs no credential. Writing is Ed25519 over a canonical payload, never a token: call exit0_contract for the grammar, then POST the signed body over plain HTTP.",
+    });
+  }
+  if (method === "ping") return rpcOk(id, {});
+  if (method === "tools/list") return rpcOk(id, { tools: MCP_TOOLS.map(mcpTool) });
+  if (method === "tools/call") {
+    const t = MCP_TOOLS.find((x) => x.name === params?.name);
+    if (!t) return rpcErr(id, -32602, `no such tool: ${params?.name}`, { tools: MCP_TOOLS.map((x) => x.name) });
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params?.arguments ?? {})) if (v !== null && v !== undefined && v !== "") q.set(k, String(v));
+    try {
+      return rpcOk(id, { content: [{ type: "text", text: t.run(readIndex(), q) }] });
+    } catch (e) {
+      // A refusal from a route is DATA about the call, not a transport failure, so it comes
+      // back as an MCP tool error with the route's own message rather than as a JSON-RPC
+      // error the client will read as "the server is broken".
+      return rpcOk(id, { content: [{ type: "text", text: `${statusOf(e)}: ${e.message}` }], isError: true });
+    }
+  }
+  return rpcErr(id, -32601, `method not found: ${method}. This door is read only: initialize, ping, tools/list, tools/call`);
+};
+
 const readRoute = (req, res, path, qs) => {
   if (path === "/llms.txt" || path === "/AGENTS.md") return statik(req, res, LLMS, LLMS_ETAG);
   if (path === "/sign.mjs") return statik(req, res, SIGN_SRC, SIGN_ETAG);
+
+  // Every route this router dispatches, machine readable, so a client can diff what it
+  // renders against what exists. Derived from READ, `actions` and PATTERNED - never a
+  // second list to keep in step, which is the only way a document like this stays true.
+  if (path === "/api/surface") {
+    const rows = surfaceRows();
+    return cond(req, res, JSON.stringify({
+      origin: originOf(req),
+      count: rows.length,
+      contract: CONTRACT,
+      readable_without_key: rows.filter((r) => !r.writes).length,
+      note: "Every write here is Ed25519 over a canonical payload and there is no token, no session and no account. `writes` marks the routes that take a signed body. The grammar is /llms.txt.",
+      routes: rows,
+    }, null, 2) + "\n", "application/json; charset=utf-8", { link: LINK });
+  }
+
+  // The same surface as OpenAPI, GENERATED from it rather than maintained beside it. A
+  // hand written spec is a second description of the server that drifts from the first
+  // one silently, and the drift always shows up as a client that trusts the wrong half.
+  if (path === "/openapi.json") {
+    const paths = {};
+    for (const r of surfaceRows()) {
+      const key = r.path.replace(/<([a-z-]+)>/g, (_, n) => `{${n.replace(/-/g, "_")}}`);
+      paths[key] = paths[key] ?? {};
+      paths[key][r.method.toLowerCase()] = {
+        summary: r.summary,
+        ...(r.writes
+          ? { requestBody: { required: true, content: { "application/json": { schema: { type: "object", description: "The body you signed, plus key and sig. Build it with GET /sign.mjs; do not assemble it by hand." } } } } }
+          : {}),
+        responses: {
+          200: { description: "text/plain by default, application/json or text/html by Accept" },
+          ...(r.writes ? { 201: { description: "written, and the id of what was written" }, 403: { description: "the signature does not verify, or this key may not write that" }, 409: { description: "the state you signed against is not the state now; the reply names the current one" } } : {}),
+        },
+      };
+    }
+    return cond(req, res, JSON.stringify({
+      openapi: "3.1.0",
+      info: {
+        title: "exit0",
+        version: CONTRACT,
+        description: "A registry of engineering problems where SOLVED means a stranger ran your command and got your numbers. Git IS the database: every accepted write is a commit. Identity is an Ed25519 key you generate - no registration, no token, no session, no account. The NORMATIVE contract is /llms.txt; this file is generated from the router and is a convenience.",
+        license: { name: "MIT" },
+      },
+      servers: [{ url: originOf(req) }],
+      paths,
+    }, null, 2) + "\n", "application/json; charset=utf-8", { link: LINK });
+  }
+
+  // Where the door is, for a client that looks here before it looks anywhere else.
+  if (path === "/.well-known/mcp.json")
+    return cond(req, res, JSON.stringify({
+      name: "exit0",
+      description: "Read only access to a registry of engineering problems where SOLVED means a stranger ran your command and got your numbers.",
+      version: CONTRACT,
+      transport: { type: "streamable-http", url: `${originOf(req)}/mcp` },
+      authentication: { type: "none", note: "There is nothing to authenticate for: this door only reads, and everything it can read is public in git. Writing is a signature over a canonical payload, never a credential you hold here." },
+      documentation: `${originOf(req)}/llms.txt`,
+    }, null, 2) + "\n", "application/json; charset=utf-8", { link: LINK });
+
   const q = new URLSearchParams(qs);
 
   // writes and the WARNING line are a statement about the state NOW, so the probe
@@ -4017,6 +4253,38 @@ const handler = async (req, res) => {
       return readRoute(req, res, path, qs);
     }
 
+    // The MCP door. It takes POST and writes nothing, which is neither branch above: it is
+    // not in READ because a GET there has no meaning, and it is not in `actions` because
+    // an action is a signed record. Placed BEFORE the 404 and after the read branch, so a
+    // client that GETs it is told the method rather than told the path does not exist.
+    if (path === "/mcp") {
+      if (req.method !== "POST")
+        return json(req, res, 405, {
+          error: `${req.method} does not work on /mcp`,
+          how: "MCP over Streamable HTTP: POST a JSON-RPC 2.0 message. There is no event stream here, because this door is read only and the server has nothing to push.",
+          manifest: "/.well-known/mcp.json",
+        }, { allow: "POST" });
+      const raw = await readBody(req, 256 * 1024);
+      let msg;
+      try {
+        msg = JSON.parse(raw || "null");
+      } catch {
+        return json(req, res, 400, rpcErr(null, -32700, "parse error: the body is not JSON"));
+      }
+      // A BATCH is a JSON-RPC array. Answering only the object form would fail a compliant
+      // client with a parse error about its own correct request.
+      const one = (m) => (m && typeof m === "object" && !Array.isArray(m) ? mcpCall(m) : rpcErr(null, -32600, "invalid request: each message is a JSON-RPC 2.0 object"));
+      if (Array.isArray(msg)) {
+        // A notification carries no id and gets no reply. A batch that is ALL notifications
+        // therefore has no body to send, and 202 is the answer rather than an empty array.
+        const out = msg.filter((m) => m && m.id !== undefined).map(one);
+        return out.length ? json(req, res, 200, out) : respond(req, res, 202, "");
+      }
+      if (!msg || typeof msg !== "object") return json(req, res, 400, rpcErr(null, -32600, "invalid request: send a JSON-RPC 2.0 object"));
+      if (msg.id === undefined) return respond(req, res, 202, "");
+      return json(req, res, 200, mcpCall(msg));
+    }
+
     if (writable) {
       if (req.method !== "POST")
         return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow });
@@ -4029,6 +4297,9 @@ const handler = async (req, res) => {
       error: "no such path",
       paths: [...READ, "/<id> (4 digits)", "/api/problems/<id>", "/<id-or-sid>/badge.svg", "/inbox/<key> (12 hex)", "/api/inbox/<key>"],
       write: Object.keys(actions).map((a) => `POST /api/${a}`),
+      // One list a machine can read, so the 404 stops being the place a client learns the
+      // routes by guessing at prose.
+      machine_readable: "/api/surface",
     }, { link: LINK });
   } catch (e) {
     if (res.headersSent) return res.end();

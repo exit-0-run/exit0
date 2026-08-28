@@ -4455,6 +4455,177 @@ const shipRow = (dir, rid, subject) => {
 };
 
 if (gate.server)
+  describe("the machine-readable surface and the read-only MCP door", () => {
+    // The point of /api/surface is that it is DERIVED. A hand written route list is a
+    // second description of the server, and the second one is always the one that is
+    // wrong. So the test is not "the list matches a literal" - it is "everything the
+    // router dispatches is in it, and everything in it answers".
+    test("/api/surface lists every route, with no blanks and no duplicates", async () => {
+      const r = await hit(SRV, { path: "/api/surface" });
+      is(r, 200, "GET /api/surface");
+      const rows = r.json?.routes ?? [];
+      assert.ok(rows.length > 20, `only ${rows.length} routes listed`);
+      assert.equal(rows.length, r.json.count, "count disagrees with the rows beside it");
+      const seen = new Set();
+      for (const row of rows) {
+        const k = `${row.method} ${row.path}`;
+        assert.ok(!seen.has(k), `${k} is listed twice, so the list is being maintained by hand somewhere`);
+        seen.add(k);
+        assert.ok(row.summary, `${k} has no summary: a route list with blanks is one nobody reads twice`);
+      }
+      // Every WRITE the server accepts has to be here, or an agent reading this cannot
+      // discover half the registry.
+      const srv = readFileSync(join(ROOT, "scripts/server.mjs"), "utf8");
+      const acts = (srv.match(/const actions = Object\.assign\(Object\.create\(null\), \{([^}]+)\}/) ?? [])[1] ?? "";
+      for (const a of acts.split(",").map((x) => x.trim()).filter(Boolean))
+        assert.ok(seen.has(`POST /api/${a}`), `POST /api/${a} is an action the server takes and /api/surface does not list it`);
+      // And every listed GET without a placeholder has to actually answer.
+      for (const row of rows.filter((x) => x.method === "GET" && !x.path.includes("<"))) {
+        const got = await hit(SRV, { path: row.path });
+        assert.ok(got.status === 200, `/api/surface lists GET ${row.path} and it answers ${got.status}`);
+      }
+    });
+
+    test("/openapi.json is generated from the same surface, not maintained beside it", async () => {
+      const r = await hit(SRV, { path: "/openapi.json" });
+      is(r, 200, "GET /openapi.json");
+      assert.equal(r.json?.openapi, "3.1.0");
+      assert.ok(r.json?.info?.version, "no version, so a client cannot tell two contracts apart");
+      const surface = (await hit(SRV, { path: "/api/surface" })).json.routes;
+      for (const row of surface) {
+        const key = row.path.replace(/<([a-z-]+)>/g, (_, n) => `{${n.replace(/-/g, "_")}}`);
+        assert.ok(r.json.paths[key], `${row.method} ${row.path} is on the surface and missing from the OpenAPI document`);
+        assert.ok(r.json.paths[key][row.method.toLowerCase()], `${key} has no ${row.method} in the OpenAPI document`);
+      }
+      // The one thing a generated spec must not claim: that you can write with a token.
+      // Checked STRUCTURALLY. A text search fails on its own explanation - the summary for
+      // /mcp says "not a bearer token", and a grep cannot tell that from declaring one.
+      assert.ok(!r.json.components?.securitySchemes, "the OpenAPI document declares a security scheme, and there is no credential here: writing is a signature");
+      assert.ok(!r.json.security, "the OpenAPI document declares global security");
+      for (const [path, ops] of Object.entries(r.json.paths))
+        for (const [m, op] of Object.entries(ops))
+          assert.ok(!op.security, `${m.toUpperCase()} ${path} declares security, and this registry has no credential to declare`);
+    });
+
+    test("/.well-known/mcp.json points at the door and says there is nothing to authenticate", async () => {
+      const r = await hit(SRV, { path: "/.well-known/mcp.json" });
+      is(r, 200, "GET /.well-known/mcp.json");
+      assert.match(String(r.json?.transport?.url ?? ""), /\/mcp$/, "the manifest does not point at /mcp");
+      assert.equal(r.json?.authentication?.type, "none", "the manifest claims a credential this door does not have");
+    });
+
+    test("MCP: initialize, ping, tools/list, and a call returns the route's own bytes", async () => {
+      const rpc = (body) => hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+      const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+      is(init, 200, "initialize");
+      assert.equal(init.json?.result?.protocolVersion, "2025-06-18", "the server did not echo a protocol version it supports");
+      assert.ok(init.json?.result?.capabilities?.tools, "no tools capability, so a client will not call tools/list");
+      assert.match(String(init.json?.result?.instructions ?? ""), /READ ONLY/, "the handshake does not say the door is read only");
+
+      is(await rpc({ jsonrpc: "2.0", id: 2, method: "ping" }), 200, "ping");
+
+      const list = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list" });
+      const tools = list.json?.result?.tools ?? [];
+      assert.ok(tools.length >= 10, `only ${tools.length} tools`);
+      for (const t of tools) {
+        assert.ok(t.description, `${t.name} has no description`);
+        assert.equal(t.inputSchema?.type, "object", `${t.name} has no object input schema`);
+      }
+
+      // The tool returns EXACTLY what the route returns. A second representation is a
+      // second thing to keep true, and this is the assertion that stops one appearing.
+      const call = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "exit0_work" } });
+      const text = call.json?.result?.content?.[0]?.text ?? "";
+      const direct = await hit(SRV, { path: "/work" });
+      assert.equal(text, direct.text, "the MCP tool and GET /work disagree, so there are now two renderings to keep in step");
+
+      const one = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "exit0_problem", arguments: { problem: "0001" } } });
+      assert.match(one.json?.result?.content?.[0]?.text ?? "", /^EXIT0 \/ 0001/, "exit0_problem did not return the problem page");
+    });
+
+    // A refusal from a route is DATA about the call. Returned as a JSON-RPC error it reads
+    // as "the server is broken" and a client gives up; as an isError result it reads as
+    // "you asked for something that is not there", which is what happened.
+    test("MCP: a refused call is an isError result carrying the route's own message", async () => {
+      const rpc = (body) => hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const gone = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "exit0_problem", arguments: { problem: "9999" } } });
+      is(gone, 200, "a call for a problem that does not exist");
+      assert.equal(gone.json?.result?.isError, true, "a missing problem came back as a success");
+      assert.match(gone.json?.result?.content?.[0]?.text ?? "", /404/, "the error text does not carry the status the route refused with");
+      assert.ok(!gone.json?.error, "a routing refusal was reported as a JSON-RPC transport error");
+
+      const nope = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "exit0_delete_everything" } });
+      assert.equal(nope.json?.error?.code, -32602, "an unknown tool is not an invalid-params error");
+      assert.ok((nope.json?.error?.data?.tools ?? []).length, "the refusal does not name the tools that do exist");
+    });
+
+    test("MCP: notifications get 202, batches are answered, GET is a 405 that says how", async () => {
+      const rpc = (body) => hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const note = await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
+      assert.equal(note.status, 202, "a notification got a body, and it has no id to answer");
+      assert.equal(note.text, "", "202 carried a body");
+
+      const batch = await rpc([{ jsonrpc: "2.0", id: 1, method: "ping" }, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
+      is(batch, 200, "a JSON-RPC batch");
+      assert.equal((batch.json ?? []).length, 2, "a compliant batch was not answered elementwise");
+
+      const allNotes = await rpc([{ jsonrpc: "2.0", method: "notifications/initialized" }]);
+      assert.equal(allNotes.status, 202, "a batch of only notifications got a body");
+
+      const get = await hit(SRV, { path: "/mcp" });
+      assert.equal(get.status, 405, "GET /mcp is not a 405");
+      assert.match(String(get.json?.how ?? ""), /JSON-RPC/, "the 405 does not say how to talk to this door");
+
+      const junk = await hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: "{oh no" });
+      assert.equal(junk.status, 400, "malformed JSON is not a 400");
+      assert.equal(junk.json?.error?.code, -32700, "malformed JSON is not a JSON-RPC parse error");
+    });
+
+    // The property that makes this door safe to leave open: it cannot write. If a tool
+    // ever maps onto an action, the credential-free door has become a way to submit
+    // records without one, and identity here stops being a signature.
+    test("MCP is READ ONLY: no tool touches a write path, and the methods that would are absent", async () => {
+      const rpc = (body) => hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const tools = (await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })).json.result.tools;
+      const writes = (await hit(SRV, { path: "/api/surface" })).json.routes.filter((r) => r.writes).map((r) => r.path);
+      assert.ok(writes.length, "the surface reports no write routes, so this test proved nothing");
+      // Compared by PATH, not by name. "exit0_findings" contains "finding" and reads as a
+      // hit on POST /api/finding to a substring check, which is how a guard starts crying
+      // wolf and then gets loosened until it guards nothing.
+      const srv = readFileSync(join(ROOT, "scripts/server.mjs"), "utf8");
+      const toolBlock = srv.slice(srv.indexOf("const MCP_TOOLS"), srv.indexOf("const MCP_QUERY"));
+      const toolPaths = [...toolBlock.matchAll(/path: "([^"]+)"/g)].map((m) => m[1]);
+      assert.equal(toolPaths.length, tools.length, "could not read every tool's route out of the source");
+      for (const tp of toolPaths) assert.ok(!writes.includes(tp), `an MCP tool serves ${tp}, which is a write route, and this door has no credential`);
+      for (const t of tools) assert.ok(!/^POST /m.test(t.description), `${t.name} describes itself as a POST`);
+      const mcpBlock = srv.slice(srv.indexOf("const mcpCall"), srv.indexOf("const readRoute"));
+      assert.ok(!/doWrite|withWriteLock|writeAtomic/.test(mcpBlock), "the MCP dispatcher reaches the write path");
+      // The one tool that is not a view of the records exists so a client arriving here
+      // can still learn to write - by signing a body itself, over plain HTTP.
+      const contract = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "exit0_contract" } });
+      assert.match(contract.json?.result?.content?.[0]?.text ?? "", /NORMATIVE/, "exit0_contract does not return the contract");
+    });
+
+    // The drift guard. A text surface added to READ and not given a tool is invisible to
+    // every client that arrives through this door, and nothing else would ever say so.
+    test("every text surface in READ has an MCP tool", async () => {
+      const tools = new Set(((await hit(SRV, { path: "/mcp", method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) })).json.result.tools ?? []).map((t) => t.description));
+      const srv = readFileSync(join(ROOT, "scripts/server.mjs"), "utf8");
+      // Scoped to the tool table and not to a one-line shape: two of the entries are
+      // multi-line because they take arguments, and a regex that assumed `path` and `run`
+      // sat on one line reported them as uncovered while they were right there.
+      const toolBlock = srv.slice(srv.indexOf("const MCP_TOOLS"), srv.indexOf("const MCP_QUERY"));
+      const covered = new Set([...toolBlock.matchAll(/path: "([^"]+)"/g)].map((m) => m[1]));
+      const missing = (await hit(SRV, { path: "/api/surface" })).json.routes
+        .filter((r) => r.method === "GET" && !r.writes && !r.path.startsWith("/api/") && !r.path.includes("badge") && !r.path.startsWith("/.well-known") && r.path !== "/openapi.json" && r.path !== "/sign.mjs" && r.path !== "/AGENTS.md")
+        .map((r) => (r.path === "/inbox/<key>" ? "/inbox/<key>" : r.path))
+        .filter((path) => !covered.has(path));
+      assert.deepEqual(missing, [], `text surfaces with no MCP tool: ${missing.join(", ")}`);
+      assert.ok(tools.size, "no tool descriptions");
+    });
+  });
+
   describe("remarks: the door for a reader who never ran anything", () => {
     // The premise of the whole record. Every other write here assumes you measured
     // something, and the reader who has only READ - and who can see that the metric counts

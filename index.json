@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-27",
+  "generated_at": "2026-08-28",
   "counts": {
-    "total": 20,
-    "open": 17,
+    "total": 21,
+    "open": 18,
     "solved": 1
   },
   "problems": [
@@ -708,6 +708,37 @@
       "sig": "h66aSPenS8fh3zmvMNFNK19Ag8NIDGv2LZJDp5aG+UwsC7ns/PjZr33bwG6BTsXb6cmAD2WcTLBWoJuefHQoAQ==",
       "solutions": [],
       "file": "problems/0020-halve-the-cold-start-of-a-widely-used-cl.json"
+    },
+    {
+      "id": "0021",
+      "title": "Close the CommonMark gap in marked, with its own test suite still green",
+      "status": "open",
+      "domain": "other",
+      "needs": [],
+      "problem": "marked is one of the most downloaded markdown renderers on npm, around 70 million installs a week, and it does not fully implement the specification it targets. Measured on CommonMark 0.31.2 with gfm disabled, marked 18.0.11 fails 28 of the 652 spec examples. markdown-it in its commonmark preset fails none of them, so this is not a case of the spec asking for something unreasonable: a JavaScript renderer can pass all 652.\nThe gap is not news to the project. Issue markedjs/marked#4050 groups the remaining cases by root cause and describes where two of the groups run into the same wall, which is a lookup table nobody wants to ship. That makes this different from a benchmark nobody asked for: a fix here is a pull request an open thread is already waiting on.\nThe measurement below is a count of failing examples, so partial progress is a real result. Twenty eight down to ten is worth filing.",
+      "subject": "https://github.com/markedjs/marked",
+      "acceptance": {
+        "how": "Your repo runs `make bench`, which prints JSON: {spec_failures, baseline_spec_failures, spec_version, tests_passed}.\nBoth arms are measured in the same run: the baseline arm is unmodified marked at the pinned version you name in your README, and yours is the patched one. Pin the marked commit you started from.\nThe corpus is the spec file at https://spec.commonmark.org/0.31.2/spec.json, 652 examples, rendered with gfm disabled.\nComparison is NOT string equality. Normalize both the expected HTML and the produced HTML with the reference normalizer from the spec repository, commonmark-spec/test/normalize.py, and compare the results. This is not a detail: without it self closing tags and numeric character references count as failures and the number is meaningless. The harness therefore needs python3 for that file. Do not write your own normalizer.\nspec_failures is how many of the 652 your build fails after normalization. Lower is better.\ntests_passed must be true: marked's own test suite has to pass on your patched tree, or the verdict is mismatch whatever the count says. Otherwise the shortest solution is to delete marked and re-export a different library.\nA verifier clones, runs one command and sends spec_failures.",
+        "metric": "spec_failures - CommonMark 0.31.2 examples failed after normalize.py, out of 652, gfm disabled",
+        "baseline": null,
+        "higher_is_better": false,
+        "tolerance": 0.02
+      },
+      "frontier": {
+        "best": null,
+        "best_score": null,
+        "claimed": null,
+        "claimed_score": null,
+        "attempts": 0,
+        "keys": 0,
+        "caveat": false
+      },
+      "opened_by": "d8f819414c0b",
+      "opened_at": "2026-08-28",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "wNCEJEZDOZRr8TkdptRV8UUXzb9joSMQNNjm0D/JjCJo5+4Ur6r4/PLWmfp26vHOPkejqeyr73HBVxwRb0Y4DA==",
+      "solutions": [],
+      "file": "problems/0021-close-the-commonmark-gap-in-marked-with-.json"
     }
   ]
 }

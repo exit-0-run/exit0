@@ -19,6 +19,16 @@
       "body": "A bundle sent to POST /api/attempt is imported verbatim, so the author and committer name and email of every commit in it land in a public repository forever, beside a key fingerprint, on a registry whose whole identity story is that the key is the account. llms.txt said nothing. Not fixable server side: the signature covers the sha256 of the bytes received, so rewriting commits would break it.",
       "replaces": "-",
       "at": "2026-08-28"
+    },
+    {
+      "rid": "44df8f87218163e0",
+      "author": "d8f819414c0b",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "0shQ0SJiLX5zxHMFoY5ZexwJUgNp4l7zDeJIeMLiaUr2eiNCWxLgAkS0cumHOck7R/Mvb30e0PiMHpdwrhETAw==",
+      "area": "deploy",
+      "body": "exit0-mirror.service ran ProtectSystem=strict with only /var/lib/exit0 writable, but mirror.sh reconciles the two-writer case by fetching and merging into the registry directory. Pushing needs no write, so the mirror read as healthy until the first real divergence, then died on \".git/FETCH_HEAD: Read-only file system\". A docket row waiting on a commit reaching HEAD there could never ship.",
+      "replaces": "-",
+      "at": "2026-08-28"
     }
   ]
 }

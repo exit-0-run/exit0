@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
-  canonUrl, canonText, canonLine, solutionId, verificationId, findingId,
+  canonUrl, canonText, canonLine, solutionId, verificationId, findingId, remarkId,
   evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, verdictStrength, canonNeeds, DOMAINS, KINDS, AREAS, probCmp,
   docketId,
 } from "./sign.mjs";
@@ -482,6 +482,43 @@ for (const { path, p } of loaded) {
     sigOk(n.key, n.sig, nmsg, err, at);
   });
 
+  // Remarks: the same validation as findings minus the kind, because there is no kind.
+  // Standing is not re-derived here either, and for a simpler reason than the findings
+  // block gives: a remark never needed any.
+  const said = Array.isArray(p.remarks) ? p.remarks : [];
+  if (p.remarks !== undefined && !Array.isArray(p.remarks)) err("remarks: an array or absent");
+  const seenRmid = new Set();
+  const saidBy = new Map();
+  said.forEach((n, i) => {
+    const at = `remarks[${i}]`;
+    sameField(canonText, n.body, `${at}.body`, MAXLEN.body, err);
+    if (seenRmid.has(n.rmid)) err(`${at}: two records share the rmid ${n.rmid}`);
+    seenRmid.add(n.rmid);
+    if (!canonicalKey(n.key)) err(`${at}: key is not in canonical base64 form`);
+    else {
+      if (fingerprint(n.key) !== n.author) err(`${at}: author does not match the key fingerprint`);
+      // One live remark per KEY, with no kind to divide it: this is the whole volume bound
+      // on a record that costs its author nothing, so a second one means the file was
+      // edited by hand into a state the write path refuses to produce.
+      const slot = keyId(n.key);
+      if (saidBy.has(slot)) err(`${at}: this key already has a remark on this problem (${saidBy.get(slot)}); a correction REPLACES, it does not append`);
+      else saidBy.set(slot, at);
+      try {
+        if (remarkId(p.id, n.key, n.body, n.replaces) !== n.rmid) err(`${at}: rmid does not match the content of the entry`);
+      } catch (e) {
+        err(`${at}: cannot compute the rmid (${e.message})`);
+      }
+    }
+    if (n.replaces !== undefined && n.replaces !== "-" && n.replaces === n.rmid) err(`${at}: this record replaces itself`);
+    let rmsg = null;
+    try {
+      rmsg = payload("remark", { problem: p.id, body: n.body, replaces: n.replaces });
+    } catch (e) {
+      err(`${at}: ${e.message}`);
+    }
+    sigOk(n.key, n.sig, rmsg, err, at);
+  });
+
   p.solutions.forEach((s, i) => {
     const at = `solutions[${i}]`;
     sameField(canonUrl, s.repo, `${at}.repo`, MAXLEN.repo, err);
@@ -682,7 +719,7 @@ const ordered = (o, keys) => {
 };
 
 const shape = (p) => {
-  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions", "findings"]);
+  const out = ordered(p, ["id", "title", "status", "domain", "needs", "problem", "subject", "acceptance", "frontier", "opened_by", "opened_at", "key", "sig", "solutions", "findings", "remarks"]);
   out.acceptance = ordered(p.acceptance, ["how", "metric", "baseline", "higher_is_better", "tolerance"]);
   out.solutions = p.solutions.map((s) => {
     const sol = ordered(s, ["sid", "repo", "author", "key", "sig", "model", "score", "note", "replaces", "builds_on", "ref", "at", "verified", "disputed", "settled", "verified_by", "verifications"]);
@@ -694,6 +731,12 @@ const shape = (p) => {
   if (Array.isArray(p.findings) && p.findings.length)
     out.findings = p.findings.map((n) => ordered(n, ["fid", "author", "key", "sig", "kind", "body", "replaces", "at"]));
   else delete out.findings;
+  // remarks LAST, below the findings, because that is their standing here: a solution is a
+  // measurement, a finding is prose from somebody who ran something, a remark is prose from
+  // somebody who only read. The file order is the registry's economics.
+  if (Array.isArray(p.remarks) && p.remarks.length)
+    out.remarks = p.remarks.map((n) => ordered(n, ["rmid", "author", "key", "sig", "body", "replaces", "at"]));
+  else delete out.remarks;
   return out;
 };
 

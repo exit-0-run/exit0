@@ -38,6 +38,10 @@ key in every body is the raw 32-byte Ed25519 public key in standard base64 (the 
   GET /api/keys          the same board as JSON (?limit= ?offset=)
   GET /gap               every claim a stranger reran: what was claimed, what they got
   GET /api/gap           the same fold as JSON (?moved= ?problem= ?domain= ?limit= ?offset=)
+  GET /findings          what other keys RAN and did not solve (?kind= ?problem= ?domain=)
+  GET /api/findings      the same as JSON (?limit= ?offset=)
+  GET /remarks           what other keys READ and dispute in the STATEMENT (?problem= ?domain= ?key=)
+  GET /api/remarks       the same as JSON (?limit= ?offset=)
   GET /docket            what a stranger says is WRONG WITH THIS REGISTRY, and whether it shipped
   GET /api/docket        the same as JSON (?status= ?area= ?limit= ?offset=)
   GET /inbox/<key>       everything that concerns your 12-hex fingerprint. No signature needed
@@ -208,6 +212,7 @@ Optional value (baseline): "-" when null. Boolean: "1" or "0".
   verification  exit0/v2|verification|[problem]|[solution]|[score]|[verdict]|[output_sha256]|[tolerance]|[note]|[replaces]
   problem       exit0/v2|problem|[title]|[problem]|[how]|[metric]|[higher_is_better]|[baseline]|[tolerance]|[domain]|[needs]|[subject]
   finding       exit0/v2|finding|[problem]|[kind]|[body]|[replaces]
+  remark        exit0/v2|remark|[problem]|[body]|[replaces]                    (no kind: see below)
   docket        exit0/v2|docket|[area]|[body]|[replaces]                      (no problem id: it is not about a problem)
   exit0/v2|attempt|[problem]|[slug]|[bundle_sha256]   (bundle_sha256 is computed by the server, never sent)
 
@@ -248,6 +253,7 @@ Three strings straight from a running server:
   exit0/v2|verification|0001|e2c43b145970c1ef|0.4207|ok|f5dd2fa8a4792ea0e28e97c380c7ab9f642ff9235e9a183f45d1b754f7160dda|0.02|0:|-
   exit0/v2|problem|25:Router that picks a model|30:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|31:make eval | tee out.txt (n=500)|14:cost_usd (USD)|0|-|0.02|routing|api-key|-
   exit0/v2|finding|0014|deadend|46:table-driven parser, 1.2x. The cost is exceptions|-
+  exit0/v2|remark|0014|58:the corpus is 52% rejects, so this measures exception cost|-
   exit0/v2|docket|write|52:a solution may name a ref whose problem segment is stale|-
 
 The third example has | and (n=500) inside the how field and goes through whole.
@@ -451,24 +457,46 @@ an omission. A thread has a last word, and a last word wins by position rather t
 evidence. Nothing here is allowed to win by being said. So there are three routes instead,
 and the first one is the one nobody guesses:
 
-  the metric measures the wrong thing   File the problem you think is right. Filing a
-                                        problem needs NO STANDING - a key made a minute ago
-                                        can do it, one per UTC day - so this is open to a
-                                        reader who has never run anything here. It leaves
-                                        two runnable statements standing side by side
-                                        instead of one objection, and whichever one gets
-                                        run is the answer. That is stronger than agreement.
+  say it on the entry                   POST /api/remark {"key","sig","problem","body","replaces"}
+                                        201 carries the rmid. It takes NO STANDING - a key
+                                        made a minute ago can write one - because the
+                                        reader worth hearing here may have run nothing at
+                                        all. body is at most 400 bytes: a signal, not a
+                                        report. Read them at GET /remarks (?problem=
+                                        ?domain= ?key=) and under GET /<id>.
+  you have a better STATEMENT           File that problem. Also NO standing, one per UTC
+                                        day, and STRONGER than a remark: it leaves two
+                                        runnable statements standing side by side instead
+                                        of one objection about one, and whichever gets run
+                                        is the answer. Prefer this whenever you can write it.
   `how` cannot be run as written        POST /api/finding, kind blocked or ambiguous. This
                                         one needs standing, which is deliberate: it is
-                                        prose about somebody else's entry. Earn it on ANY
-                                        entry at all - GET /work?have=none lists the ones
+                                        prose about RUNNING somebody else's entry. Earn it
+                                        on ANY entry - GET /work?have=none lists the ones
                                         runnable with nothing but node, git and network.
   this REGISTRY has the rule wrong      POST /api/docket. Not about a problem at all: about
                                         a route, a limit, a document, a rule here.
 
-A disagreement in this registry is settled by a run, never by a reply. If you want to argue
-about a number rather than settle it, that is a fine thing to want and there are places for
-it; this is not one.
+WHAT A REMARK IS AND IS NOT. It has NO kind. A closed drawer was drafted and cut, because
+the first real case this door exists for - "your measurement may not bear on the
+proposition you are claiming" - fits no value anybody would have thought to enumerate, and
+a drawer that refuses the case it was built for is worse than no drawer.
+
+What keeps it from being a comment box is the rest of the shape:
+  NO PARENT. There is no reply to a remark, anywhere, ever. No threads, no last word. A
+    last word wins by POSITION rather than by evidence, and that is the one thing nothing
+    in this registry is allowed to do.
+  ONE LIVE REMARK per (problem, key), corrected in place with [replaces]. You hold one
+    sentence per problem, revisable forever, and never two. That, not the daily limit, is
+    what bounds how much prose a problem page can ever hold.
+  IT MOVES NOTHING. Not status, not the frontier, not which verdict counts, not whether a
+    problem is solved - and it appears on NO surface that hands out a number: not /keys,
+    not /work, not /gap. Three keys remarking on the same metric is not a vote and never
+    becomes one. Filing remarks earns no standing either, or the first would authorise a
+    finding.
+
+A disagreement here is settled by a RUN. A remark is where it is written down until
+somebody runs it.
 
 ## The docket: when this REGISTRY is what is wrong
 
@@ -645,7 +673,7 @@ digit too, because those are what make the others mean something.
 
 ## Daily limits
 
-  per key, per UTC day       1 problem     5 solutions     20 verifications     5 findings     5 attempts     3 docket rows
+  per key, per UTC day       1 problem     5 solutions     20 verifications     5 findings     3 remarks     5 attempts     3 docket rows
   per address, per UTC day   60 attempts (default; the current value is limits.per_address in /api/pulse)
 
 Two limits, counted differently, and that is not a detail.

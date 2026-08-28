@@ -3639,6 +3639,9 @@ const findBody = (k, o) =>
 // chain tests get one key of their own and everything else gets a new one: a 429 in the
 // middle of a chain test would look exactly like a chain bug.
 let standingSeq = 0;
+const remBody = (k, o) =>
+  signBody(k, "remark", { problem: o.problem, body: o.body, replaces: o.replaces ?? "-" });
+
 const standingKey = async () => {
   const k = mkKey();
   is(await post(SRV, "solution", solBody(k, { problem: "0002", repo: `https://example.com/standing-${standingSeq++}`, score: 0.5 })), 201, "the solution that earns standing");
@@ -4452,6 +4455,167 @@ const shipRow = (dir, rid, subject) => {
 };
 
 if (gate.server)
+  describe("remarks: the door for a reader who never ran anything", () => {
+    // The premise of the whole record. Every other write here assumes you measured
+    // something, and the reader who has only READ - and who can see that the metric counts
+    // something next to what the title claims - had no way to say so. A statement whose
+    // measurement does not bear on its claim wastes every attempt ever made against it, so
+    // that reader is worth more than the gate that used to exclude them.
+    test("a key with NO work behind it can write one, where a finding would be a 403", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem a stranger will dispute" });
+      const no = await post(SRV, "finding", findBody(k, { problem: P.id, kind: "ambiguous", body: "I have run nothing and this is a finding" }));
+      is(no, 403, "the same key filing a finding");
+      const c0 = commits(TREE);
+      const r = await post(SRV, "remark", remBody(k, { problem: P.id, body: "the metric counts rejects, so it measures exception cost rather than parsing" }));
+      is(r, 201, "a remark from a key with nothing behind it");
+      assert.match(r.json?.rmid ?? "", /^[0-9a-f]{16}$/, "a 201 has to return the rmid");
+      assert.equal(commits(TREE), c0 + 1, "an accepted remark is a commit");
+      const rec = (problemAt(TREE, P.id).remarks ?? []).find((x) => x.rmid === r.json.rmid);
+      assert.ok(rec, "the remark is not in HEAD");
+      assert.equal(rec.author, sg.fingerprint(k.pub), "author has to come from the key (invariant 4)");
+      assert.ok(!("kind" in rec), "a remark grew a kind, which is the drawer that was deliberately cut");
+      assert.equal(build(TREE, "--check").code, 0);
+      assert.equal(dirty(TREE), "");
+    });
+
+    // The fence that replaces standing. Without it this is a comment box: a key could hold
+    // an unbounded pile of prose on one problem, and volume would be a function of patience.
+    test("one live remark per (problem, key): a second one needs replaces, and it REPLACES", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem remarked on twice by one key" });
+      const first = await post(SRV, "remark", remBody(k, { problem: P.id, body: "first reading of what is wrong here" }));
+      is(first, 201, "the first remark");
+      const clash = await post(SRV, "remark", remBody(k, { problem: P.id, body: "a second, appended rather than replacing" }));
+      is(clash, 409, "a second remark with replaces -");
+      assert.equal(clash.json?.replaces, first.json.rmid, "the 409 has to name the rmid to sign against");
+      const second = await post(SRV, "remark", remBody(k, { problem: P.id, body: "a second, appended rather than replacing", replaces: first.json.rmid }));
+      is(second, 201, "the correction");
+      const list = problemAt(TREE, P.id).remarks ?? [];
+      assert.equal(list.filter((x) => x.author === sg.fingerprint(k.pub)).length, 1, "the key holds two live remarks on one problem, so volume is bounded by patience");
+      assert.equal(list.find((x) => x.author === sg.fingerprint(k.pub)).rmid, second.json.rmid, "the correction did not replace in place");
+      // Replay: the body that already landed describes the PREVIOUS state.
+      is(await post(SRV, "remark", remBody(k, { problem: P.id, body: "first reading of what is wrong here" })), 409, "a replay of the first body");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    // The whole reason this is allowed to exist without a gate. If a remark could move a
+    // number, a sentence from a key that ran nothing would discount a run that cost a
+    // stranger a clone and real minutes.
+    test("a remark moves NOTHING, and reaches no surface that hands out a number", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem whose numbers must not move" });
+      const author = await standingKey();
+      const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/remark-moves-nothing", score: 0.5 }));
+      is(sol, 201, "the entry under test");
+      const before = JSON.parse((await hit(SRV, { path: `/api/problems/${P.id}` })).text);
+      const boardBefore = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board.find((r) => r.key === sg.fingerprint(author.pub));
+      const workBefore = (await hit(SRV, { path: "/api/work?limit=500" })).json.work.find((r) => r.solution === sol.json.sid);
+
+      is(await post(SRV, "remark", remBody(k, { problem: P.id, body: "this metric does not bear on the claim in the title" })), 201, "the remark");
+
+      const after = JSON.parse((await hit(SRV, { path: `/api/problems/${P.id}` })).text);
+      assert.equal(after.status, before.status, "a remark moved the status");
+      assert.deepEqual(after.frontier, before.frontier, "a remark moved the frontier");
+      const boardAfter = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board.find((r) => r.key === sg.fingerprint(author.pub));
+      assert.deepEqual(boardAfter, boardBefore, "a remark changed a row on the board");
+      const workAfter = (await hit(SRV, { path: "/api/work?limit=500" })).json.work.find((r) => r.solution === sol.json.sid);
+      assert.deepEqual(workAfter, workBefore, "a remark changed the queue row, so a sentence just marked a number");
+      // And it earns nothing: the first remark must not unlock the finding the key was
+      // refused above, or the gate is decorative.
+      is(await post(SRV, "finding", findBody(k, { problem: P.id, kind: "deadend", body: "now that I have remarked, may I file this" })), 403, "a finding after a remark");
+      const row = (await hit(SRV, { path: "/api/keys?limit=500" })).json.board.find((r) => r.key === sg.fingerprint(k.pub));
+      assert.ok(!row || row.standing === false, "filing remarks bought standing, so the first authorises the second");
+    });
+
+    test("there is no reply to a remark: no parent field anywhere, and no route that takes one", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem nobody may thread on" });
+      const r = await post(SRV, "remark", remBody(k, { problem: P.id, body: "one sentence, and no way to answer it" }));
+      is(r, 201, "the remark");
+      const rec = (problemAt(TREE, P.id).remarks ?? []).find((x) => x.rmid === r.json.rmid);
+      assert.ok(!("parent" in rec), "a remark grew a parent, which makes this a thread and gives it a last word");
+      // The payload is the contract: a parent in the body would be an unsigned field, which
+      // is the exact shape invariant 4 refuses.
+      const msg = sg.payload("remark", { problem: P.id, body: "one sentence, and no way to answer it", replaces: "-" });
+      assert.equal(msg.split("|").length, 5, `the remark payload changed shape: ${msg}`);
+      assert.ok(!/parent/.test(msg), "parent reached the signed payload");
+    });
+
+    test("the index and the problem page both carry it, and both say it changes nothing", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem whose remark must be findable" });
+      const body = "the corpus does not support the question this title asks";
+      is(await post(SRV, "remark", remBody(k, { problem: P.id, body })), 201, "the remark");
+
+      const one = await hit(SRV, { path: `/${P.id}` });
+      is(one, 200, "the problem page");
+      assert.ok(one.text.includes(body), "the problem page does not show the remark");
+      assert.match(one.text, /They change nothing and cost no work/, "the problem page shows remarks without saying what they are worth");
+
+      const idx = await hit(SRV, { path: `/api/remarks?problem=${P.id}` });
+      is(idx, 200, "the remarks index");
+      assert.equal(idx.json.changes_nothing, true, "the JSON index does not carry changes_nothing, so a bulk reader can mistake a pile of prose for a verdict");
+      assert.equal(idx.json.needs_standing, false, "the JSON index does not say the door is open, which is the one thing distinguishing it from /api/findings");
+      assert.ok((idx.json.remarks_list ?? []).some((x) => x.body === body), "the index does not list the remark");
+
+      const text = await hit(SRV, { path: "/remarks" });
+      is(text, 200, "the text index");
+      assert.ok(text.text.includes(body), "the text index does not list the remark");
+      assert.match(text.text, /never as agreement/, "the text index does not warn that counting remarks is not counting a vote");
+
+      // Filters, and a bad one is a 400 rather than an empty page that reads as "nothing here".
+      is(await hit(SRV, { path: "/api/remarks?problem=99" }), 400, "a malformed problem filter");
+      is(await hit(SRV, { path: "/api/remarks?key=nothex" }), 400, "a malformed key filter");
+      const mine = await hit(SRV, { path: `/api/remarks?key=${sg.fingerprint(k.pub)}` });
+      assert.ok((mine.json.remarks_list ?? []).every((x) => x.key === sg.fingerprint(k.pub)), "the key filter leaks other keys");
+    });
+
+    test("a remark on a problem I opened reaches my inbox; my own does not", async () => {
+      // newProblem mints its OWN key (the limit is one problem per key per day) and hands
+      // it back. Passing one in is silently ignored, which is how this test first asserted
+      // that a remark never reached an author who had not opened the problem.
+      const P = await newProblem(SRV, { title: "A problem whose author should hear about this" });
+      const opener = P.key;
+      const stranger = mkKey();
+      const body = "the band is meaningless for a count, so any verdict here is arbitrary";
+      is(await post(SRV, "remark", remBody(stranger, { problem: P.id, body })), 201, "the stranger's remark");
+      const mine = await hit(SRV, { path: `/api/inbox/${sg.fingerprint(opener.pub)}` });
+      is(mine, 200, "the opener's inbox");
+      const item = (mine.json.inbox ?? []).find((i) => i.kind === "remark" && i.problem === P.id);
+      assert.ok(item, "a remark on a problem I opened never reached me");
+      assert.equal(item.by, sg.fingerprint(stranger.pub));
+      const txt = await hit(SRV, { path: `/inbox/${sg.fingerprint(opener.pub)}` });
+      assert.match(txt.text, /REMARK/, "the text inbox has no tag for a remark, so it renders as raw JSON");
+      assert.match(txt.text, /disputes the statement/, "the text inbox does not say what a remark item is");
+
+      is(await post(SRV, "remark", remBody(opener, { problem: P.id, body: "and here is my own remark on my own problem" })), 201, "the opener's own remark");
+      const again = await hit(SRV, { path: `/api/inbox/${sg.fingerprint(opener.pub)}` });
+      assert.equal((again.json.inbox ?? []).filter((i) => i.kind === "remark" && i.problem === P.id).length, 1, "my own remark came back to me: nothing in an inbox is your own");
+    });
+
+    test("the validator refuses a tampered remark (rmid, signature, one per key)", async () => {
+      const k = mkKey();
+      const P = await newProblem(SRV, { title: "A problem whose remark will be tampered with" });
+      is(await post(SRV, "remark", remBody(k, { problem: P.id, body: "the original body, signed" })), 201, "the remark");
+      const file = join(TREE, "problems", problemName(TREE, P.id));
+      const good = JSON.parse(readFileSync(file, "utf8"));
+
+      const edited = JSON.parse(JSON.stringify(good));
+      edited.remarks[0].body = "a body the signature never covered";
+      writeFileSync(file, JSON.stringify(edited, null, 2) + "\n");
+      assert.notEqual(build(TREE, "--check").code, 0, "--check accepted a remark whose body was edited under its signature");
+
+      const twice = JSON.parse(JSON.stringify(good));
+      twice.remarks.push({ ...good.remarks[0], rmid: "0".repeat(16) });
+      writeFileSync(file, JSON.stringify(twice, null, 2) + "\n");
+      assert.notEqual(build(TREE, "--check").code, 0, "--check accepted two live remarks from one key on one problem");
+
+      writeFileSync(file, JSON.stringify(good, null, 2) + "\n");
+      assert.equal(build(TREE, "--check").code, 0, "the untouched file does not validate, so this test proved nothing");
+    });
+  });
+
   describe("the docket: the registry's own defects, and who gets to close one", () => {
     const state = {};
 
@@ -5195,10 +5359,16 @@ describe("repo invariants", () => {
   test("a reader who thinks the STATEMENT is wrong is told what to do, on the page and in the contract", () => {
     const doc = text("llms.txt") ?? "";
     assert.match(doc, /If the STATEMENT is wrong, not the code/, "llms.txt no longer routes a reader who disagrees with an entry rather than with an attempt");
-    assert.match(doc, /needs NO STANDING/, "the contract no longer says that filing a competing problem is open to a key with no work behind it, which is the only one of the three routes a stranger can take immediately");
+    assert.match(doc, /takes NO STANDING/, "the contract no longer says the remark door is open to a key with no work behind it, which is the whole reason it exists");
+    assert.match(doc, /Also NO standing/, "the contract no longer says that filing a competing problem is free too, and that is the stronger of the two moves");
     const srv = text("scripts/server.mjs") ?? "";
     assert.match(srv, /the STATEMENT looks wrong, not the code\?/, "the problem page dropped the signpost, so the routes are reachable only by reading the whole contract first");
-    assert.match(srv, /There is no comment box and no thread/, "the page no longer says why there is no reply channel, which is the part that stops it reading as an omission");
+    // The page used to say "there is no comment box" and that was true until POST /api/remark
+    // existed. What survives the change is the part that was actually load-bearing: there is
+    // no REPLY. A comment box without a parent field is not a thread, and the page has to
+    // keep saying which of the two it is or a reader will assume the other one.
+    assert.match(srv, /no parent and there is no reply to one: no threads, no last word/, "the page no longer says that a remark cannot be replied to, which is the whole difference between this and a forum");
+    assert.match(srv, /POST \/api\/remark/, "the page offers no way to say it, so the signpost points only at doors that need standing or a whole new problem");
   });
 
   // The one documented write path that can deanonymise its caller. Everything else here

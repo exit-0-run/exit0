@@ -389,6 +389,55 @@
           }
         }
       }
+    },
+    "remarks": {
+      "type": "array",
+      "description": "Signed disputes about the STATEMENT of this problem from keys that only READ it: the metric counts something next to what the title claims, the band is meaningless for this quantity, the corpus does not support the question. It takes NO standing, deliberately, because the reader worth hearing here may have run nothing. A remark changes nothing - not status, not the frontier, not a verdict - and appears on no surface that hands out a number. There is no parent and no reply: no threads, no last word. There is no kind either, because the first case this door exists for fits no drawer anybody would have enumerated. One live record per KEY per problem, corrected in place, which is the entire volume bound on a record that cost its author nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "rmid",
+          "author",
+          "key",
+          "sig",
+          "body",
+          "replaces",
+          "at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rmid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "description": "sha256(exit0/v2|rmid|<id>|<keyId>|<len>:<body>|<replaces>) truncated to 16 characters. No kind in the digest, because there is none in the payload"
+          },
+          "author": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$"
+          },
+          "key": {
+            "type": "string"
+          },
+          "sig": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "What is wrong with the statement. Short on purpose: a signal, not a report. If what you have is a better statement rather than an objection, file that problem instead - it also needs no standing"
+          },
+          "replaces": {
+            "type": "string",
+            "pattern": "^(-|[0-9a-f]{16})$",
+            "description": "The rmid of your own current remark on this problem, or - for the first"
+          },
+          "at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        }
+      }
     }
   }
 }

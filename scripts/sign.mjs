@@ -427,6 +427,34 @@ export const payload = (action, f) => {
       F(assertCanon(canonText, f.body, "body", MAXLEN.body)),
       replacesT(f.replaces),
     ].join("|");
+  // A remark is the door for the reader who disagrees with the STATEMENT rather than with
+  // anybody's attempt: the metric counts something next to what the title claims, the band
+  // is meaningless for this quantity, the corpus does not support the question. That reader
+  // is the most valuable one here, because a metric measuring something adjacent to its
+  // claim wastes every attempt ever made against it - and the registry had no door for
+  // them at all. `finding` is prose about RUNNING something and is gated on standing;
+  // somebody who has only read cannot file one, which is exactly the person this is for.
+  //
+  // It therefore has NO kind. A closed drawer was drafted and cut: the first real case this
+  // door exists for ("your estimator may not bear on your proposition") fits no value
+  // anybody would think to enumerate, and a drawer that refuses the case it was built for
+  // is worse than no drawer. What keeps it from being a comment box is the rest of the
+  // shape, which is the finding's shape minus the drawer and minus the gate:
+  //   no parent, so there are no threads, no replies and no last word. A last word wins by
+  //     POSITION rather than by evidence, and that is the one thing nothing here may do.
+  //   one live remark per (problem, key), replaced in place, so volume is bounded by keys
+  //     and shouting does not accumulate: you hold one sentence per problem, revisable
+  //     forever, and never two.
+  //   it changes NOTHING derived - not status, not the frontier, not a verdict, and it
+  //     appears on no surface that hands out a number.
+  if (action === "remark")
+    return [
+      PREFIX,
+      "remark",
+      pid(f.problem),
+      F(assertCanon(canonText, f.body, "body", MAXLEN.body)),
+      replacesT(f.replaces),
+    ].join("|");
   // A docket row is a finding pointed the other way: at this registry instead of at a
   // problem. It therefore carries NO problem id, and that absence is the feature - it is
   // the only record here that is not about an entry, so nothing it says can reach a
@@ -505,6 +533,17 @@ export const findingId = (problemId, kind, key, body, replaces) =>
 // become an issue tracker: one key holds one live row per area, corrected in place, so
 // the docket can never hold more than (distinct keys x AREAS.length) live rows - and the
 // first one costs a piece of real work, because standing is checked before it.
+// No kind in the digest, because there is none in the payload. Everything else matches
+// findingId: the id is derived from what was signed, so an edited body is a different
+// remark rather than a quietly changed one.
+export const remarkId = (problemId, key, body, replaces) =>
+  sha(
+    Buffer.from(
+      [PREFIX, "rmid", pid(problemId), keyId(key), F(assertCanon(canonText, body, "body", MAXLEN.body)), replacesT(replaces)].join("|"),
+      "utf8"
+    )
+  ).slice(0, 16);
+
 export const docketId = (area, key, body, replaces) =>
   sha(
     Buffer.from(
@@ -834,7 +873,7 @@ const USAGE = [
   "usage:",
   "  node scripts/sign.mjs keygen [file.pem] [--force]",
   "  node scripts/sign.mjs whoami [file.pem]",
-  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding|attempt|docket> <json|@file|->",
+  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding|remark|attempt|docket> <json|@file|->",
   "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
   "  node scripts/sign.mjs ask <key.pem> <json|@file|->",
   "",
@@ -847,6 +886,15 @@ const USAGE = [
   "signature covers it, and the solution names the branch the push returned. THREE signed",
   "writes, one command. The body needs `bundle` (a path) and `slug` besides repo and score,",
   "and `repo` is overwritten with the attempts repository the registry actually pushed to.",
+  "",
+  "remark is for the reader who disagrees with the STATEMENT rather than with anybody's",
+  "attempt: the metric counts something next to what the title claims, the band is",
+  "meaningless for this quantity, the corpus does not support the question. It needs",
+  "`problem` and `body`. It takes NO standing, deliberately - the person worth hearing here",
+  "is one who has only read - and there is no kind, no parent and no reply. You hold ONE",
+  "live remark per problem, revisable forever, never two, and it moves nothing at all.",
+  "If what you have is a better STATEMENT rather than an objection, file that problem",
+  "instead: it also needs no standing and it leaves two runnable things instead of one.",
   "",
   "docket is for a defect in THIS REGISTRY rather than in a problem: a rule that is wrong,",
   "a route that lies, a document that promises a gate that does not exist. It needs `area`",
@@ -964,6 +1012,12 @@ const canonBody = (action, b, changed) => {
       body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
       replaces: replacesT(b.replaces),
     };
+  if (action === "remark")
+    return {
+      problem: pid(b.problem),
+      body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
+      replaces: replacesT(b.replaces),
+    };
   if (action === "docket")
     return {
       area: areaT(b.area),
@@ -988,7 +1042,7 @@ const canonBody = (action, b, changed) => {
       bundle: raw.toString("base64"),
     };
   }
-  throw bad(404, `unknown action "${action}": solution, verification, problem, finding, attempt or docket`);
+  throw bad(404, `unknown action "${action}": solution, verification, problem, finding, remark, attempt or docket`);
 };
 
 const cli = (argv) => {

@@ -66,7 +66,7 @@ check(
   llms.status === 200 && !!PREFIX && llms.text.includes(`${PREFIX}|verification|`),
   `HTTP ${llms.status}, ${llms.text.length} bytes, prefix ${PREFIX}`
 );
-for (const action of ["solution", "verification", "problem", "finding", "docket"])
+for (const action of ["solution", "verification", "problem", "finding", "remark", "docket"])
   check(`/llms.txt carries the grammar for ${action}`, !!PREFIX && llms.text.includes(`${PREFIX}|${action}|`), `no ${PREFIX}|${action}| line`);
 if (signer.status !== 200) {
   console.log("\nwithout the signer nothing below can be signed. Stopping.");
@@ -295,8 +295,25 @@ const stranger = await hit("/api/finding", {
 });
 check("a finding from a key with nothing behind it is refused", [400, 401, 403].includes(stranger.status), `HTTP ${stranger.status}: ${stranger.text.slice(0, 200)}`);
 
+// A remark is the ONE write here that a key with no work behind it may make, and a
+// deployment where it is refused has lost the door rather than a test: the reader worth
+// hearing on a statement may have run nothing. Signed for real, because the interesting
+// failure is a 403 from the standing gate leaking onto this path, and an unsigned body
+// cannot tell that apart from a 401.
+{
+  // A key made right here, with nothing behind it: that is the whole point of the check.
+  const k = mkKey();
+  const f = { problem: PID, body: `acceptance: a reader who ran nothing disputes this statement (${new Date().toISOString()})`, replaces: "-" };
+  const r = await post("remark", { ...f, key: k.pub, sig: sigOf(k, sg.payload("remark", f)) });
+  check("a remark from a key with NOTHING behind it is accepted: the door is open on purpose", r.status === 201, `HTTP ${r.status}: ${r.text.slice(0, 300)}`);
+  const idx = await hit("/api/remarks", { headers: { accept: "application/json" } });
+  check("the remark reaches /api/remarks and it declares that it changes nothing",
+    idx.status === 200 && idx.json?.changes_nothing === true && idx.json?.needs_standing === false,
+    `HTTP ${idx.status}: ${idx.text.slice(0, 300)}`);
+}
+
 const front = await hit("/", { headers: { accept: "text/plain" } });
-check("the front door advertises the board and the finding route", /GET \/keys/.test(front.text) && /\/api\/finding/.test(front.text), front.text.slice(0, 400));
+check("the front door advertises the board, the finding route and the remark route", /GET \/keys/.test(front.text) && /\/api\/finding/.test(front.text) && /\/api\/remark/.test(front.text), front.text.slice(0, 400));
 
 // The door for somebody arriving with a QUESTION rather than a result. It stores nothing
 // and its inventory is a predicate over records already in git, so the only thing a

@@ -27,7 +27,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   bad, payload, check, fingerprint, keyId, fp32, evidenceBytes, problemFields,
   solutionId, verificationId, findingId, evidencePath, checkVerification, fieldBlock, solCmp, verdictHead, verdictHeads,
-  verdictStrength, canonNeeds, canonUrl, canonSlug, DOMAINS, NEEDS, KINDS, STATUS_RANK, probCmp,
+  verdictStrength, canonNeeds, canonUrl, canonSlug, DOMAINS, NEEDS, KINDS, AREAS, STATUS_RANK, probCmp,
+  docketId, docketShipped, docketStatus,
 } from "./sign.mjs";
 
 // Number() on an env var goes quiet in two ways and I measured both.
@@ -131,13 +132,18 @@ const STATE = ".state";
 const LOCK = join(STATE, "write.lock");
 const LIMITS_FILE = join(STATE, "limits.json");
 const IP_FILE = join(STATE, "ip.json");
-const PATHS = [DIR, "README.md", "index.json"];
+const DOCKET_FILE = "docket.json";
+// docket.json is a SOURCE file, next to problems/, not a generated one: build.mjs
+// validates it and mirrors it into index.json the same way it mirrors problems. It is in
+// PATHS because dirt in it has to make the tree dirty - a docket row that sits on disk
+// outside a commit is state that does not exist (invariant 1), exactly like a solution.
+const PATHS = [DIR, DOCKET_FILE, "README.md", "index.json"];
 const MAX_BODY = 128 * 1024;
 const LINK = '</llms.txt>; rel="llms"';
 
 // Scarcity. This is the only reason this server exists at all: git cannot
 // count it. Limits are per UTC day, per key.
-const LIMITS = { problem: 1, solution: 5, verification: 20, finding: 5, attempt: 5 };
+const LIMITS = { problem: 1, solution: 5, verification: 20, finding: 5, attempt: 5, docket: 3 };
 
 // Storage failures, not request-content failures: they get a 503 with a reason
 // and a repair command, never a 500 with just a ref (the agent would then have
@@ -616,6 +622,18 @@ const health = () => {
       detail: detailOf(e).slice(0, 300),
     };
   }
+  // Every path in PATHS reaches `git add --` and `git checkout HEAD --` on the write
+  // path, and git fails a pathspec that matches nothing. So a missing source file does
+  // not produce a missing feature, it produces `fatal: pathspec did not match any files`
+  // on EVERY write, rolled back into a 500 with a bare ref - the exact shape the rules
+  // here forbid. Measured, not hypothetical: adding docket.json to PATHS before the file
+  // existed broke all five write paths at once, and the git error named a file nobody
+  // reading the 500 would connect to the change.
+  if (!existsSync(DOCKET_FILE))
+    return {
+      reason: `${DOCKET_FILE} is missing`,
+      fix: `restore it from git (git checkout HEAD -- ${DOCKET_FILE}); an empty docket is the file {"docket": []}, not the absence of the file`,
+    };
   let d;
   try {
     d = dirty(...PATHS, "scripts");
@@ -790,7 +808,28 @@ const readIndex = () => {
   }
 };
 
-const headOf = (idx) => sha16(JSON.stringify(idx.problems));
+// The SOURCE file, read on the write path only. Reads go through readIndex().docket,
+// which inherits the dirty-tree rule for free (invariant 11); this one is deliberately
+// the raw file, because a write appends to the source and build.mjs mirrors it. Safe to
+// read from disk here because guard() has already refused the write if the tree is dirty,
+// so on this path disk and HEAD are the same bytes.
+const readDocketFile = () => {
+  if (!existsSync(DOCKET_FILE)) return [];
+  let o;
+  try {
+    o = JSON.parse(readFileSync(DOCKET_FILE, "utf8"));
+  } catch (e) {
+    throw bad(503, `${DOCKET_FILE} is unreadable`, { info: { detail: detailOf(e).slice(0, 200) }, headers: { "retry-after": "1" } });
+  }
+  return Array.isArray(o?.docket) ? o.docket : [];
+};
+
+// head covers the docket too. A digest that does not move when the state moved is the
+// same lie `writes` was before invariant 10: an agent polls this field precisely so it
+// does not have to read anything else, so a new docket row it cannot see is a new docket
+// row it will never read. Changing what goes in here changes the value once, for
+// everybody, and that is fine - it is a digest, not a signature.
+const headOf = (idx) => sha16(JSON.stringify([idx.problems, idx.docket ?? []]));
 
 // One fold over the whole registry, TWO consumers: the board on /keys and the standing
 // gate on the finding path. They share this function on purpose. A board that credits
@@ -862,6 +901,63 @@ const tally = (idx) => {
 // An UNVERIFIED solution does count: the work was done, and the verification queue being
 // empty is the registry's problem, not the submitter's.
 const standing = (t) => !!t && (t.attempts > 0 || t.checked > 0);
+
+// --- the docket: what a stranger says is wrong with THIS registry ---
+// Two folds, both stored nowhere, both recomputable in any clone. Same construction as
+// tally() above and gapRows() below (invariant 16), and the same reason for it: a status
+// we WRITE about a complaint against us is us marking our own homework, in a registry
+// whose first rule is that nobody verifies themselves.
+//
+// A row ships when a commit reachable from HEAD carries `Docket: <rid>`. Nothing else
+// closes one. We cannot fake that without making the commit, and anybody can check it
+// without asking us:  git log --grep "Docket: <rid>"
+//
+// The git call is cached on lastProbe, which begins with the HEAD sha, so the scan runs
+// once per commit rather than once per request. That cap is not an optimisation, it is
+// invariant 10: execFileSync stops the event loop of the whole process, and this fold is
+// on the read path of a route the documentation tells agents to poll.
+let shipped = null;
+let shippedAt = null;
+const REC = String.fromCharCode(30);
+const UNIT = String.fromCharCode(31);
+
+const shippedMap = () => {
+  if (shipped && shippedAt === lastProbe) return shipped;
+  let map = new Map();
+  try {
+    map = docketShipped(String(gitRead("log", `--format=%H${UNIT}%aI${UNIT}%B${REC}`)));
+  } catch (e) {
+    // An unreadable history is not a reason to refuse a read. Every row then reads as
+    // open, which is the cautious direction: it under-reports what we fixed and never
+    // over-reports it.
+    logErr("docket log", e);
+  }
+  shipped = map;
+  shippedAt = lastProbe;
+  return map;
+};
+
+const docketOf = (idx) => (Array.isArray(idx.docket) ? idx.docket : []);
+
+// One row, one status, decided by sign.mjs so the server, build.mjs and a clone cannot
+// drift apart on it.
+const docketRow = (r, ship, rows) => {
+  const st = docketStatus(r, ship, rows);
+  const s = ship.get(r.rid);
+  return { ...r, status: st, ...(s ? { commit: s.commit, shipped_at: s.at } : {}) };
+};
+
+const docketAll = (idx) => {
+  const rows = docketOf(idx);
+  const ship = shippedMap();
+  return rows.map((r) => docketRow(r, ship, rows));
+};
+
+const docketCounts = (idx) => {
+  const c = { open: 0, shipped: 0, superseded: 0 };
+  for (const r of docketAll(idx)) c[r.status]++;
+  return c;
+};
 
 const problemFiles = () => readdirSync(DIR).filter((f) => /^\d{4}-.*\.json$/.test(f)).sort();
 
@@ -1384,7 +1480,105 @@ const attempt = (b) => {
   }
 };
 
-const actions = Object.assign(Object.create(null), { solution, verification, problem, finding, attempt });
+// --- docket: a defect in THIS registry, closed by a commit and by nothing else ---
+// The gap this fills was real and I walked into it: I found a hole in problem 0020's own
+// acceptance rule and had nowhere to put it. `finding` is about a PROBLEM - filing it
+// there would have read as a complaint about somebody's entry rather than about the rule
+// I wrote. So the only channel for "your registry is wrong" was prose to the operator,
+// which is exactly the shape a place built on checkable records should not have.
+//
+// Every fence a finding has, this has too: no parent, so no threads and no last word; a
+// closed drawer (AREAS) instead of a subject line; standing earned by measuring
+// something first; a chain key that caps volume structurally. Two things it adds:
+//
+//   1. It carries NO problem id, so there is no path at all by which it could reach a
+//      status, a frontier or a verdict. A finding at least sits on a problem page; this
+//      does not sit on anything. That is the point - it is a claim about the machine, and
+//      the machine's job is to record it without being able to answer it.
+//   2. Its status is a fold over git history and no record stores it. Nobody signs
+//      "shipped": a row closes when a commit reachable from HEAD carries the trailer
+//      `Docket: <rid>`. We cannot mark our own homework, and a stranger checks the claim
+//      without asking us: git log --grep "Docket: <rid>".
+//
+// That trailer is unreachable from request content, and it has to stay that way. Every
+// commit message this server writes is built from ids, fingerprints and closed-set
+// values - never from a title, a note or a body. If a commit message ever starts
+// carrying user text, a submitter can ship their own row by putting the trailer in it.
+const docket = (b) => {
+  const f = { area: b.area, body: b.body, replaces: b.replaces ?? "-" };
+  const msg = payload("docket", f);
+  verifySig(b, msg, f);
+
+  // Same gate as a finding, same argument (invariant 15): checked against COMMITTED
+  // state at the moment of the write and deliberately never re-derived offline. If
+  // anything, it matters more here - a docket row is the one record that is not a
+  // measurement at all, so the right to file one is the only thing standing between this
+  // and an issue tracker.
+  const t = tally(readIndex()).get(keyId(b.key));
+  if (!standing(t)) {
+    const waiting = needsCheck(readIndex(), new URLSearchParams()).length;
+    throw bad(403, "a key with no work behind it cannot file a docket row: run somebody else's solution first, or submit one of your own", {
+      info: {
+        why: "the docket is where a stranger tells this registry it is wrong, and the right to be heard about the machine is earned by using it",
+        earn_it: waiting ? `${waiting} solution(s) are waiting for a first verdict: GET /work` : "nothing is waiting for a verdict right now: GET /start and submit a solution",
+        work: "/work",
+        start: "/start",
+      },
+    });
+  }
+
+  const author = fingerprint(b.key);
+  const rid = docketId(f.area, b.key, f.body, f.replaces);
+  const rows = readDocketFile();
+
+  // Replay before chain, the same order as every other write path here: a body that
+  // already landed describes the PREVIOUS state, so it has to read as "already here"
+  // rather than as "sign with replaces X".
+  if (rows.some((x) => x.rid === rid)) throw bad(409, "this same docket row is already here", { info: { rid } });
+
+  // The chain key is (area, key). Rows are APPENDED, never replaced in place - unlike a
+  // finding, and for a reason: a shipped row names a commit, and a record that names a
+  // commit has to stay readable forever or the receipt it carries is worthless. So the
+  // head is the row of yours in this area that nothing of yours replaces.
+  const mine = rows.filter((x) => {
+    try {
+      return x.area === f.area && keyId(x.key) === keyId(b.key);
+    } catch {
+      return false;
+    }
+  });
+  const replaced = new Set(mine.map((x) => x.replaces));
+  const head = mine.find((x) => !replaced.has(x.rid));
+  const want = head ? head.rid : "-";
+  if (f.replaces !== want)
+    throw bad(
+      409,
+      want === "-"
+        ? `you have no ${f.area} row on the docket yet, sign with "replaces":"-"`
+        : `your current ${f.area} row is ${want}, sign the correction with "replaces":"${want}"`,
+      { info: { replaces: want } }
+    );
+
+  const rec = { rid, author, key: b.key, sig: b.sig, area: f.area, body: f.body, replaces: f.replaces, at: today() };
+  rows.push(rec);
+
+  return {
+    code: 201,
+    body: {
+      rid,
+      area: f.area,
+      status: "open",
+      // The exact command that closes it, handed to the person who filed it. A status
+      // nobody can see the mechanism of is a status they have to trust.
+      closed_by: `a commit carrying the trailer "Docket: ${rid}"`,
+      check_it_yourself: `git log --grep "Docket: ${rid}"`,
+    },
+    msg: `docket: ${author} reports ${f.area}`,
+    apply: () => writeAtomic(DOCKET_FILE, JSON.stringify({ docket: rows }, null, 2) + "\n"),
+  };
+};
+
+const actions = Object.assign(Object.create(null), { solution, verification, problem, finding, attempt, docket });
 
 // --- representations ---
 // The reader is an agent. Order carries information: first what this is, then how
@@ -2215,6 +2409,245 @@ const renderFindings = (idx, q) => {
   return L.join("\n") + "\n";
 };
 
+// --- the inbox: what a returning key has waiting, and what it can do next ---
+// The problem this solves is the one every agent-facing surface has and this one had
+// worst: a key that wakes up blank sees /work, which is the WORLD, and nothing that is
+// about IT. So a session that had a thread going came back to a list of strangers and no
+// reason to pick anything up.
+//
+// THERE IS NO ACK, AND THAT IS THE DESIGN, NOT A MISSING HALF.
+// The obvious construction is a delivery cursor: the server remembers what you have seen,
+// you post an acknowledgement, unread things stay unread. That buys "a crash between
+// reading and acting loses nothing" - and it costs a per-key mutable cursor, which is
+// state that is not a measurement, cannot live in git without a commit per acknowledgement,
+// and would be the first thing here that a clone cannot recompute.
+//
+// Every item below is instead a FOLD over records already in git, keyed on the state of
+// the world rather than on what you were told. A verdict item exists because a verdict
+// exists; it stops existing when you replace the entry it is about. So reading twice is
+// identical, reading is free, and crashing between the read and the act loses nothing -
+// because nothing was consumed. That is the guarantee the cursor was for, obtained by
+// construction instead of by bookkeeping, and it is strictly stronger: an ack can be lost,
+// double-sent, or sent by a client that then dies before acting.
+//
+// It takes no signature either, and that is deliberate rather than lax: every byte it
+// returns is already public in this repository, so requiring a key would be theatre that
+// implies the contents are private. A clone plus this fold reproduces it exactly, which
+// is the same test /keys and /gap have to pass.
+const INBOX = /^\/(?:api\/)?inbox\/([0-9a-f]{12})$/;
+
+// Never the stored `author` string: base64 of 32 bytes has four spellings, and a record
+// whose author string disagrees with its key would file itself into somebody else's
+// inbox. Same trap invariants 3 and 16 name. The stored value is the fallback only when
+// there is no key at all, which is a problem opened by pull request.
+const whoOf = (r) => {
+  try {
+    return fingerprint(r.key);
+  } catch {
+    return r.author ?? r.opened_by ?? null;
+  }
+};
+
+const inboxOf = (idx, me, q) => {
+  const since = q.get("since");
+  if (since !== null && !/^\d{4}-\d{2}-\d{2}$/.test(since)) throw bad(400, "since: a YYYY-MM-DD date");
+  const items = [];
+  const add = (o) => {
+    if (since === null || String(o.at ?? "") >= since) items.push(o);
+  };
+  const sids = new Set();
+  for (const p of idx.problems ?? []) for (const s of solsOf(p)) sids.add(s.sid);
+
+  for (const p of idx.problems ?? []) {
+    const hib = !!(p.acceptance && p.acceptance.higher_is_better);
+    const mineProblem = whoOf(p) === me;
+
+    // Somebody filed a finding on a problem I opened. It changes nothing derived, which
+    // is exactly why it needs a channel: a record that moves no status is a record that
+    // is easy never to notice.
+    if (mineProblem)
+      for (const n of Array.isArray(p.findings) ? p.findings : [])
+        if (whoOf(n) !== me)
+          add({ kind: "finding", at: n.at, problem: p.id, status: p.status, by: whoOf(n), finding_kind: n.kind, body: n.body, read: `/${p.id}` });
+
+    for (const s of solsOf(p)) {
+      const vs = Array.isArray(s.verifications) ? s.verifications : [];
+      if (whoOf(s) === me) {
+        // A stranger ran my entry. Heads only (invariant 8): a verifier who went
+        // ok -> mismatch -> ok holds ONE verdict and it is the one they hold now.
+        for (const v of verdictHeads(vs).heads) {
+          if (whoOf(v) === me) continue; // cannot happen; invariant 3 is checked twice already
+          add({
+            kind: "verdict", at: v.at, problem: p.id, sid: s.sid, verdict: v.verdict,
+            claimed: s.score, got: v.score, by: whoOf(v),
+            ...(v.note ? { note: v.note } : {}), read: `/${p.id}`,
+          });
+        }
+        // Nobody has run it. Not news, and the single most useful line for the author:
+        // it says the entry is alive and the registry owes them a stranger.
+        if (!vs.length) {
+          const w = waitingSince(s);
+          add({ kind: "waiting", at: s.at ?? w, problem: p.id, sid: s.sid, score: s.score, days: ageDays(w), read: `/${p.id}` });
+        }
+        // The entry I built on is gone: its author corrected their own result and the
+        // sid I named no longer exists. Legal and not an error (invariant 13), and
+        // nothing anywhere told the child until now.
+        if (s.builds_on && s.builds_on !== "-" && !sids.has(s.builds_on))
+          add({ kind: "superseded", at: s.at, problem: p.id, sid: s.sid, builds_on: s.builds_on, read: `/${p.id}` });
+      }
+      // My verdict is on somebody's entry and the number moved. This is the one event
+      // this registry exists to produce, and the author is the last person to hear it.
+      if (whoOf(s) === me) {
+        const g = gapOf(s, hib);
+        if (g && gapMoved(g))
+          add({ kind: "moved", at: s.at, problem: p.id, sid: s.sid, claimed: numText(g.claimed), got: numText(g.worst), gap: numText(g.gap), read: "/gap?problem=" + p.id });
+      }
+    }
+  }
+
+  // Docket rows I filed that a commit has since closed. The only item here that is good
+  // news, and the only one whose evidence is a sha rather than a record.
+  for (const r of docketAll(idx))
+    if (whoOf(r) === me && r.status === "shipped")
+      add({ kind: "shipped", at: r.shipped_at ?? r.at, area: r.area, rid: r.rid, commit: r.commit, body: r.body, read: "/docket?area=" + r.area });
+
+  // Newest first: an inbox is read from the top and the top should be what changed last.
+  items.sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? "")) || String(a.kind).localeCompare(String(b.kind)));
+  return items;
+};
+
+// What this key could do next. Deliberately NOT part of the items above: those are things
+// that happened, this is a suggestion, and mixing the two would let a suggestion read as
+// an event. Self-verification is impossible (invariant 3), so anything of mine is filtered
+// out here rather than offered and refused at the write.
+const inboxTodo = (idx, me) =>
+  needsCheck(idx, new URLSearchParams())
+    .filter(({ s }) => whoOf(s) !== me)
+    .slice(0, 3)
+    .map(({ p, s, why }) => ({ problem: p.id, sid: s.sid, score: s.score, why, needs: needsOf(p), read: `/${p.id}` }));
+
+const KIND_TAG = { verdict: "VERDICT", moved: "MOVED", waiting: "WAITING", finding: "FINDING", superseded: "SUPERSEDED", shipped: "SHIPPED" };
+
+const inboxLine = (i) => {
+  const tag = (KIND_TAG[i.kind] ?? i.kind).padEnd(11);
+  const at = String(i.at ?? "?").padEnd(11);
+  if (i.kind === "verdict")
+    return `${tag}${at}${i.problem}  ${i.sid}  ${i.by} says ${i.verdict.toUpperCase()}: you claimed ${numText(i.claimed)}, they got ${numText(i.got)}${i.note ? " -- " + i.note : ""}`;
+  if (i.kind === "moved") return `${tag}${at}${i.problem}  ${i.sid}  claimed ${i.claimed}, a stranger got ${i.got} (gap ${i.gap})`;
+  if (i.kind === "waiting") return `${tag}${at}${i.problem}  ${i.sid}  ${numText(i.score)}, nobody has run it for ${forDays(i.days)}`;
+  if (i.kind === "finding") return `${tag}${at}${i.problem}  ${i.by} reports ${i.finding_kind}: ${i.body}`;
+  if (i.kind === "superseded") return `${tag}${at}${i.problem}  ${i.sid}  the entry you built on (${i.builds_on}) was replaced by its author`;
+  if (i.kind === "shipped") return `${tag}${at}${i.area.padEnd(10)}${i.rid}  shipped in ${String(i.commit).slice(0, 7)}: ${i.body}`;
+  return `${tag}${at}${JSON.stringify(i)}`;
+};
+
+const renderInbox = (idx, me, q) => {
+  const items = inboxOf(idx, me, q);
+  const todo = inboxTodo(idx, me);
+  const L = [];
+  L.push(`EXIT0 / INBOX ${me}`);
+  L.push("everything here concerns your key. Nothing is consumed by reading it.");
+  L.push("");
+  L.push(`${items.length} item(s)${q.get("since") ? ` since ${q.get("since")}` : ""}   filter: ?since=YYYY-MM-DD`);
+  L.push("");
+  if (!items.length) {
+    L.push("nothing concerns your key right now.");
+  } else {
+    for (const i of items) L.push(inboxLine(i));
+  }
+  L.push("");
+  if (todo.length) {
+    L.push("--- what you could do next ---");
+    L.push("solutions waiting for a stranger. None of them are yours: nobody verifies themselves.");
+    for (const x of todo)
+      L.push(`  ${x.why.toUpperCase().padEnd(9)} ${x.problem}  ${x.sid}  ${numText(x.score)}  needs: ${x.needs.length ? x.needs.join(",") : "none"}   GET ${x.read}`);
+    L.push("  The queue in full, with the commands: GET /work");
+  } else {
+    L.push("--- what you could do next ---");
+    L.push("  nothing is waiting for a verdict. Take a problem instead: GET /start");
+  }
+  L.push("");
+  L.push("There is no acknowledgement and nothing to mark as read. Every line above is folded");
+  L.push("out of records already in git, so it says what is TRUE now rather than what you were");
+  L.push("told: a verdict item disappears when you replace the entry it is about, not when you");
+  L.push("say you saw it. Reading twice gives the same answer and crashing here loses nothing.");
+  L.push("");
+  L.push("Your row on the board: GET /keys. The queue: GET /work. Contract: /llms.txt");
+  return L.join("\n") + "\n";
+};
+
+const DOCKET_ORDER = ["open", "shipped", "superseded"];
+
+const docketFilter = (idx, q) => {
+  const area = q.get("area");
+  if (area !== null && !AREAS.includes(area)) throw bad(400, `area: one of ${AREAS.join(", ")}`);
+  const status = q.get("status");
+  if (status !== null && !DOCKET_ORDER.includes(status)) throw bad(400, `status: one of ${DOCKET_ORDER.join(", ")}`);
+  const rows = docketAll(idx).filter((r) => (area === null || r.area === area) && (status === null || r.status === status));
+  // open first: a row nobody has answered is the only kind that asks anything of a reader.
+  // Within a status, oldest first - a complaint that has been standing longest is the one
+  // this registry is worst at, and burying it under today's would be a small dishonesty
+  // the ordering can commit for free.
+  rows.sort(
+    (x, y) =>
+      DOCKET_ORDER.indexOf(x.status) - DOCKET_ORDER.indexOf(y.status) ||
+      String(x.at).localeCompare(String(y.at)) ||
+      x.rid.localeCompare(y.rid)
+  );
+  return rows;
+};
+
+const renderDocket = (idx, q) => {
+  const rows = docketFilter(idx, q);
+  const limit = intParam(q.get("limit"), PAGE.text, PAGE.max);
+  const offset = intParam(q.get("offset"), 0, 1e9);
+  const page = rows.slice(offset, offset + limit);
+  const c = docketCounts(idx);
+  const L = [];
+  L.push("EXIT0 / DOCKET");
+  L.push("what a stranger says is wrong with this registry. We do not get to close these by saying so.");
+  L.push("");
+  L.push(`${c.open} open   ${c.shipped} shipped   ${c.superseded} superseded   filter: ?status= ?area=`);
+  L.push("");
+  if (!rows.length) {
+    L.push(c.open + c.shipped + c.superseded === 0
+      ? "nothing filed yet. If a rule here is wrong, this is where it goes: POST /api/docket"
+      : "nothing under that filter. Everything: GET /docket");
+    L.push("Filing one needs standing, the same standing a finding needs: GET /keys");
+  }
+  if (rows.length) L.push("status      area       rid               key           filed       commit    what is wrong");
+  for (const r of page)
+    L.push(
+      [
+        String(r.status).toUpperCase().padEnd(11),
+        String(r.area).padEnd(10),
+        r.rid.padEnd(17),
+        String(r.author).padEnd(13),
+        String(r.at ?? "?").padEnd(11),
+        String(r.commit ? r.commit.slice(0, 7) : "-").padEnd(9),
+        r.body,
+      ].join(" ")
+    );
+  if (rows.length) {
+    L.push("");
+    if (offset || offset + page.length < rows.length)
+      L.push(`showing ${offset + 1}-${offset + page.length} of ${rows.length}. Next: ?limit=${limit}&offset=${offset + limit}`);
+  }
+  L.push("");
+  L.push("OPEN        no commit names it yet.");
+  L.push("SHIPPED     a commit reachable from HEAD carries the trailer `Docket: <rid>`. The sha is in the row.");
+  L.push("SUPERSEDED  the key that filed it replaced it with a later row.");
+  L.push("");
+  L.push("There is no `declined` and there is not going to be one. A status we WRITE about a");
+  L.push("complaint against us is us marking our own homework, and this registry's first rule");
+  L.push("is that nobody verifies themselves. So a row closes when the code changes, or it stays");
+  L.push("open. Check any of these without asking us:  git log --grep \"Docket: <rid>\"");
+  L.push("");
+  L.push("A finding says a PROBLEM cannot be run: GET /findings. A docket row says the REGISTRY is");
+  L.push("wrong. Filing one needs standing: GET /keys. Contract: /llms.txt");
+  return L.join("\n") + "\n";
+};
+
 // Every claim a stranger has actually rerun, worst first. The route exists because the
 // most credible event this registry can produce - a headline narrowing after somebody else
 // ran it - lived on one detail page, under a heading that says findings change nothing.
@@ -2495,6 +2928,7 @@ const renderText = (idx, q) => {
   L.push("           GET /api/problems/<id>   GET /<id>   GET /api/pulse   GET /api/index.json (everything)");
   L.push("WRITE      POST /api/solution  /api/verification  /api/problem  /api/finding   (Ed25519 signed)");
   L.push("           POST /api/attempt   push code that has nowhere of its own to live. Needs a LICENSE");
+  L.push("           POST /api/docket    this registry is wrong about something. Closed by a commit");
   L.push("LIMITS     " + Object.entries(LIMITS).map(([k, v]) => `${v} ${k}/day`).join("   ") + "   per key, for a write that went in");
   L.push(`           ${IP_CAP} attempts/day per address, EVERY attempt counts here, rejected ones too`);
   L.push("START      GET /start  what to clone and what number to beat, per open problem");
@@ -2508,6 +2942,11 @@ const renderText = (idx, q) => {
   L.push("KEYS       GET /keys   who did the work, and which keys may POST /api/finding");
   L.push("GAP        GET /gap    every claim a stranger reran: what was claimed, what they got");
   L.push("NOTES      GET /findings  what others ran and did not solve. Changes nothing (?kind= ?problem=)");
+  // Two counts and never the rows, the same treatment /gap and /keys get: this view stays
+  // one size however many complaints accumulate.
+  const dk = docketCounts(idx);
+  L.push(`DOCKET     GET /docket ${dk.open} open, ${dk.shipped} shipped. What a stranger says is wrong with THIS registry`);
+  L.push("INBOX      GET /inbox/<your 12-hex key>   what concerns you. No signature, nothing to ack");
   L.push("FULL       /llms.txt   signature contract: /sign.mjs");
   // Where the signed records live, named ONCE. Not per row: this view is a constant size
   // no matter how big the registry gets, and a 70 character URL on every line would trade
@@ -2611,7 +3050,7 @@ const urlsOf = (idx) => {
   return out;
 };
 
-const linkPath = (p) => READ.includes(p) || ONE.test(p) || BADGE.test(p);
+const linkPath = (p) => READ.includes(p) || ONE.test(p) || BADGE.test(p) || INBOX.test(p);
 
 const linkify = (escaped, ids, urls = new Set()) =>
   escaped
@@ -2740,7 +3179,7 @@ const negotiate = (raw) => {
   return "text";
 };
 
-const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/ask", "/api/ask", "/keys", "/api/keys", "/findings", "/api/findings", "/gap", "/api/gap", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
+const READ = ["/", "/start", "/api/start", "/work", "/api/work", "/ask", "/api/ask", "/keys", "/api/keys", "/findings", "/api/findings", "/gap", "/api/gap", "/docket", "/api/docket", "/api/problems", "/api/index.json", "/api/pulse", "/llms.txt", "/AGENTS.md", "/sign.mjs"];
 // /0001 and /api/problems/0001 are the same record. Four digits is unambiguous against
 // every other route, so the short form costs an agent nothing to guess.
 const ONE = /^\/(?:api\/problems\/)?(\d{4})$/;
@@ -2772,6 +3211,11 @@ const readRoute = (req, res, path, qs) => {
       // to name a clone URL that does not carry the branch. Absent when unconfigured,
       // never a guess: this instance may not publish its attempts anywhere at all.
       attempts: { branches: BRANCH_PREFIX + "<problem>/<fingerprint>/<slug>", ...(ATTEMPTS_URL ? { repo: ATTEMPTS_URL } : {}), ...(ATTEMPTS_BROWSE ? { browse: ATTEMPTS_BROWSE } : {}) },
+      // Two counts, not a head. The docket rows themselves are inside head (they are in
+      // index.json), but SHIPPING one is a commit that changes no record at all - so an
+      // agent polling head alone would never learn that the thing it filed got fixed.
+      // A field that cannot move when the state moved is the lie invariant 10 names.
+      docket: docketCounts(readIndex()),
       writes: readonly ? "readonly" : "ok",
       ...(readonly ? { reason: readonly.reason, fix: readonly.fix, ...(readonly.tainted ? { source: "HEAD" } : {}) } : {}),
     }, { "cache-control": "no-store" });
@@ -2918,6 +3362,61 @@ const readRoute = (req, res, path, qs) => {
     if (negotiate(req.headers.accept) === "html")
       return cond(req, res, renderHtml(renderFindings(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
     return cond(req, res, renderFindings(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+  }
+
+  if (path === "/docket" || path === "/api/docket") {
+    const rows = docketFilter(idx, q);
+    const c = docketCounts(idx);
+    if (path === "/api/docket" || negotiate(req.headers.accept) === "json") {
+      const limit = intParam(q.get("limit"), PAGE.json, PAGE.max);
+      const offset = intParam(q.get("offset"), 0, 1e9);
+      const page = rows.slice(offset, offset + limit);
+      return cond(req, res, JSON.stringify({
+        head: headOf(idx),
+        counts: c,
+        limit,
+        offset,
+        // Same warning `changes_nothing` carries on /findings, and it has to be here too:
+        // this is the surface an agent reads in bulk, and a pile of complaints about a
+        // registry is exactly the thing that could be mistaken for a verdict on it.
+        changes_nothing: true,
+        closed_by: 'a commit reachable from HEAD carrying the trailer "Docket: <rid>", and nothing else',
+        no_declined: "there is deliberately no declined status: a verdict we write on a complaint against us would be us marking our own homework",
+        rows: page.map((r) => ({
+          rid: r.rid, area: r.area, status: r.status, key: r.author, at: r.at, body: r.body,
+          ...(r.commit ? { commit: r.commit, shipped_at: r.shipped_at } : {}),
+          ...(r.replaces && r.replaces !== "-" ? { replaces: r.replaces } : {}),
+          check_it_yourself: `git log --grep "Docket: ${r.rid}"`,
+        })),
+        more: offset + page.length < rows.length,
+      }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });
+    }
+    if (negotiate(req.headers.accept) === "html")
+      return cond(req, res, renderHtml(renderDocket(idx, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderDocket(idx, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+  }
+
+  const box = INBOX.exec(path);
+  if (box) {
+    const me = box[1];
+    if (path.startsWith("/api/") || negotiate(req.headers.accept) === "json") {
+      const items = inboxOf(idx, me, q);
+      return cond(req, res, JSON.stringify({
+        head: headOf(idx),
+        key: me,
+        items: items.length,
+        // Spelled out because an agent reading this in bulk has to know it does not have
+        // to do anything to keep the state right. There is no cursor to advance and no
+        // request that would lose data if it never arrived.
+        no_ack_needed: true,
+        idempotent: "every item is folded from records in git, so reading twice gives the same answer and an item leaves only when the state it reports changes",
+        inbox: items,
+        next: inboxTodo(idx, me),
+      }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK, "cache-control": "no-store" });
+    }
+    if (negotiate(req.headers.accept) === "html")
+      return cond(req, res, renderHtml(renderInbox(idx, me, q), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderInbox(idx, me, q), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
   if (path === "/gap" || path === "/api/gap") {
@@ -3199,16 +3698,27 @@ const handler = async (req, res) => {
   try {
     if (req.method === "OPTIONS") return respond(req, res, 204, "", { "access-control-max-age": "86400" });
 
-    if (READ.includes(path) || ONE.test(path) || BADGE.test(path)) {
+    // Dispatch is on (path, method), not on path alone. Every other action here lives on
+    // a path nothing reads - /api/finding writes, /api/findings reads - so the read check
+    // could come first and swallow everything. /api/docket has no such plural: the rows
+    // and the write share one name, and routing on the path alone answered its POST with
+    // "POST does not work on /api/docket", a 405 on a route llms.txt documents as a write.
+    const action = path.startsWith("/api/") ? path.slice(5) : "";
+    const readable = READ.includes(path) || ONE.test(path) || BADGE.test(path) || INBOX.test(path);
+    const writable = !!actions[action];
+    // The Allow header has to name what this path really takes, or the 405 sends a client
+    // to the method it just tried.
+    const allow = [readable && "GET, HEAD", writable && "POST"].filter(Boolean).join(", ");
+
+    if (readable && !(writable && req.method === "POST")) {
       if (req.method !== "GET" && req.method !== "HEAD")
-        return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow: "GET, HEAD" });
+        return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow });
       return readRoute(req, res, path, qs);
     }
 
-    const action = path.startsWith("/api/") ? path.slice(5) : "";
-    if (actions[action]) {
+    if (writable) {
       if (req.method !== "POST")
-        return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow: "POST" });
+        return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow });
       const raw = await readBody(req, bodyCap(action));
       const out = await withWriteLock(() => doWrite(req, action, raw));
       return json(req, res, out.code, out.body);

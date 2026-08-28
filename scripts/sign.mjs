@@ -248,6 +248,24 @@ export const NEEDS = ["gpu", "api-key", "dataset", "docker", "browser"];
 // does not describe an attempt to run something, it does not belong in this drawer.
 export const KINDS = ["deadend", "ambiguous", "blocked"];
 
+// AREA is the fourth closed drawer, and the only one that is not about a problem at all.
+// It says which part of THIS REGISTRY a docket row is about, and the split it draws is
+// the whole reason the docket is a separate door from a finding: a finding says a
+// PROBLEM cannot be run, a docket row says the REGISTRY is wrong. Before this there was
+// no door for the second one, so a stranger who found a hole in our own acceptance rules
+// had to file it against a problem, where it read as a complaint about somebody's entry.
+// Closed for the reason every drawer here is closed - free labels become three spellings
+// of one thing and no filter ever sees all three - and small on purpose: seven values
+// that name real places in this repository, not seven moods.
+//   read       the read surfaces: /, /start, /work, /ask, /keys, /findings, /gap, the JSON mirrors
+//   write      the POST paths and what they accept or refuse
+//   signature  the payload grammar, canonical form, the ids and the chains
+//   limits     rate limits, size caps, the daily counters
+//   attempts   the attempts repository, the ref grammar, bundles
+//   docs       llms.txt, README.md, DESIGN.md, AGENTS.md, QUICKSTART.md
+//   deploy     install, mirror, backup, the unit files
+export const AREAS = ["read", "write", "signature", "limits", "attempts", "docs", "deploy"];
+
 const domainT = (v) => {
   if (typeof v !== "string" || !DOMAINS.includes(v)) throw bad(400, `domain: one of ${DOMAINS.join(", ")}`, { canonical: "other" });
   return v;
@@ -258,6 +276,15 @@ const domainT = (v) => {
 // statement the registry made up on the sender's behalf.
 const kindT = (v) => {
   if (typeof v !== "string" || !KINDS.includes(v)) throw bad(400, `kind: one of ${KINDS.join(", ")}`);
+  return v;
+};
+
+// Same refusal shape as kindT and for the same reason: no canonical suggestion. Guessing
+// which part of this registry a stranger meant would be the registry writing their report
+// for them, and a docket row is a claim about US - the one record here we have the least
+// business editing.
+const areaT = (v) => {
+  if (typeof v !== "string" || !AREAS.includes(v)) throw bad(400, `area: one of ${AREAS.join(", ")}`);
   return v;
 };
 
@@ -400,6 +427,29 @@ export const payload = (action, f) => {
       F(assertCanon(canonText, f.body, "body", MAXLEN.body)),
       replacesT(f.replaces),
     ].join("|");
+  // A docket row is a finding pointed the other way: at this registry instead of at a
+  // problem. It therefore carries NO problem id, and that absence is the feature - it is
+  // the only record here that is not about an entry, so nothing it says can reach a
+  // status, a frontier or a verdict by any path at all. Its fences are the finding's
+  // fences: no parent, so no threads and no last word; a closed drawer instead of a
+  // subject line; standing earned by measuring something before you may write one.
+  //
+  // What it adds is the half a finding could never carry: a way to be WRONG in public
+  // about our own rules and have that recorded, rather than answered in prose by us.
+  // Which is why its status is not in this payload and not in any record. Nobody signs
+  // "shipped" - it is folded out of git history, so the only way to close a row is to
+  // commit a fix that names it, and the only way to fake one is to commit the fix.
+  //
+  // A NEW action, exactly like `attempt` was: PREFIX does not move and every signature
+  // already in this registry stays valid.
+  if (action === "docket")
+    return [
+      PREFIX,
+      "docket",
+      areaT(f.area),
+      F(assertCanon(canonText, f.body, "body", MAXLEN.body)),
+      replacesT(f.replaces),
+    ].join("|");
   throw bad(404, "unknown action");
 };
 
@@ -446,6 +496,72 @@ export const findingId = (problemId, kind, key, body, replaces) =>
       "utf8"
     )
   ).slice(0, 16);
+
+// rid is a chain link for the reason sid, vid and fid are, and it carries the body for
+// the reason fid does: without it a key correcting the text of its own row lands back on
+// the rid it already used and the correction reads as a replay.
+//
+// The chain key is (area, key). That is also the volume cap and the reason this cannot
+// become an issue tracker: one key holds one live row per area, corrected in place, so
+// the docket can never hold more than (distinct keys x AREAS.length) live rows - and the
+// first one costs a piece of real work, because standing is checked before it.
+export const docketId = (area, key, body, replaces) =>
+  sha(
+    Buffer.from(
+      [PREFIX, "rid", areaT(area), keyId(key), F(assertCanon(canonText, body, "body", MAXLEN.body)), replacesT(replaces)].join("|"),
+      "utf8"
+    )
+  ).slice(0, 16);
+
+// The docket's status, folded out of git history and stored nowhere - the same
+// construction as tally() on /keys and gapRows() on /gap (invariant 16). A row is
+// SHIPPED when a commit reachable from HEAD carries the trailer `Docket: <rid>`.
+//
+// This is the part that makes the docket worth having. A status somebody WRITES is an
+// opinion, and an opinion held by the party being complained about is worth nothing: we
+// would be marking our own homework, in a registry whose entire argument is that nobody
+// verifies themselves (invariant 3). A commit is not an opinion. It is in every clone,
+// it names the change, and `git log --grep` settles the question without asking us.
+//
+// PURE on purpose: it takes the text and returns the map, so the rule lives in the
+// contract module while the git call stays at the edges (the server and build.mjs). The
+// same split verdictHeads() has, and for the same reason - a rule that reads a process
+// cannot be checked offline.
+//
+// Input is `git log --format=%H%x1f%aI%x1f%B%x1e`. Trailer must own its line: a rid
+// mentioned inside prose is a mention, not a receipt.
+const REC = String.fromCharCode(30);
+const UNIT = String.fromCharCode(31);
+export const DOCKET_TRAILER = /^Docket:[ \t]*([0-9a-f]{16})[ \t]*$/gm;
+export const docketShipped = (logText) => {
+  const out = new Map();
+  for (const rec of String(logText ?? "").split(REC)) {
+    const [commit, at, msg] = rec.split(UNIT);
+    if (!commit || msg === undefined) continue;
+    const sha_ = commit.trim();
+    if (!/^[0-9a-f]{40}$/.test(sha_)) continue;
+    DOCKET_TRAILER.lastIndex = 0;
+    let m;
+    while ((m = DOCKET_TRAILER.exec(msg)) !== null) {
+      // git log is newest first, so the first commit seen wins and the map records the
+      // commit that shipped it rather than a later one that mentioned it again.
+      if (!out.has(m[1])) out.set(m[1], { commit: sha_, at: String(at ?? "").slice(0, 10) });
+    }
+  }
+  return out;
+};
+
+// One place decides what a row's status IS, so the server, build.mjs and any clone agree.
+// Three values and every one of them is a fact somebody else can check: shipped is a
+// commit, superseded is another row naming this one, open is neither. There is
+// deliberately no "declined", no "wontfix" and no "in progress" - each of those is us
+// having an opinion about a complaint against us, which is the one thing this record
+// exists to take out of our hands.
+export const docketStatus = (row, shipped, rows) => {
+  if (shipped.has(row.rid)) return "shipped";
+  if ((rows ?? []).some((x) => x && x.replaces === row.rid)) return "superseded";
+  return "open";
+};
 
 export const verificationId = (sid, key, outSha, verdict, score, replaces) =>
   sha(
@@ -718,7 +834,7 @@ const USAGE = [
   "usage:",
   "  node scripts/sign.mjs keygen [file.pem] [--force]",
   "  node scripts/sign.mjs whoami [file.pem]",
-  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding|attempt> <json|@file|->",
+  "  node scripts/sign.mjs sign <key.pem> <solution|verification|problem|finding|attempt|docket> <json|@file|->",
   "  node scripts/sign.mjs claim <key.pem> <base-url> <json|@file|->",
   "  node scripts/sign.mjs ask <key.pem> <json|@file|->",
   "",
@@ -731,6 +847,12 @@ const USAGE = [
   "signature covers it, and the solution names the branch the push returned. THREE signed",
   "writes, one command. The body needs `bundle` (a path) and `slug` besides repo and score,",
   "and `repo` is overwritten with the attempts repository the registry actually pushed to.",
+  "",
+  "docket is for a defect in THIS REGISTRY rather than in a problem: a rule that is wrong,",
+  "a route that lies, a document that promises a gate that does not exist. It needs `area`",
+  "and `body` and nothing else. Nobody can mark it fixed by saying so - a row closes when a",
+  "commit carries the trailer `Docket: <rid>`, which is why the status is checkable in your",
+  "own clone with git log --grep and does not depend on believing us.",
   "",
   "ask is the other half of that: somebody ELSE published a number and you want to know",
   "whether it holds. It signs a problem and nothing else, because the figure is not yours",
@@ -842,6 +964,12 @@ const canonBody = (action, b, changed) => {
       body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
       replaces: replacesT(b.replaces),
     };
+  if (action === "docket")
+    return {
+      area: areaT(b.area),
+      body: fix("body", b.body, canonText(b.body, "body", MAXLEN.body)),
+      replaces: replacesT(b.replaces),
+    };
   // The ONLY action whose input is not its output. Everywhere else the third argument of
   // `sign` is exactly the body you POST; here you name a bundle FILE and the CLI emits the
   // base64 plus a signature over the digest it computed from those bytes. Asking a person
@@ -860,7 +988,7 @@ const canonBody = (action, b, changed) => {
       bundle: raw.toString("base64"),
     };
   }
-  throw bad(404, `unknown action "${action}": solution, verification, problem, finding or attempt`);
+  throw bad(404, `unknown action "${action}": solution, verification, problem, finding, attempt or docket`);
 };
 
 const cli = (argv) => {

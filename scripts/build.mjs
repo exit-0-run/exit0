@@ -12,13 +12,15 @@ import { execFileSync } from "node:child_process";
 import {
   MAXLEN, keyId, fingerprint, check, payload, problemFields,
   canonUrl, canonText, canonLine, solutionId, verificationId, findingId,
-  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, verdictStrength, canonNeeds, DOMAINS, KINDS, probCmp,
+  evidencePath, checkVerification, cell, mdUrl, solCmp, verdictHeads, verdictStrength, canonNeeds, DOMAINS, KINDS, AREAS, probCmp,
+  docketId,
 } from "./sign.mjs";
 
 const DIR = "problems";
 const README = "README.md";
 const INDEX = "index.json";
 const SCHEMA = join(DIR, "_schema.json");
+const DOCKET = "docket.json";
 const START = "<!-- INDEX:START -->";
 const END = "<!-- INDEX:END -->";
 const CHECK = process.argv.includes("--check");
@@ -558,6 +560,118 @@ for (const { path, p } of loaded) {
   });
 }
 
+// --- 5b. the docket ---
+// The docket is validated here for the same reason everything else is: the server runs
+// build.mjs before every commit (invariant 2), so a row that cannot be recomputed offline
+// never reaches git. What is deliberately NOT computed here is the row's STATUS. That is a
+// fold over git history (docketShipped in sign.mjs), it is stored in no record, and if it
+// were derived into a file then shipping a row would mean committing the fix and then
+// committing a rebuild that says so - two commits, the second of which nobody can check
+// against anything. A status that lives only in the log cannot be stale.
+
+const docketRows = (() => {
+  let raw;
+  try {
+    raw = readFileSync(DOCKET, "utf8");
+  } catch {
+    return []; // absent is legal: a registry that nobody has complained about yet
+  }
+  let o;
+  try {
+    o = JSON.parse(raw);
+  } catch (e) {
+    errors.push(`${DOCKET}: not valid JSON (${e.message})`);
+    return [];
+  }
+  if (o === null || typeof o !== "object" || Array.isArray(o) || !Array.isArray(o.docket)) {
+    errors.push(`${DOCKET}: expected {"docket": [...]}`);
+    return [];
+  }
+  return o.docket;
+})();
+
+{
+  const err = (m) => errors.push(`${DOCKET}: ${m}`);
+  const seen = new Set();
+  const groups = new Map();
+
+  for (const r of docketRows) {
+    if (r === null || typeof r !== "object" || Array.isArray(r)) {
+      err("a row is not an object");
+      continue;
+    }
+    const at = r.rid ?? "?";
+    const e = (m) => err(`${at}: ${m}`);
+    if (!/^[0-9a-f]{16}$/.test(r.rid ?? "")) { e("rid is not 16 hex"); continue; }
+    if (seen.has(r.rid)) { e("duplicate rid"); continue; }
+    seen.add(r.rid);
+    if (!AREAS.includes(r.area)) { e(`area: one of ${AREAS.join(", ")}`); continue; }
+    if (typeof r.key !== "string" || typeof r.sig !== "string") { e("key and sig must be strings"); continue; }
+    if (!canonicalKey(r.key)) { e("the key is not in canonical base64 form"); continue; }
+    if (fingerprint(r.key) !== r.author) { e("author does not match the key fingerprint"); continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(r.at ?? "")) { e("at is not a YYYY-MM-DD date"); continue; }
+    if (r.replaces !== "-" && !/^[0-9a-f]{16}$/.test(r.replaces ?? "")) { e('replaces is "-" or a rid'); continue; }
+    sameField(canonText, r.body, "body", MAXLEN.body, e);
+
+    // rid is recomputed, never trusted: it is the chain link, and a row whose stored id
+    // does not follow from its own content could name a predecessor it never had.
+    let want = null;
+    try {
+      want = docketId(r.area, r.key, r.body, r.replaces);
+    } catch (x) {
+      e(`rid: ${x.message}`);
+    }
+    if (want !== null && want !== r.rid) e(`rid does not match the content, expected ${want}`);
+
+    let msg = null;
+    try {
+      msg = payload("docket", { area: r.area, body: r.body, replaces: r.replaces });
+    } catch (x) {
+      e(`payload: ${x.message}`);
+    }
+    sigOk(r.key, r.sig, msg, e, "docket");
+
+    let id;
+    try { id = keyId(r.key); } catch { continue; }
+    const g = `${r.area}\u0000${id}`;
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+
+  // The chain, per (area, key). Same shape as the verdict chain and enforced for the same
+  // reason (invariant 8): which row is LIVE must not depend on the order of lines in a
+  // file, because order is the one thing a pull request can change without touching a
+  // signature. One root, one head, no forks, no cycles.
+  for (const [g, rows] of groups) {
+    const [area] = g.split("\u0000");
+    const e = (m) => err(`${area} chain: ${m}`);
+    const byRid = new Map(rows.map((r) => [r.rid, r]));
+    const roots = rows.filter((r) => r.replaces === "-");
+    if (roots.length !== 1) e(`expected exactly one row with replaces "-", found ${roots.length}`);
+    const targets = new Map();
+    for (const r of rows) {
+      if (r.replaces === "-") continue;
+      if (!byRid.has(r.replaces)) e(`${r.rid} replaces ${r.replaces}, which is not this key's row in this area`);
+      if (targets.has(r.replaces)) e(`${r.replaces} is replaced twice (${targets.get(r.replaces)} and ${r.rid})`);
+      targets.set(r.replaces, r.rid);
+    }
+    const heads = rows.filter((r) => !targets.has(r.rid));
+    if (heads.length !== 1) e(`expected exactly one head, found ${heads.length}`);
+    // Walk it. A cycle would otherwise pass every check above and make the live row
+    // undecidable - the same class of fault the verdict chain closes with a step cap.
+    if (heads.length === 1 && roots.length === 1) {
+      let cur = heads[0];
+      let n = 0;
+      while (cur && n <= rows.length) {
+        n++;
+        if (cur.replaces === "-") break;
+        cur = byRid.get(cur.replaces);
+      }
+      if (n !== rows.length) e(`the chain covers ${n} of ${rows.length} rows: it is broken or has a cycle`);
+    }
+  }
+}
+
 // --- 6. write ---
 
 const ordered = (o, keys) => {
@@ -698,6 +812,10 @@ const nextIndex =
       // that names its own filename is a second place for the name to be wrong. The server
       // needs it to build a browse URL without a readdir per problem on a read path.
       problems: shaped.map(({ out, path }) => ({ ...out, file: path })),
+      // Mirrored verbatim from docket.json so that one file is still the whole read API.
+      // No status here on purpose: it is a fold over git log, so a mirror carries the
+      // rows and recomputes the rest, exactly as it already does for /keys and /gap.
+      docket: docketRows,
     },
     null,
     2

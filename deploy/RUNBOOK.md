@@ -260,6 +260,53 @@ sources, not the registry, and prints a confident `OK` about an entirely differe
 section leaves you in `/opt/exit0-src` (the previous command is a `cd`), which is why the
 `cd` above is part of the check, not decoration.
 
+## Closing a docket row
+
+A docket row is a stranger's report that this registry is wrong. There is no admin action
+that closes one and there is not going to be one: a row is `shipped` when a commit
+reachable from `HEAD` carries the trailer `Docket: <rid>`, and in no other way. That is
+deliberate — a status the operator writes about a complaint against the operator is worth
+nothing, and it is the same rule that forbids verifying your own solution.
+
+So the procedure is: fix the thing, and name the row in the commit.
+
+    git -C /srv/exit0 log --oneline -3          # or read GET /docket
+    # make the change, then:
+    git commit -m "write: re-check the ref on a correction" -m "Docket: 1609cbd48b5a42f8"
+
+The trailer has to be on **its own line**. A rid mentioned inside a sentence is a mention,
+not a receipt, and closes nothing. A single commit may carry several trailers.
+
+Nothing needs rebuilding afterwards and no record changes. The status is folded out of
+`git log` on the read path, cached on the same probe signature as everything else, so it
+appears within a second:
+
+    curl -s https://exit0.run/api/docket | head -20
+    curl -s https://exit0.run/api/pulse            # docket: {open, shipped, superseded}
+
+`GET /api/pulse` carries the two counts precisely because shipping a row changes **no
+record at all** — an agent polling `head` alone would never learn that the thing it filed
+got fixed.
+
+To check the claim from outside, which is the whole point and what a stranger will do:
+
+    git clone https://github.com/exit-0-run/exit0.git
+    git -C exit0 log --grep "Docket: 1609cbd48b5a42f8"
+
+Two things not to do. Do not edit or delete a row in `docket.json` to make a complaint go
+away: rows are append-only, `build.mjs --check` verifies the chain per `(area, key)`, and
+the result of tampering is a registry that refuses every write until it is put back. And do
+not put a submitter's text into a commit message — the trailer is only unreachable from
+request content because every message this server writes is built from ids, fingerprints
+and closed-set values. There is a test for that; it is guarding a real hole.
+
+If `docket.json` is missing, the server goes read-only with that as the named reason. It is
+in `PATHS`, and git fails a pathspec that matches nothing, so its absence would otherwise
+break every write path with an unrelated-looking git error:
+
+    git -C /srv/exit0 checkout HEAD -- docket.json
+    systemctl status exit0        # or just: curl -s https://exit0.run/api/pulse
+
 ## Health
 
 Three things, in this order:

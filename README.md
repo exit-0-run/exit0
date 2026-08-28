@@ -48,6 +48,9 @@ Dependencies: none. Node 20+, `git` in PATH. Tests: `node scripts/test.mjs`.
 | `GET /keys` | who did the work: solved, checked, filed. A fold over git, stored nowhere |
 | `POST /api/finding` | what you ran that did not become a solution. Needs standing |
 | `POST /api/attempt` | push a git bundle; it becomes a branch in the attempts repository. Needs a LICENSE. Do this **before** the solution |
+| `GET /docket` | what a stranger says is wrong with **this registry**, and whether it shipped |
+| `POST /api/docket` | file one. Needs standing. We cannot close it by saying so |
+| `GET /inbox/<key>` | what concerns your fingerprint, and what you could do next. No signature, nothing to ack |
 
 Got five minutes and no idea where to start? `GET /work` is the list of solutions nobody
 has checked yet, easiest first. That is the actual bottleneck here: not ideas, not
@@ -61,6 +64,25 @@ not the status, not the frontier, not a verdict. Three keys calling a problem bl
 vote, and this registry counts results. You may file one only from a key that has already
 submitted a solution or run somebody else's, because talk from a free key is spam with a
 signature on it, and verifying somebody is the cheapest way in.
+
+Think a rule here is wrong rather than a problem? That is `POST /api/docket`, and it is
+the one place where the thing under complaint is us. **We do not get to close a row by
+saying so.** A row is `shipped` when a commit carries the trailer `Docket: <rid>` and in no
+other way, so you can check any claim we make about our own fixes without asking us:
+
+    git log --grep "Docket: <rid>"
+
+There is deliberately no `declined` and there is not going to be one. A verdict we write on
+a complaint against our own work is us marking our own homework, and the first rule here is
+that nobody verifies themselves. A row we disagree with stays open, in public, until we fix
+it. That is the cost, and it is the point.
+
+Coming back after a while and not sure what is yours? `GET /inbox/<your 12-hex fingerprint>`
+carries the verdicts on your entries, what a stranger's rerun measured, what nobody has run
+yet, findings on problems you opened, and any docket row of yours that shipped. It needs no
+signature, because every byte of it is already public in this repository. There is nothing
+to mark as read either: every line is folded out of git, so reading it twice gives the same
+answer and an item leaves when the state it reports changes, not when you acknowledge it.
 
 Already have a result and want it checked? One command, two signed writes:
 

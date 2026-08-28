@@ -41,7 +41,7 @@ const hit = async (path, opts = {}) => {
   try {
     json = JSON.parse(text);
   } catch {}
-  return { status: res.status, text, json };
+  return { status: res.status, text, json, headers: res.headers };
 };
 const post = (action, body) =>
   hit(`/api/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -66,7 +66,7 @@ check(
   llms.status === 200 && !!PREFIX && llms.text.includes(`${PREFIX}|verification|`),
   `HTTP ${llms.status}, ${llms.text.length} bytes, prefix ${PREFIX}`
 );
-for (const action of ["solution", "verification", "problem", "finding"])
+for (const action of ["solution", "verification", "problem", "finding", "docket"])
   check(`/llms.txt carries the grammar for ${action}`, !!PREFIX && llms.text.includes(`${PREFIX}|${action}|`), `no ${PREFIX}|${action}| line`);
 if (signer.status !== 200) {
   console.log("\nwithout the signer nothing below can be signed. Stopping.");
@@ -329,6 +329,67 @@ check(
   `HTTP ${askText.status}: ${askText.text.slice(0, 200)}`
 );
 check("the front door advertises the question door", /GET \/ask/.test(front.text), front.text.slice(0, 600));
+
+// --- the docket and the inbox, on the deployed instance ---
+// Both are READ-ONLY here on purpose. Filing a docket row against a public registry is
+// real content that a revert cannot fully undo (the rid is in a signature), and the two
+// properties worth checking from outside do not need a write: that the status is a fold
+// nobody can assert, and that the inbox answers for a key without one.
+const dock = await hit("/api/docket");
+check(
+  "the docket is served and states the ONE thing that closes a row",
+  dock.status === 200 && /Docket: <rid>/.test(String(dock.json?.closed_by)) && dock.json?.changes_nothing === true,
+  `HTTP ${dock.status}: ${dock.text.slice(0, 200)}`
+);
+check(
+  "no docket row carries a status field: the status is folded, never stored",
+  Array.isArray(dock.json?.rows) && dock.json.rows.every((r) => ["open", "shipped", "superseded"].includes(r.status) && typeof r.check_it_yourself === "string"),
+  JSON.stringify(dock.json?.rows?.[0] ?? null)
+);
+check(
+  "every SHIPPED row names the commit that closed it",
+  (dock.json?.rows ?? []).filter((r) => r.status === "shipped").every((r) => /^[0-9a-f]{40}$/.test(String(r.commit))),
+  JSON.stringify((dock.json?.rows ?? []).filter((r) => r.status === "shipped").map((r) => [r.rid, r.commit]))
+);
+const dockText = await hit("/docket", { headers: { accept: "text/plain" } });
+check(
+  "the docket page refuses a declined status in public, and says why",
+  dockText.status === 200 && dockText.text.startsWith("EXIT0 / DOCKET") && /no `?declined`?/i.test(dockText.text) && /marking our own homework|nobody verifies themselves/i.test(dockText.text),
+  `HTTP ${dockText.status}: ${dockText.text.slice(0, 200)}`
+);
+// /api/docket is the only path here that answers both GET and POST. Routing on the path
+// alone answered the documented write with a 405, so this is checked from outside too.
+const dockAllow = await hit("/api/docket", { method: "DELETE" });
+check(
+  "/api/docket takes both GET and POST, and says so in Allow",
+  dockAllow.status === 405 && /GET/.test(dockAllow.headers.get("allow") ?? "") && /POST/.test(dockAllow.headers.get("allow") ?? ""),
+  `HTTP ${dockAllow.status}, allow: ${dockAllow.headers.get("allow")}`
+);
+check("the front door advertises the docket", /GET \/docket/.test(front.text), front.text.slice(0, 800));
+
+const inbox = await hit(`/api/inbox/${sg.fingerprint(B.pub)}`);
+check(
+  "the inbox answers for a key with no signature and nothing to acknowledge",
+  inbox.status === 200 && inbox.json?.no_ack_needed === true && Array.isArray(inbox.json?.inbox) && Array.isArray(inbox.json?.next),
+  `HTTP ${inbox.status}: ${inbox.text.slice(0, 200)}`
+);
+check(
+  "the verifier's own verdict reaches nobody else's inbox, and the author's does carry it",
+  (await hit(`/api/inbox/${sg.fingerprint(A.pub)}`)).json?.inbox?.some((i) => i.kind === "verdict" && i.sid === SID),
+  `the author ${sg.fingerprint(A.pub)} should see the verdicts filed on ${SID}`
+);
+const inbox2 = await hit(`/api/inbox/${sg.fingerprint(A.pub)}`);
+const inbox1 = await hit(`/api/inbox/${sg.fingerprint(A.pub)}`);
+check(
+  "reading the inbox twice is identical: it is a fold, so nothing is consumed",
+  JSON.stringify(inbox1.json?.inbox) === JSON.stringify(inbox2.json?.inbox),
+  `${JSON.stringify(inbox1.json?.inbox)?.slice(0, 150)} vs ${JSON.stringify(inbox2.json?.inbox)?.slice(0, 150)}`
+);
+check(
+  "there is no acknowledgement endpoint: a mailbox would be state a clone cannot recompute",
+  (await hit("/api/inbox/ack", { method: "POST", body: "{}" })).status === 404,
+  "POST /api/inbox/ack answered something other than 404"
+);
 
 const html = await hit("/", { headers: { accept: "text/html" } });
 check("HTML is served only on request, with no scripts and nothing pulled from the network", html.text.startsWith("<!doctype html") && !/<script/i.test(html.text) && !/\b(?:src|href)\s*=\s*["']https?:/i.test(html.text), html.text.slice(0, 120));

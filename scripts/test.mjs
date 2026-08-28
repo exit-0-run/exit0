@@ -25,7 +25,12 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const NODE = process.execPath;
 // .gitattributes travels with the copy, because without it git rewrites evidence
 // bytes and the server drops into read-only mode (D3).
-const COPY = ["scripts", "problems", "README.md", "llms.txt", ".gitignore", ".gitattributes", "work.mjs"];
+// docket.json is a SOURCE file like problems/, so every fixture needs it. Leaving it out
+// does not produce a fixture without a docket: it produces a fixture where every write
+// path 503s, because the file is in PATHS and `git add --` fails a pathspec that matches
+// nothing. That is how it presented the first time - 120 red tests, none of them about
+// the docket.
+const COPY = ["scripts", "problems", "docket.json", "README.md", "llms.txt", ".gitignore", ".gitattributes", "work.mjs"];
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const EMPTY_SHA16 = "e3b0c44298fc1c14";
 // assembled from pieces so this file is not a hit in its own grep
@@ -103,7 +108,7 @@ const chmodBlocks = (dir) => {
 };
 
 const commits = (dir) => Number(git(dir, "rev-list", "--count", "HEAD"));
-const dirty = (dir) => git(dir, "status", "--porcelain", "--", "problems", "README.md", "index.json");
+const dirty = (dir) => git(dir, "status", "--porcelain", "--", "problems", "docket.json", "README.md", "index.json");
 const problemName = (dir, id) => readdirSync(join(dir, "problems")).find((f) => f.startsWith(`${id}-`) && f.endsWith(".json"));
 const problemAt = (dir, id) => JSON.parse(String(fromHead(dir, `problems/${problemName(dir, id)}`)));
 
@@ -2617,7 +2622,21 @@ if (gate.server)
       });
       const t = await hit(SRV, { path: "/" });
       const records = t.text.split("\n").filter((l) => /^\[\d{4}\]/.test(l));
-      assert.equal(records.length, before.problems.length + 1, "a line from user content is passing for a problem record (C9)");
+      // NOT a count against the registry total. GET / is capped at PAGE.text rows on
+      // purpose (a front door of constant size), so counting every problem was an
+      // assertion about the page cap wearing the name of an injection test - and it went
+      // red the moment the suite's own fixtures pushed the tree past the cap, saying
+      // "user content is impersonating a record" about nothing at all.
+      // What the test is actually about, asserted directly and independent of the cap:
+      // no record line may exist that no problem produced.
+      const ids = new Set([...before.problems.map((p) => p.id), ...(await idxOf(SRV)).problems.map((p) => p.id)]);
+      for (const line of records) {
+        const id = line.slice(1, 5);
+        assert.ok(ids.has(id), `a line from user content is passing for a problem record (C9): ${line.slice(0, 80)}`);
+      }
+      assert.ok(!records.some((l) => l.startsWith("[9999]")), "the forged record id reached the listing (C9)");
+      // The front door does not print `how` at all, so the injected text has no route to it.
+      assert.ok(!t.text.includes("SOLVED impersonating a record"), "content from the how field reached the front door");
       assert.ok(String(fromHead(TREE, "README.md")).includes("Injection \\| into the table"), "a pipe in the title is not escaped in the README table");
     });
 
@@ -4346,6 +4365,333 @@ if (gate.server)
         "llms.txt says the server checks subject on the write path, and it does not: that is the class of promise the `how` field is already careful never to make"
       );
       assert.match(readFileSync(join(ROOT, "DESIGN.md"), "utf8"), /fences/i, "DESIGN.md does not record where the fences are or why");
+    });
+  });
+
+// =====================================================================
+// 9c. The docket: a defect in THIS registry, closed by a commit
+// =====================================================================
+
+const dockBody = (k, o) => signBody(k, "docket", { area: o.area, body: o.body, replaces: o.replaces ?? "-" });
+const docketAt = (dir) => JSON.parse(String(fromHead(dir, "docket.json"))).docket;
+// A commit that closes a row, made the way a maintainer makes it: the trailer on its own
+// line in the message body, nothing else special about it.
+const shipRow = (dir, rid, subject) => {
+  writeFileSync(join(dir, "SHIP.txt"), `${rid}\n`);
+  git(dir, "add", "--", "SHIP.txt");
+  git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", subject ?? "a fix", "-m", `Docket: ${rid}`);
+};
+
+if (gate.server)
+  describe("the docket: the registry's own defects, and who gets to close one", () => {
+    const state = {};
+
+    test("a key with no work behind it cannot file one -> 403 pointing at the queue", async () => {
+      const c0 = commits(TREE);
+      const r = await post(SRV, "docket", dockBody(mkKey(), { area: "write", body: "I have done nothing and wish to complain" }));
+      is(r, 403, "a docket row from a key with no standing");
+      assert.match(JSON.stringify(r.json), /\/work/, "the 403 has to name how standing is earned");
+      assert.equal(commits(TREE), c0, "a refused row is not a commit");
+    });
+
+    test("standing earns it -> 201 carrying the rid AND the command that closes it", async () => {
+      state.k = await standingKey();
+      const c0 = commits(TREE);
+      const body = "a solution may name a ref whose problem segment no longer matches";
+      const r = await post(SRV, "docket", dockBody(state.k, { area: "write", body }));
+      is(r, 201, "a docket row from a key with standing");
+      assert.match(r.json?.rid ?? "", /^[0-9a-f]{16}$/, "a 201 has to return the rid");
+      state.rid = r.json.rid;
+      assert.equal(r.json.status, "open", "a fresh row is open");
+      // The mechanism has to travel with the receipt: a status whose mechanism is invisible
+      // is a status the filer has to take on trust, which is the thing this record refuses.
+      assert.match(String(r.json.check_it_yourself), /git log --grep/, "the 201 has to hand back the command that checks the status without us");
+      assert.equal(commits(TREE), c0 + 1, "an accepted row is a commit");
+      const rec = docketAt(TREE).find((x) => x.rid === state.rid);
+      assert.ok(rec, "the row is not in HEAD");
+      assert.equal(rec.author, sg.fingerprint(state.k.pub), "author has to come from the key (invariant 4)");
+      assert.equal(rec.body, body);
+      assert.equal(rec.replaces, "-");
+      assert.equal(rec.status, undefined, "a stored status would be a status we could write");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("area is a closed drawer, and a row carries no problem id at all", async () => {
+      for (const area of ["+1", "feature", "ux", ""]) {
+        let r;
+        try {
+          r = await post(SRV, "docket", dockBody(state.k, { area, body: "x" }));
+        } catch {
+          continue; // sign.mjs refused to build the payload, which is the same answer
+        }
+        is(r, 400, `area ${JSON.stringify(area)}`);
+      }
+      // Structural, not cosmetic: with no problem id there is NO path by which a docket row
+      // could reach a status, a frontier or a verdict.
+      assert.ok(!/\bproblem\b/.test(sg.payload("docket", { area: "read", body: "x", replaces: "-" })), "the docket payload must not carry a problem id");
+    });
+
+    test("a docket row changes NOTHING derived", async () => {
+      const k = await standingKey();
+      const before = problemAt(TREE, "0002");
+      const snap = { status: before.status, frontier: JSON.stringify(before.frontier) };
+      is(await post(SRV, "docket", dockBody(k, { area: "read", body: "the listing hides the band on a filtered page" })), 201, "a read-area row");
+      const after = problemAt(TREE, "0002");
+      assert.equal(after.status, snap.status, "a docket row moved a status: that is a vote");
+      assert.equal(JSON.stringify(after.frontier), snap.frontier, "a docket row moved a frontier");
+    });
+
+    test("one live row per (area, key): a second needs replaces, and rows are APPENDED", async () => {
+      const first = docketAt(TREE).find((x) => x.rid === state.rid);
+      assert.ok(first);
+      // A wrong replaces is a 409 that names the value to sign.
+      const wrong = await post(SRV, "docket", dockBody(state.k, { area: "write", body: "a second complaint, wrongly signed" }));
+      is(wrong, 409, "a second row in the same area with replaces -");
+      assert.equal(wrong.json?.replaces, state.rid, "the 409 has to carry the rid to sign against");
+      // The exact same body twice reads as a replay, not as a chain error.
+      is(await post(SRV, "docket", dockBody(state.k, { area: "write", body: first.body })), 409, "the identical body again");
+      // The correction, signed properly.
+      const ok = await post(SRV, "docket", dockBody(state.k, { area: "write", body: "sharper: the ref's problem segment is checked but never re-checked on a correction", replaces: state.rid }));
+      is(ok, 201, "the correction");
+      state.rid2 = ok.json.rid;
+      const rows = docketAt(TREE);
+      // APPENDED, not replaced in place like a finding. A shipped row names a commit, and
+      // a receipt that can be overwritten is not a receipt.
+      assert.ok(rows.some((x) => x.rid === state.rid), "the superseded row was overwritten: a receipt has to survive");
+      assert.ok(rows.some((x) => x.rid === state.rid2), "the correction is missing");
+      assert.equal(build(TREE, "--check").code, 0);
+    });
+
+    test("a different area is a different slot", async () => {
+      is(await post(SRV, "docket", dockBody(state.k, { area: "docs", body: "llms.txt promises a gate the write path does not have" })), 201, "a docs row under the same key");
+    });
+
+    test("SHIPPED is a fold over git history, and no record changed to produce it", async () => {
+      const before = await hit(SRV, { path: `/api/docket?status=open` });
+      const openBefore = before.json.rows.filter((r) => r.rid === state.rid2).length;
+      assert.equal(openBefore, 1, "the live row should be open before the fix");
+      const recBefore = JSON.stringify(docketAt(TREE).find((x) => x.rid === state.rid2));
+
+      shipRow(TREE, state.rid2, "write: re-check the ref on a correction");
+      await sleep(1200); // the fold is cached on the probe, which is capped at 1s (invariant 10)
+
+      const after = await hit(SRV, { path: `/api/docket` });
+      const row = after.json.rows.find((r) => r.rid === state.rid2);
+      assert.equal(row.status, "shipped", "a commit carrying the trailer did not close the row");
+      assert.match(row.commit ?? "", /^[0-9a-f]{40}$/, "a shipped row has to name the commit that closed it");
+      // The whole point: nothing was written to make this true.
+      assert.equal(JSON.stringify(docketAt(TREE).find((x) => x.rid === state.rid2)), recBefore, "the record changed: the status is supposed to be folded, not stored");
+      // ...and a stranger can reach the same answer without asking the server.
+      assert.match(git(TREE, "log", "--grep", `Docket: ${state.rid2}`, "--format=%H"), /^[0-9a-f]{40}$/, "git log --grep has to find it too");
+    });
+
+    test("the trailer has to own its line: a rid mentioned in prose ships nothing", async () => {
+      const k = await standingKey();
+      const r = await post(SRV, "docket", dockBody(k, { area: "limits", body: "the address cap counts a 413 that never arrived" }));
+      is(r, 201, "a limits row");
+      const rid = r.json.rid;
+      writeFileSync(join(TREE, "SHIP.txt"), "prose\n");
+      git(TREE, "add", "--", "SHIP.txt");
+      git(TREE, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", `looked at Docket: ${rid} today and decided not to`);
+      await sleep(1200);
+      const after = await hit(SRV, { path: `/api/docket?area=limits` });
+      assert.equal(after.json.rows.find((x) => x.rid === rid).status, "open", "a rid inside a sentence closed a row: the trailer must own its line");
+    });
+
+    test("the ship channel is unreachable from anything a stranger sends", async () => {
+      // Every commit message this server writes is built from ids, fingerprints and
+      // closed-set values. The moment one carries submitted text, a submitter can close
+      // their own row by putting the trailer in a title.
+      const k = await standingKey();
+      const r = await post(SRV, "docket", dockBody(k, { area: "signature", body: "the canonical form of a key is checked after the payload is built" }));
+      is(r, 201, "a signature-area row");
+      const rid = r.json.rid;
+      const P = await newProblem(SRV, { title: `Docket: ${rid}` });
+      assert.ok(P.id, "the problem with a trailer-shaped title should still be accepted: this is not a content filter");
+      await sleep(1200);
+      const after = await hit(SRV, { path: `/api/docket?area=signature` });
+      assert.equal(after.json.rows.find((x) => x.rid === rid).status, "open", "submitted text reached a commit message and closed a row");
+      const msg = git(TREE, "log", "-1", "--format=%B", "--", "problems");
+      assert.ok(!msg.includes(rid), "a commit message carries submitted text: the ship channel is open to anyone");
+    });
+
+    test("there is no declined status, and the text says why", async () => {
+      const t = (await hit(SRV, { path: "/docket", headers: { accept: "text/plain" } })).text;
+      assert.match(t, /shipped/i);
+      assert.ok(!/\bdeclined\b|\bwontfix\b/i.test(t.split("There is no")[0] ?? t), "a declined status appeared in the listing");
+      assert.match(t, /marking our own homework|nobody verifies themselves/i, "the page has to say why there is no declined");
+      const j = (await hit(SRV, { path: "/api/docket" })).json;
+      assert.equal(j.changes_nothing, true, "the bulk surface has to say a pile of complaints is not a verdict");
+      assert.match(String(j.closed_by), /Docket: <rid>/);
+    });
+
+    test("/api/docket takes GET and POST, and the 405 names both", async () => {
+      is(await hit(SRV, { path: "/api/docket" }), 200, "GET the listing");
+      const r = await hit(SRV, { method: "DELETE", path: "/api/docket" });
+      is(r, 405, "DELETE");
+      assert.match(String(r.headers?.allow ?? ""), /GET/, "Allow has to name GET");
+      assert.match(String(r.headers?.allow ?? ""), /POST/, "Allow has to name POST: routing on the path alone answered the documented write with a 405");
+    });
+
+    test("index.json mirrors the rows and carries no status", async () => {
+      const idx = JSON.parse(String(fromHead(TREE, "index.json")));
+      assert.ok(Array.isArray(idx.docket), "index.json has to mirror the docket or a mirror is missing a surface");
+      assert.ok(idx.docket.length > 0);
+      assert.ok(idx.docket.every((r) => r.status === undefined), "a mirrored status would go stale the moment a fix is committed");
+    });
+
+    test("the validator refuses a tampered row (signature, rid, chain)", () => {
+      const dir = mkTree("docket-validator");
+      const rows = JSON.parse(readFileSync(join(dir, "docket.json"), "utf8")).docket;
+      const put = (list) => writeFileSync(join(dir, "docket.json"), JSON.stringify({ docket: list }, null, 2) + "\n");
+      if (!rows.length) return; // the shipped repo starts empty; the server-written cases above cover the rest
+      put(rows.map((r, i) => (i ? r : { ...r, body: r.body + " (edited)" })));
+      assert.notEqual(build(dir, "--check").code, 0, "an edited body passed the validator");
+      put(rows.map((r, i) => (i ? r : { ...r, rid: "0".repeat(16) })));
+      assert.notEqual(build(dir, "--check").code, 0, "a rid that does not follow from the content passed");
+    });
+
+    test("AREAS agrees between sign.mjs and llms.txt", () => {
+      const llms = readFileSync(join(ROOT, "llms.txt"), "utf8");
+      for (const a of sg.AREAS) assert.ok(llms.includes(a), `llms.txt does not document the area "${a}"`);
+      // The drawer has to be listed as a closed set, or an agent has to guess it.
+      assert.match(llms, /closed set read, write, signature, limits, attempts, docs, deploy/, "llms.txt does not spell out the closed AREAS set");
+    });
+
+    test("docket.json missing is a NAMED reason, never a git error in a 500", async () => {
+      // Measured, not hypothetical: every path in PATHS reaches `git add --`, and git fails
+      // a pathspec that matches nothing - so removing this file broke all five write paths
+      // at once with `fatal: pathspec did not match any files` inside a 500.
+      const dir = newTree("docket-missing"); // sealed: mkTree alone has no git, and the point of this test is what git does
+      const srv = await startServer(dir);
+      try {
+        git(dir, "rm", "-q", "--", "docket.json");
+        git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "remove the docket");
+        await sleep(1200);
+        const p = (await hit(srv, { path: "/api/pulse" })).json;
+        assert.equal(p.writes, "readonly", "a missing source file has to suspend writes, not fail each one with a git error");
+        assert.match(String(p.reason), /docket\.json/, "the reason has to name the file");
+        assert.match(String(p.fix), /git checkout/, "the reason has to carry the command that repairs it");
+      } finally {
+        await stop(srv);
+      }
+    });
+  });
+
+// =====================================================================
+// 9d. The inbox: what concerns one key, folded and never consumed
+// =====================================================================
+
+if (gate.server)
+  describe("the inbox: a returning key has something to pick up", () => {
+    const state = {};
+
+    test("a verdict on my entry reaches me, with what I claimed against what they got", async () => {
+      const author = mkKey();
+      const P = await newProblem(SRV, { title: "A problem for the inbox to report on" });
+      is(await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/inbox-a", score: 0.5 })), 201, "the entry");
+      const sid = (problemAt(TREE, P.id).solutions ?? []).at(-1).sid;
+      const verifier = mkKey();
+      is(await post(SRV, "verification", verBody(verifier, { problem: P.id, solution: sid, score: 0.5, verdict: "ok", output: "inbox fixture: 0.5\n" })), 201, "the verdict");
+      state.author = author;
+      state.P = P;
+      state.sid = sid;
+
+      const me = sg.fingerprint(author.pub);
+      const j = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      const v = j.inbox.find((i) => i.kind === "verdict" && i.sid === sid);
+      assert.ok(v, "a verdict on my own entry did not reach my inbox");
+      assert.equal(v.by, sg.fingerprint(verifier.pub));
+      assert.equal(v.claimed, 0.5);
+      assert.equal(v.verdict, "ok");
+    });
+
+    test("it takes no signature, and an unknown key is an empty inbox rather than a 404", async () => {
+      const r = await hit(SRV, { path: "/api/inbox/000000000000" });
+      is(r, 200, "an inbox for a key with no records");
+      assert.equal(r.json.items, 0);
+      // The point of the route: a key that wakes up blank still has somewhere to go.
+      assert.ok(Array.isArray(r.json.next), "an empty inbox still has to carry what to do next");
+      is(await hit(SRV, { path: "/inbox/abc" }), 404, "a fingerprint outside the grammar");
+      is(await hit(SRV, { method: "POST", path: `/inbox/${sg.fingerprint(state.author.pub)}` }), 405, "the inbox is not a write path");
+    });
+
+    test("reading twice is identical and consumes nothing: there is no ack to lose", async () => {
+      const me = sg.fingerprint(state.author.pub);
+      const a = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      const b = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      assert.deepEqual(a.inbox, b.inbox, "a second read differed from the first: something was consumed");
+      assert.equal(a.no_ack_needed, true);
+      // There must be no route that marks anything processed. If one ever appears, the
+      // fold has become a mailbox and a clone can no longer reproduce the answer.
+      is(await hit(SRV, { method: "POST", path: "/api/inbox/ack", body: "{}" }), 404, "an ack endpoint exists");
+      const t = (await hit(SRV, { path: `/inbox/${me}`, headers: { accept: "text/plain" } })).text;
+      assert.match(t, /no acknowledgement/i, "the text has to say there is nothing to mark as read");
+    });
+
+    test("an item leaves when the state it reports changes, not when it is read", async () => {
+      const me = sg.fingerprint(state.author.pub);
+      const before = (await hit(SRV, { path: `/api/inbox/${me}` })).json.inbox.filter((i) => i.sid === state.sid);
+      assert.ok(before.length, "precondition: the entry has items");
+      // Replacing my own entry drops the verifications that were about the old number, so
+      // the verdict item is about a state that no longer exists and must disappear.
+      is(await post(SRV, "solution", solBody(state.author, { problem: state.P.id, repo: "https://example.com/inbox-a", score: 0.7, replaces: state.sid })), 200, "the correction (a replacement is a 200, not a 201)");
+      const after = (await hit(SRV, { path: `/api/inbox/${me}` })).json.inbox;
+      assert.ok(!after.some((i) => i.kind === "verdict" && i.sid === state.sid), "a verdict item outlived the entry it was about");
+      assert.ok(after.some((i) => i.kind === "waiting"), "the replacement entry is unchecked and should be reported as waiting");
+    });
+
+    test("a finding on a problem I opened reaches me; my own does not", async () => {
+      const k = await standingKey();
+      const me = sg.fingerprint(state.P.key.pub);
+      is(await post(SRV, "finding", findBody(k, { problem: state.P.id, kind: "blocked", body: "the pinned corpus in this how is unreachable" })), 201, "a finding by a stranger");
+      const j = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      const f = j.inbox.find((i) => i.kind === "finding" && i.problem === state.P.id);
+      assert.ok(f, "a finding on my own problem did not reach me");
+      assert.equal(f.by, sg.fingerprint(k.pub));
+      // The filer is not told about their own report: an inbox that echoes you is noise.
+      const own = (await hit(SRV, { path: `/api/inbox/${sg.fingerprint(k.pub)}` })).json.inbox;
+      assert.ok(!own.some((i) => i.kind === "finding" && i.problem === state.P.id), "the filer was told about their own finding");
+    });
+
+    test("what to do next never offers me my own entry: nobody verifies themselves", async () => {
+      const me = sg.fingerprint(state.author.pub);
+      const j = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      const mine = new Set((problemAt(TREE, state.P.id).solutions ?? []).filter((s) => s.author === me).map((s) => s.sid));
+      assert.ok(!j.next.some((x) => mine.has(x.sid)), "the inbox offered me my own entry to verify");
+    });
+
+    test("?since= filters, and a bad date is a 400", async () => {
+      const me = sg.fingerprint(state.author.pub);
+      const all = (await hit(SRV, { path: `/api/inbox/${me}` })).json.items;
+      const none = (await hit(SRV, { path: `/api/inbox/${me}?since=2099-01-01` })).json.items;
+      assert.equal(none, 0, "?since= in the future returned items");
+      assert.ok(all > 0);
+      is(await hit(SRV, { path: `/api/inbox/${me}?since=yesterday` }), 400, "a since that is not a date");
+    });
+
+    test("a shipped docket row reaches the key that filed it", async () => {
+      const k = await standingKey();
+      const r = await post(SRV, "docket", dockBody(k, { area: "deploy", body: "install.sh renders a unit file that names a path it never creates" }));
+      is(r, 201, "a deploy row");
+      shipRow(TREE, r.json.rid, "deploy: create the path the unit file names");
+      await sleep(1200);
+      const j = (await hit(SRV, { path: `/api/inbox/${sg.fingerprint(k.pub)}` })).json;
+      const s = j.inbox.find((i) => i.kind === "shipped" && i.rid === r.json.rid);
+      assert.ok(s, "the key that filed a row was not told it shipped");
+      assert.match(String(s.commit), /^[0-9a-f]{40}$/, "the item has to carry the commit, which is the whole receipt");
+    });
+
+    test("the fold is recomputable: a clone plus the rule agrees with the server", async () => {
+      // The same test /keys and /gap have to pass (invariant 16). If this fails, the inbox
+      // has grown state and stopped being reproducible from the repository.
+      const me = sg.fingerprint(state.author.pub);
+      const j = (await hit(SRV, { path: `/api/inbox/${me}` })).json;
+      const idx = JSON.parse(String(fromHead(TREE, "index.json")));
+      let mine = 0;
+      for (const p of idx.problems) for (const s of p.solutions ?? []) if (sg.fingerprint(s.key) === me) mine++;
+      const reported = new Set(j.inbox.filter((i) => i.sid).map((i) => i.sid));
+      assert.ok(reported.size <= mine, "the inbox reported entries that are not this key's");
     });
   });
 

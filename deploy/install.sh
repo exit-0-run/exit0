@@ -74,7 +74,7 @@ NODE_MAJOR=$("$NODE" -p 'process.versions.node.split(".")[0]')
 [ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null || die "node $("$NODE" -v): 20+ required"
 
 # --- 2. complete source; a copy missing any of these files is a dead service ---
-for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md LICENSE .gitignore .gitattributes \
+for f in scripts/server.mjs scripts/build.mjs scripts/sign.mjs llms.txt README.md LICENSE .gitignore .gitattributes docket.json \
          problems/_schema.json "deploy/$UNIT" deploy/Caddyfile deploy/RUNBOOK.md \
          deploy/watch.sh deploy/backup.sh "deploy/$WATCH.service" "deploy/$WATCH.timer" \
          deploy/mirror.sh "deploy/$MIRROR_UNIT.service" "deploy/$MIRROR_UNIT.timer"; do
@@ -170,6 +170,14 @@ for f in "$SRC"/problems/[0-9]*.json; do
   [ -e "$f" ] || continue
   [ -e "$DIR/problems/$(basename "$f")" ] || cp "$f" "$DIR/problems/"
 done
+# docket.json is registry DATA - it holds signed rows filed by strangers - so it is seeded
+# and never overwritten, exactly like a problem file. Copying it from the source on every
+# install would delete every row anybody had filed.
+# It has to EXIST though, and that is not cosmetic: it is in the server's PATHS, every path
+# in PATHS reaches `git add --`, and git fails a pathspec that matches nothing. A deployment
+# without this file does not lose the docket, it 503s every write path. An empty docket is
+# the file below, not the absence of the file.
+[ -e "$DIR/docket.json" ] || cp "$SRC/docket.json" "$DIR/docket.json" 2>/dev/null || printf '{\n  "docket": []\n}\n' > "$DIR/docket.json"
 mkdir -p "$DIR/problems/evidence"
 [ -f "$DIR/problems/evidence/.gitkeep" ] || : > "$DIR/problems/evidence/.gitkeep"
 # Evidence is addressed by sha256, so it is immutable: we copy what is missing, so an

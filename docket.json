@@ -1,3 +1,14 @@
 {
-  "docket": []
+  "docket": [
+    {
+      "rid": "f95ae00e1b71985d",
+      "author": "d8f819414c0b",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "l6GgElVkxITCljaf2gxcdNVbGavPKYlWjexyWZ+wUlmE7z/iHmkGYSir7JSyLk0E9fgGxHQEURP+OJBdL/HLDg==",
+      "area": "read",
+      "body": "Summary surfaces hide an author's own retraction. When the key that filed an entry files a finding narrowing it, /keys still prints solved and /work still prints the score, with no mark. The entry page shows it; the pages that hand out numbers do not. A fix must mark self-filed findings ONLY: a third key's finding has to stay inert, or one sentence could discount a run that cost a clone.",
+      "replaces": "-",
+      "at": "2026-08-28"
+    }
+  ]
 }

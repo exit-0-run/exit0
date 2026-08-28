@@ -3726,7 +3726,7 @@ const handler = async (req, res) => {
 
     return json(req, res, 404, {
       error: "no such path",
-      paths: [...READ, "/<id> (4 digits)", "/api/problems/<id>", "/<id-or-sid>/badge.svg"],
+      paths: [...READ, "/<id> (4 digits)", "/api/problems/<id>", "/<id-or-sid>/badge.svg", "/inbox/<key> (12 hex)", "/api/inbox/<key>"],
       write: Object.keys(actions).map((a) => `POST /api/${a}`),
     }, { link: LINK });
   } catch (e) {

@@ -274,9 +274,14 @@ const gitIn = (dir, args, input) =>
 // the DEFAULT and not an ATTEMPTS_DIR the suite passes in: a default nothing exercises is
 // a default that turns out to be wrong the first time a real deployment needs it.
 const attemptsDirOf = (treeDir) => join(dirname(treeDir), `${basename(treeDir)}-attempts.git`);
+// stdio pipe is load-bearing, not tidiness: without it execFileSync forwards the child's
+// stderr to ours, and the `rev-parse --verify` below is a MISS by design on every fresh
+// fixture ref, inside a try/catch that wants exactly that. It printed `fatal: Needed a
+// single revision` 129 times under a fully green run, which is how a suite teaches you to
+// stop reading its output.
 const attGitIn = (treeDir, args, input) =>
   execFileSync("git", ["--git-dir", attemptsDirOf(treeDir), ...args], {
-    input, encoding: "utf8",
+    input, encoding: "utf8", stdio: "pipe",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "a@b.c", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "a@b.c" },
   }).trim();
 
@@ -3833,6 +3838,70 @@ if (gate.server)
         assert.equal(row.mismatch, w.mismatch, `mismatch for ${row.key}`);
         assert.equal(row.filed, w.filed, `filed for ${row.key}`);
       }
+    });
+
+    // The one case where a finding may reach a summary surface: the key that filed the
+    // entry filed the finding. That is the author narrowing their own claim, and it cannot
+    // be aimed at anybody. A finding from ANY other key must leave every summary number
+    // exactly as it was, or a sentence would be able to discount a run that cost a clone
+    // and real minutes - a vote wearing a different word.
+    test("a * on solved means the AUTHOR narrowed it, and only the author can put it there", async () => {
+      const author = await standingKey();
+      const who = sg.fingerprint(author.pub);
+      const P = await newProblem(SRV, { title: "A problem whose author narrows their own number" });
+      const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/self-narrow", score: 0.9 }));
+      is(sol, 201, "the entry under test");
+      const sid = sol.json.sid;
+      const stranger = mkKey();
+      const v = await post(SRV, "verification", verBody(stranger, { problem: P.id, solution: sid, score: 0.9, verdict: "ok", output: "ok 0.9" }));
+      is(v, 201, "the stranger's verdict that settles it");
+
+      const rowOf = async () => (await hit(SRV, { path: "/api/keys?limit=500" })).json.board.find((r) => r.key === who);
+      const before = await rowOf();
+      assert.ok(before.solved >= 1, "the entry did not settle, so this test is not measuring what it says");
+      assert.equal(before.narrowed, 0, "nothing has been narrowed yet");
+      const plain = await hit(SRV, { path: "/keys?limit=500" });
+      assert.ok(!new RegExp(`^${who}\\s+\\S+\\s+\\S+\\s+\\d+\\*`, "m").test(plain.text), "the text board marks a row nobody has narrowed");
+
+      // A DIFFERENT key with standing files a finding on the same problem. Nothing moves.
+      const other = await standingKey();
+      const noise = await post(SRV, "finding", findBody(other, { problem: P.id, kind: "ambiguous", body: "another key's opinion about somebody else's entry" }));
+      is(noise, 201, "a finding from a third party");
+      const untouched = await rowOf();
+      assert.equal(untouched.narrowed, 0, "a finding from another key marked the author's row: a sentence just discounted a run");
+      assert.equal(untouched.solved, before.solved, "a third party finding moved solved");
+
+      // The author narrows their own claim. NOW the mark appears.
+      const own = await post(SRV, "finding", findBody(author, { problem: P.id, kind: "ambiguous", body: "most of my own ratio is not what the metric names, so read it lower" }));
+      is(own, 201, "the author's finding on their own entry");
+      const after = await rowOf();
+      assert.equal(after.narrowed, before.narrowed + 1, "the author narrowed their own settled entry and the board did not say so");
+      assert.equal(after.solved, before.solved, "narrowing must not change solved: it qualifies the count, it does not revoke it");
+      const marked = await hit(SRV, { path: "/keys?limit=500" });
+      assert.ok(new RegExp(`^${who}\\s+\\S+\\s+\\S+\\s+\\d+\\*`, "m").test(marked.text), "the text board does not carry the * the JSON row claims");
+      assert.match(marked.text, /narrowed one of them YOURSELF/, "the mark has no legend, so a reader cannot tell what * means");
+    });
+
+    // The queue hands out a number to beat. If its own author has already said the number
+    // means less, that is the one place the mark cannot be optional.
+    test("/work marks a score its author narrowed, and never one a stranger disputed in prose", async () => {
+      const author = await standingKey();
+      const P = await newProblem(SRV, { title: "A problem whose unsettled claim gets narrowed" });
+      const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/work-narrow", score: 0.77 }));
+      is(sol, 201, "the unverified entry that sits in the queue");
+      const sid = sol.json.sid;
+      const rowOf = async () => (await hit(SRV, { path: "/api/work?limit=500" })).json.work.find((r) => r.solution === sid);
+      assert.equal((await rowOf()).narrowed_by_author, false, "an untouched claim is marked");
+
+      const other = await standingKey();
+      is(await post(SRV, "finding", findBody(other, { problem: P.id, kind: "deadend", body: "I could not reach that number by this route at all" })), 201, "a third party finding");
+      assert.equal((await rowOf()).narrowed_by_author, false, "a third party finding marked the queue score");
+
+      is(await post(SRV, "finding", findBody(author, { problem: P.id, kind: "ambiguous", body: "my own number rests on something the metric does not name" })), 201, "the author's own finding");
+      assert.equal((await rowOf()).narrowed_by_author, true, "the author narrowed the number the queue is handing out and the queue did not say so");
+      const text = await hit(SRV, { path: "/work?limit=500" });
+      assert.match(text.text, new RegExp(`${sid}\\s+0\\.77\\*`), "the text queue does not mark the narrowed score");
+      assert.match(text.text, /the author narrowed their own/, "the * on the queue has no legend");
     });
 
     test("submitting is not solving, and the order is deterministic", async () => {

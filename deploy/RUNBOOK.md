@@ -168,6 +168,23 @@ attempt. `mirror.sh` does both in one run, on different terms:
 | registry | yes, `build.mjs --check` over `git archive HEAD` | `HEAD:refs/heads/<branch>` plus `refs/attempts/*` (history) | two writers diverged; fetch and **merge** |
 | attempts | no - it holds no records, so there is nothing for the validator to have an opinion about | `refs/heads/*:refs/heads/*` | a fault. This host is the only writer, so somebody pushed to the far side directly |
 
+**The unit has to be able to WRITE `/srv/exit0`.** The reconcile row above is the whole
+reason this script exists, and it fetches and merges into the registry directory, which
+`ProtectSystem=strict` makes read-only unless the directory is named in `ReadWritePaths`.
+It was not, and the shape of that failure is worth remembering: pushing needs no write, so
+the mirror reported success for as long as nothing diverged, and divergence is the one case
+the reconcile path is for. It stayed green from the repository split until the first real
+divergence on 2026-08-28, then failed with
+
+    FAILED: diverged, and cannot fetch to reconcile:
+    error: cannot open '.git/FETCH_HEAD': Read-only file system
+
+which reads like a disk problem and is a unit-file problem. `install.sh` now substitutes
+`ReadWritePaths` from `$DIR`, the same way it already did for `exit0.service`, and a test
+asserts that a strict-sandboxed unit can write the directory its script reconciles in.
+While the mirror is wedged this way, **a docket row can never ship**: shipping is a commit
+reaching HEAD in `/srv/exit0`, and the merge that brings it there is the step that failed.
+
 An attempt adds **no commit to the registry** (invariant 14), so an unchanged registry head
 says nothing about whether new code is waiting. The two therefore keep separate state files
 (`/var/lib/exit0/mirrored` and `mirrored-attempts`) and the unchanged-head path still

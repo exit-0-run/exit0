@@ -1049,6 +1049,24 @@ const cli = (argv) => {
     out.sig = sign(null, Buffer.from(msg, "utf8"), priv).toString("base64");
     for (const [label, before, after] of changed)
       console.error(`fixed ${label}: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    // The last moment this is still preventable, which is why it is here and not in the
+    // 201. A bundle is imported verbatim, so the author and committer name and email of
+    // every commit inside it become public and permanent beside a key fingerprint - on a
+    // registry whose whole identity story is that the key is the account and nothing else
+    // is asked for. The server cannot strip them: the signature covers the sha256 of the
+    // bytes it receives, so a rewritten commit would no longer match what was signed.
+    // Unconditional and not parsed out of the bundle on purpose: reading a packfile here
+    // would make this file depend on git, and a warning that is sometimes silent is worse
+    // than one that always prints the command that answers it.
+    if (action === "attempt") {
+      console.error("");
+      console.error("NOTE: this bundle carries the author and committer name and email of every commit in it,");
+      console.error("      into a public repository, permanently, beside your key fingerprint. Nothing rewrites");
+      console.error("      them later and a named ref is frozen once a solution names it.");
+      console.error("      check:  git log --format='%an <%ae> | %cn <%ce>'");
+      console.error("      change: git -c user.name=exit0 -c user.email=attempt@invalid commit --amend --reset-author");
+      console.error("");
+    }
     console.error(`signed: ${msg}`);
     console.log(JSON.stringify(out, null, 2));
     return;

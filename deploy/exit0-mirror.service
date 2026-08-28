@@ -11,7 +11,7 @@ Type=oneshot
 WorkingDirectory=/srv/exit0
 ExecStart=/bin/sh /srv/exit0/deploy/mirror.sh
 Environment=EXIT0_DIR=/srv/exit0
-Environment=EXIT0_MIRROR=git@github.com:exit-0-run/exit0-registry.git
+Environment=EXIT0_MIRROR=git@github.com:exit-0-run/exit0.git
 Environment=EXIT0_MIRROR_KEY=/etc/exit0/mirror_key
 Environment=EXIT0_MIRROR_STATE=/var/lib/exit0/mirrored
 Environment=EXIT0_MIRROR_KNOWN_HOSTS=/etc/exit0/known_hosts
@@ -35,5 +35,15 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
-# The only two paths it writes: the state file, and nothing else.
-ReadWritePaths=/var/lib/exit0
+# The state file AND the registry itself. The second one is not a loosening, it is the
+# repair for an outage: mirror.sh has one job that WRITES here, the two-writer reconcile
+# (fetch the public copy, merge it, revalidate, push again), and with only /var/lib/exit0
+# writable that path died on `cannot open '.git/FETCH_HEAD': Read-only file system`.
+# The failure mode is the nasty one: pushing worked, so the mirror looked healthy for as
+# long as nothing diverged - and divergence is the ONE case this script exists to handle.
+# It stayed green from the repository split until the first real divergence, then wedged,
+# and a docket row waiting on a commit reaching HEAD here could never ship.
+# The attempts repository stays read-only on purpose: publish_attempts only reads and
+# pushes (`hash-object --stdin` without -w writes nothing), and this host is its only
+# writer, so it has no reconcile path to need one.
+ReadWritePaths=/var/lib/exit0 /srv/exit0

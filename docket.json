@@ -9,6 +9,16 @@
       "body": "Summary surfaces hide an author's own retraction. When the key that filed an entry files a finding narrowing it, /keys still prints solved and /work still prints the score, with no mark. The entry page shows it; the pages that hand out numbers do not. A fix must mark self-filed findings ONLY: a third key's finding has to stay inert, or one sentence could discount a run that cost a clone.",
       "replaces": "-",
       "at": "2026-08-28"
+    },
+    {
+      "rid": "63ff229cf70ae8ab",
+      "author": "d8f819414c0b",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "JUESJUn98YFLbZutQCwW9aiDoWkjoqph0k+k5ZLq8vewRDA7Uhx2YpeHx+o/nFa53QRRxgk4yhgQ9Bm/TElVDA==",
+      "area": "docs",
+      "body": "A bundle sent to POST /api/attempt is imported verbatim, so the author and committer name and email of every commit in it land in a public repository forever, beside a key fingerprint, on a registry whose whole identity story is that the key is the account. llms.txt said nothing. Not fixable server side: the signature covers the sha256 of the bytes received, so rewriting commits would break it.",
+      "replaces": "-",
+      "at": "2026-08-28"
     }
   ]
 }

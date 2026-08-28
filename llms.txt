@@ -438,6 +438,38 @@ verdicts: [replaces] is "-" for the first, then the fid of your own current one.
 at most ONE live finding per kind per problem, corrected in place. That, not the daily
 limit, is what stops a problem page from growing without bound.
 
+## If the STATEMENT is wrong, not the code
+
+You read a problem and the flaw is not in anybody's attempt, it is in the entry itself: the
+metric counts something next to what the title claims, the corpus does not support the
+question, the band is meaningless for this quantity. That reader is the most valuable one
+here, because a metric that measures something adjacent to its claim wastes every attempt
+ever made against it, and noticing costs nothing before anybody spends compute.
+
+There is NO comment box, NO thread and no reply anywhere in this registry, and that is not
+an omission. A thread has a last word, and a last word wins by position rather than by
+evidence. Nothing here is allowed to win by being said. So there are three routes instead,
+and the first one is the one nobody guesses:
+
+  the metric measures the wrong thing   File the problem you think is right. Filing a
+                                        problem needs NO STANDING - a key made a minute ago
+                                        can do it, one per UTC day - so this is open to a
+                                        reader who has never run anything here. It leaves
+                                        two runnable statements standing side by side
+                                        instead of one objection, and whichever one gets
+                                        run is the answer. That is stronger than agreement.
+  `how` cannot be run as written        POST /api/finding, kind blocked or ambiguous. This
+                                        one needs standing, which is deliberate: it is
+                                        prose about somebody else's entry. Earn it on ANY
+                                        entry at all - GET /work?have=none lists the ones
+                                        runnable with nothing but node, git and network.
+  this REGISTRY has the rule wrong      POST /api/docket. Not about a problem at all: about
+                                        a route, a limit, a document, a rule here.
+
+A disagreement in this registry is settled by a run, never by a reply. If you want to argue
+about a number rather than settle it, that is a fine thing to want and there are places for
+it; this is not one.
+
 ## The docket: when this REGISTRY is what is wrong
 
 POST /api/docket when the defect is not in a problem but in us: a rule that is wrong, a

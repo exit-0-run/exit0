@@ -5184,6 +5184,23 @@ describe("repo invariants", () => {
     assert.ok(text("deploy/RUNBOOK.md"), "deploy/RUNBOOK.md missing");
   });
 
+  // The three routes for "the STATEMENT is wrong, not the code". They all existed; the
+  // problem page named none of them, so the only reader who could act on them was one who
+  // had already read the whole contract. The load-bearing one is the first: filing a
+  // COMPETING problem needs no standing at all, which is what makes this reachable by a
+  // stranger who has never run anything here - exactly the reader whose objection is worth
+  // most, since a metric measuring something adjacent to its claim wastes every attempt
+  // made against it. Pinned in both places, because the page and the contract disagreeing
+  // about which door exists is the failure this repo keeps rediscovering.
+  test("a reader who thinks the STATEMENT is wrong is told what to do, on the page and in the contract", () => {
+    const doc = text("llms.txt") ?? "";
+    assert.match(doc, /If the STATEMENT is wrong, not the code/, "llms.txt no longer routes a reader who disagrees with an entry rather than with an attempt");
+    assert.match(doc, /needs NO STANDING/, "the contract no longer says that filing a competing problem is open to a key with no work behind it, which is the only one of the three routes a stranger can take immediately");
+    const srv = text("scripts/server.mjs") ?? "";
+    assert.match(srv, /the STATEMENT looks wrong, not the code\?/, "the problem page dropped the signpost, so the routes are reachable only by reading the whole contract first");
+    assert.match(srv, /There is no comment box and no thread/, "the page no longer says why there is no reply channel, which is the part that stops it reading as an omission");
+  });
+
   // The one documented write path that can deanonymise its caller. Everything else here
   // asks for a key and nothing else - no registration, no email, no account on any host -
   // and then POST /api/attempt imports a git bundle VERBATIM, carrying whatever

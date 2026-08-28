@@ -304,6 +304,11 @@ if [ "$MIRROR_ENABLE" = "1" ]; then
       -e "s#^Environment=EXIT0_ATTEMPTS_MIRROR=.*#Environment=EXIT0_ATTEMPTS_MIRROR=$ATTEMPTS_MIRROR_URL#" \
       -e "s#^Environment=EXIT0_ATTEMPTS_KEY=.*#Environment=EXIT0_ATTEMPTS_KEY=$ATTEMPTS_KEY#" \
       -e "s#^Documentation=.*#Documentation=file://$DIR/deploy/RUNBOOK.md#" \
+      `# Substituted like every other path here, and for a reason worth stating: the` \
+      `# reconcile path WRITES into $DIR, and ProtectSystem=strict makes everything else` \
+      `# read-only. A hardcoded /srv/exit0 would leave a deployment with a custom DIR` \
+      `# pushing happily and wedging the first time the two writers diverged.` \
+      -e "s#^ReadWritePaths=.*#ReadWritePaths=/var/lib/exit0 $DIR#" \
       "$SRC/deploy/$MIRROR_UNIT.service" > "$UNIT_DIR/.$MIRROR_UNIT.service.new"
   chmod 644 "$UNIT_DIR/.$MIRROR_UNIT.service.new"
   mv "$UNIT_DIR/.$MIRROR_UNIT.service.new" "$UNIT_DIR/$MIRROR_UNIT.service"

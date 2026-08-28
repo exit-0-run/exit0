@@ -5184,6 +5184,61 @@ describe("repo invariants", () => {
     assert.ok(text("deploy/RUNBOOK.md"), "deploy/RUNBOOK.md missing");
   });
 
+  // The one documented write path that can deanonymise its caller. Everything else here
+  // asks for a key and nothing else - no registration, no email, no account on any host -
+  // and then POST /api/attempt imports a git bundle VERBATIM, carrying whatever
+  // `git config user.email` happened to be. It cannot be fixed on the server: the
+  // signature covers the sha256 of the bytes received, so rewriting the commits would
+  // break the link to what was signed. So the fix is a warning at the only moment it is
+  // still preventable, and this test exists because a warning is exactly the kind of thing
+  // that gets lost in an edit and fails silently forever after.
+  test("the bundle's author identity is warned about, in the contract and by the CLI", () => {
+    const doc = text("llms.txt") ?? "";
+    // Whitespace-tolerant on purpose: the phrase spans a line break in the document, and a
+    // test that pins a wrapping point fails on a reflow rather than on a missing warning.
+    assert.match(doc, /author\s+and committer NAME and EMAIL/, "llms.txt no longer warns that a bundle publishes the identity git put in its commits");
+    assert.match(doc, /--reset-author/, "the warning names no way to build an anonymous bundle, which makes it a complaint rather than an instruction");
+    const cli = text("scripts/sign.mjs") ?? "";
+    assert.match(cli, /action === "attempt"/, "sign.mjs no longer special-cases attempt, so the warning at signing time is gone");
+    assert.match(cli, /%an <%ae>/, "the CLI warning no longer prints the command that answers it");
+  });
+
+  // A sandbox that forbids the one job the unit exists for. mirror.sh handles the
+  // two-writer case by FETCHING the public copy and MERGING it into $DIR, and the unit
+  // ran under ProtectSystem=strict with only /var/lib/exit0 writable. Pushing needs no
+  // write, so the mirror looked healthy for as long as nothing diverged - and divergence
+  // is precisely the case the reconcile path exists to handle. It stayed green from the
+  // repository split until the first real one, then failed with
+  // `cannot open '.git/FETCH_HEAD': Read-only file system`, which reads like a disk
+  // problem and is a unit-file problem. This checks the property rather than the string:
+  // if a unit is sandboxed AND its script writes where it works, that path is writable.
+  test("deploy: a strict-sandboxed unit can write the directory its script reconciles in", () => {
+    const unit = text("deploy/exit0-mirror.service") ?? "";
+    assert.ok(unit, "deploy/exit0-mirror.service missing");
+    const sh = text("deploy/mirror.sh") ?? "";
+    assert.ok(sh, "deploy/mirror.sh missing");
+    // The premise: this script really does write into the directory it works in.
+    assert.match(sh, /\$GIT (fetch|merge)/, "mirror.sh no longer fetches or merges in $DIR — if that is deliberate, this test and the unit's ReadWritePaths should shrink together");
+    if (!/^ProtectSystem=strict/m.test(unit)) return;
+    const wd = (unit.match(/^WorkingDirectory=(.+)$/m) ?? [])[1];
+    const rw = (unit.match(/^ReadWritePaths=(.+)$/m) ?? [])[1] ?? "";
+    assert.ok(wd, "the mirror unit has no WorkingDirectory to check");
+    assert.ok(
+      rw.split(/\s+/).includes(wd),
+      `ProtectSystem=strict with ${wd} not in ReadWritePaths (${rw || "empty"}): the reconcile path cannot write .git/FETCH_HEAD and the mirror wedges on the first divergence`
+    );
+  });
+
+  // ...and the rendered unit has to inherit that, or a deployment with a custom DIR gets
+  // the default path made writable and its own left read-only: the same outage, reached by
+  // configuration instead of by omission. install.sh already substitutes ReadWritePaths for
+  // exit0.service; this is the line that was missing for the mirror.
+  test("deploy: install.sh substitutes ReadWritePaths for the mirror unit too", () => {
+    const sh = text("deploy/install.sh") ?? "";
+    const block = sh.slice(sh.indexOf("$MIRROR_UNIT.service.new") - 2000, sh.indexOf("$MIRROR_UNIT.service.new"));
+    assert.match(block, /s#\^ReadWritePaths=[^#]*#ReadWritePaths=[^#]*\$DIR#/, "the mirror unit is rendered without substituting ReadWritePaths, so a custom DIR is left outside the sandbox's writable set");
+  });
+
   // A document is only shipped if what it POINTS AT is shipped too. The mirror carried a
   // README whose wordmark resolved to nothing for as long as the mirror existed: the file
   // was tracked here, rendered on the code repo, and simply never copied to $DIR. Nobody

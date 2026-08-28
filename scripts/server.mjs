@@ -367,7 +367,7 @@ const withWriteLock = (fn) => {
 
 // --- git ---
 
-const git = (...a) => execFileSync("git", a, { stdio: "pipe" });
+const git = (...a) => execFileSync("git", a, { stdio: "pipe", maxBuffer: 64 * 1024 * 1024 });
 
 // git in the OTHER repository: the one that holds pushed code. Bare, so there is no
 // working tree to dirty and nothing here can put it into the read-only state invariant 11
@@ -925,7 +925,17 @@ const shippedMap = () => {
   if (shipped && shippedAt === lastProbe) return shipped;
   let map = new Map();
   try {
-    map = docketShipped(String(gitRead("log", `--format=%H${UNIT}%aI${UNIT}%B${REC}`)));
+    // Two separate jobs, deliberately not one. git NARROWS, with a FIXED STRING so no
+    // regex flavour can reinterpret it; docketShipped() DECIDES, with the line-anchored
+    // rule. Letting git do the deciding (--grep "^Docket: [0-9a-f]{16}$") works on this
+    // git and would fail silently on one where ^ does not anchor per line: every shipped
+    // row would quietly read as open and nothing would say why.
+    // The narrowing is not cosmetic either. execFileSync defaults to a 1MB buffer and this
+    // read the WHOLE history, so the feature was going to die of its own commit messages
+    // at some future repository size - caught below and turned into "everything is open",
+    // which is the cautious direction and still the wrong answer. maxBuffer is raised as
+    // well: the two together mean the scan is bounded by how many rows ever shipped.
+    map = docketShipped(String(gitRead("log", "-F", "--grep=Docket: ", `--format=%H${UNIT}%aI${UNIT}%B${REC}`)));
   } catch (e) {
     // An unreadable history is not a reason to refuse a read. Every row then reads as
     // open, which is the cautious direction: it under-reports what we fixed and never

@@ -842,6 +842,39 @@ const headOf = (idx) => sha16(JSON.stringify([idx.problems, idx.docket ?? []]));
 // four valid spellings, and grouping by the stored string would give one key several
 // rows on the board and several independent standings (invariant 3, same trap). A record
 // whose key does not parse has no author and is skipped rather than counted for someone.
+// A finding filed by the SAME key that filed the entry is not a complaint about somebody
+// else's work: it is the author saying their own number means less than it says. That is
+// the only finding a summary surface may show, and the restriction IS the design.
+// A finding costs one sentence. A verdict costs a clone, a sandbox and real minutes. So
+// letting any finding mark any entry hands every key with standing a free asterisk to hang
+// on anybody's work - a vote wearing a different word, which is exactly what invariant 15
+// and the Context section of CLAUDE.md refuse. The registry already has an expensive
+// channel for "I ran it and I disagree": a mismatch verdict, and that one does show here.
+// Narrowing your own claim cannot be aimed at anyone: the only key it can ever cost
+// anything is the one that wrote it. Stored nowhere, recomputed on read like every other
+// fold (invariant 16).
+const kid = (k) => {
+  try {
+    return keyId(k);
+  } catch {
+    return null;
+  }
+};
+const narrowedKeys = (p) => {
+  const out = new Set();
+  const filers = new Set();
+  for (const f of Array.isArray(p.findings) ? p.findings : []) {
+    const id = kid(f.key);
+    if (id) filers.add(id);
+  }
+  if (!filers.size) return out;
+  for (const s of solsOf(p)) {
+    const id = kid(s.key);
+    if (id && filers.has(id)) out.add(id);
+  }
+  return out;
+};
+
 const tally = (idx) => {
   const by = new Map();
   const at = (k) => {
@@ -851,10 +884,11 @@ const tally = (idx) => {
     } catch {
       return null;
     }
-    if (!by.has(id)) by.set(id, { who: fingerprint(k), attempts: 0, solved: 0, checked: 0, mismatch: 0, filed: 0, findings: 0 });
+    if (!by.has(id)) by.set(id, { who: fingerprint(k), attempts: 0, solved: 0, narrowed: 0, checked: 0, mismatch: 0, filed: 0, findings: 0 });
     return by.get(id);
   };
   for (const p of idx.problems ?? []) {
+    const narrowed = narrowedKeys(p);
     const o = at(p.key);
     if (o) o.filed++;
     for (const f of Array.isArray(p.findings) ? p.findings : []) {
@@ -876,7 +910,13 @@ const tally = (idx) => {
         // problem does not undo it - erasing them would also revoke the standing that work
         // bought, and standing is a fact about the moment you wrote (invariant 15).
         // This column records an OUTCOME, and an outcome on a retired problem is not one.
-        if (s.settled && p.status !== "dead") a.solved++;
+        if (s.settled && p.status !== "dead") {
+          a.solved++;
+          // Counted only on entries this column actually claims. A narrowing on an entry
+          // that is not settled is not hidden either, it is marked on /work, where that
+          // entry is the thing being offered.
+          if (narrowed.has(kid(s.key))) a.narrowed++;
+        }
       }
       // Heads, not records: a verifier who went ok -> mismatch -> ok did one piece of
       // work and gets one credit, or correcting yourself would pay better than checking
@@ -940,7 +980,10 @@ const shippedMap = () => {
     // An unreadable history is not a reason to refuse a read. Every row then reads as
     // open, which is the cautious direction: it under-reports what we fixed and never
     // over-reports it.
-    logErr("docket log", e);
+    // A repository with NO commits yet reaches the same place by a different road, and it
+    // is not an error: `git log` has nothing to resolve and says so. A log that cries in
+    // the normal case is a log nobody reads on the day this scan really does break.
+    if (!/does not have any commits|Needed a single revision/i.test(detailOf(e))) logErr("docket log", e);
   }
   shipped = map;
   shippedAt = lastProbe;
@@ -2053,10 +2096,11 @@ const needsCheck = (idx, q) => {
   for (const p of idx.problems ?? []) {
     if (p.status === "dead") continue;
     if (kit !== null && !needsOf(p).every((n) => kit.includes(n))) continue;
+    const narrowed = narrowedKeys(p);
     for (const s of solsOf(p)) {
       const vs = Array.isArray(s.verifications) ? s.verifications : [];
       const st = verdictStrength(vs);
-      const row = { p, s, confirms: st.confirms, disputes: st.disputes };
+      const row = { p, s, confirms: st.confirms, disputes: st.disputes, narrowed: narrowed.has(kid(s.key)) };
       // "first" is a solution nobody has touched: one stranger settles it.
       // "tiebreak" is a solution where ok and mismatch cancel out: one stranger decides it.
       // "second" is a SETTLED solution that rests on fewer than CONFIRMED independent keys.
@@ -2331,7 +2375,10 @@ const renderKeys = (idx, q) => {
         r.who.padEnd(13),
         String(r.checked).padEnd(8),
         String(r.mismatch).padEnd(9),
-        String(r.solved).padEnd(7),
+        // The mark rides ON the solved cell rather than in a column of its own: a column
+        // would read as a fourth kind of work, and this is not work, it is a qualifier on
+        // work already counted one cell to the left.
+        (String(r.solved) + (r.narrowed ? "*" : "")).padEnd(7),
         String(r.filed).padEnd(6),
         String(r.attempts).padEnd(6),
         String(r.findings).padEnd(6),
@@ -2347,6 +2394,10 @@ const renderKeys = (idx, q) => {
   L.push("mismatch those of your verdicts that did NOT hold. Part of checked, not a column");
   L.push("         beside it. It is the hardest verdict to reach and nothing here pays for one.");
   L.push("solved   your solutions a STRANGER ran and confirmed. Submitting does not count.");
+  L.push("         A * means you later narrowed one of them YOURSELF, and it is a credit:");
+  L.push("         the author said the number means less before anybody else had to. Only");
+  L.push("         your own findings mark your row. Somebody else's cannot, or a sentence");
+  L.push("         would be able to discount a run, and a sentence is not what this pays for.");
   L.push("filed    problems you opened. It earns no standing: writing a problem is cheap.");
   L.push('standing whether this key may POST /api/finding. Earned by one solution or one verdict.');
   L.push("");
@@ -2781,14 +2832,16 @@ const renderQueue = (idx, q) => {
     return L.join("\n") + "\n";
   }
   L.push("what        problem  solution          score       band   waiting  needs             where to get it");
-  for (const { p, s, why } of page) {
+  for (const { p, s, why, narrowed } of page) {
     const idle = ageDays(waitingSince(s));
     L.push(
       [
         WHY[why].padEnd(11),
         p.id.padEnd(8),
         s.sid.padEnd(17),
-        String(s.score).padEnd(11),
+        // The queue hands out a number to beat, so a number its own author has already
+        // said means less is the one place the mark cannot be optional.
+        (String(s.score) + (narrowed ? "*" : "")).padEnd(11),
         // The exact value to sign, in the view that hands out the work. Without it the
         // path was: read the queue, open the problem, convert a percentage, hope.
         String(p.acceptance?.tolerance ?? 0.02).padEnd(6),
@@ -2823,6 +2876,10 @@ const renderQueue = (idx, q) => {
   L.push("  FIRST CHECK  nobody has run this one. Your verdict settles it.");
   L.push("  TIEBREAK     ok and mismatch cancel out. Your verdict decides it.");
   L.push("  SECOND RUN   settled, but on ONE key. Your verdict changes no status: it changes what the number is worth.");
+  L.push("");
+  L.push("A * on the score means the key that filed it later filed a finding on the same problem: the author narrowed their own");
+  L.push("number. Read GET /<problem> for what they said. Findings from OTHER keys never mark a score - a verdict does that, and a");
+  L.push("verdict costs a run.");
   L.push("");
   L.push("waiting is days since the claim was filed, or since the verdict that left it tied. Nothing here expires on its own.");
   L.push("Pick one, read GET /<problem> for the command, run it, then:");
@@ -2923,6 +2980,14 @@ const renderText = (idx, q) => {
   const slice = [filter.status && `status=${filter.status}`, filter.domain && `domain=${filter.domain}`, filter.have !== null && `have=${filter.have || "none"}`].filter(Boolean).join(" ");
   L.push(filtered ? `EXIT0 / ${slice}` : "EXIT0");
   if (!filtered) L.push("the registry where SOLVED means: a stranger ran your code and got your numbers");
+  // Said out loud because the sentence above is literal and reads as more than it says.
+  // A stranger running YOUR command buys independent execution and nothing else: the
+  // command carries your comparison rule and your denominator, so both of you can be
+  // right about the arithmetic and wrong about what it measures. This registry's own
+  // 0014 is the worked example - confirmed at 65.41 by another key, and narrowed to
+  // ~7.49 by a finding its own author filed. Naming the ceiling costs one line; the key
+  // board has named its own since it existed.
+  if (!filtered) L.push("that is a fact about EXECUTION: they ran YOUR command, and your command carries your denominator");
   L.push("");
   L.push(`state: ${idx.counts.total} problems, ${idx.counts.open} open, ${idx.counts.solved} solved`);
   // The line the whole place is for. counts.solved says how many claims a stranger has
@@ -3296,8 +3361,12 @@ const readRoute = (req, res, path, qs) => {
         waiting: rows.length,
         limit,
         offset,
-        work: page.map(({ p, s, why, confirms, disputes }) => ({
+        work: page.map(({ p, s, why, confirms, disputes, narrowed }) => ({
           need: why, problem: p.id, solution: s.sid, score: s.score, repo: s.repo, ref: s.ref ?? null,
+          // True when the key that filed this entry later filed a finding on the same
+          // problem: the author narrowed their own number. A finding from any OTHER key
+          // is never reported here, because a sentence must not be able to discount a run.
+          narrowed_by_author: !!narrowed,
           // How much evidence is already there, so a caller can separate "nobody has run
           // this" and "one stranger has". Distinct keys with that verdict at the head of
           // their chain, folded on read: nothing here is stored.
@@ -3487,8 +3556,13 @@ const readRoute = (req, res, path, qs) => {
         // you picked, not one the registry picked for you. `mismatch` is a subset of
         // `checked`, so adding the two counts one verdict twice.
         board: page.map((r) => ({
-          key: r.who, checked: r.checked, mismatch: r.mismatch, solved: r.solved, filed: r.filed,
-          attempts: r.attempts, findings: r.findings, standing: r.standing,
+          key: r.who, checked: r.checked, mismatch: r.mismatch, solved: r.solved,
+          // How many of `solved` this key later narrowed ITSELF, by filing a finding on
+          // the same problem. It is the `*` the text board prints, and it is a subset of
+          // solved rather than a column beside it. Findings from other keys are never
+          // counted here - see invariant 19 for why that is the whole design.
+          narrowed: r.narrowed,
+          filed: r.filed, attempts: r.attempts, findings: r.findings, standing: r.standing,
         })),
         more: offset + page.length < rows.length,
       }, null, 2) + "\n", "application/json; charset=utf-8", { vary: "accept", link: LINK });

@@ -1342,15 +1342,30 @@ if (gate.server)
       rec.sid = "f".repeat(16);
       before.solutions.push(rec);
       writeFileSync(problemPath, JSON.stringify(before, null, 2) + "\n");
+      // COMMITTED, not merely written. A hand-written record leaves the tree dirty, a dirty
+      // tree is read-only mode (invariant 11), and read-only answers 503 before the freeze
+      // rule is ever consulted. Whether it answered 409 or 503 therefore came down to
+      // whether `freshHealth(false)` still had a warm cache from before this write:
+      // PROBE_TTL decides, and PROBE_TTL is a clock. Under load the probe went stale
+      // between the write and the request and the test flipped - 278 green, then 113 red on
+      // the same bytes. Committing removes the clock from the test: the 409 now comes from
+      // the rule this test is about and from nothing else.
+      execFileSync("git", ["-C", TREE, "add", "--", "problems"], { stdio: "pipe" });
+      execFileSync("git", ["-C", TREE, "commit", "-q", "-m", "fixture: a record signed under the old namespace"], { stdio: "pipe" });
 
-      const { buf } = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 1\n" });
-      const r = await send(kC, "0001", slug, buf);
-      is(r, 409, "pushing to the branch a pre-move record names");
-      assert.match(r.text, /frozen/);
-
-      // Put the tree back FROM HEAD, not by undoing the edit: a dirty registry is read-only
-      // mode (invariant 11) and every write test after this one would 503.
-      execFileSync("git", ["-C", TREE, "checkout", "-q", "HEAD", "--", "problems"], { stdio: "pipe" });
+      try {
+        const { buf } = mkBundle({ LICENSE: "MIT\n", "run.sh": "echo 1\n" });
+        const r = await send(kC, "0001", slug, buf);
+        is(r, 409, "pushing to the branch a pre-move record names");
+        assert.match(r.text, /frozen/);
+      } finally {
+        // In a finally, and that is the load-bearing half. This test mutates the SHARED
+        // fixture, so a failure here used to leave the registry dirty for everything after
+        // it: one flaky assertion turned into 112 cascading 503s, and the real cause was
+        // invisible under the pile. A test that touches shared state restores it whether it
+        // passed or not.
+        execFileSync("git", ["-C", TREE, "reset", "-q", "--hard", "HEAD~1"], { stdio: "pipe" });
+      }
       assert.equal(dirty(TREE), "", "the fixture left the registry tree dirty");
     });
 

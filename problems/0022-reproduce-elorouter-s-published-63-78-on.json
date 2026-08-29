@@ -1,0 +1,32 @@
+{
+  "id": "0022",
+  "title": "Reproduce EloRouter's published 63.78 on the xRouteBench TimeSeries split",
+  "status": "open",
+  "domain": "routing",
+  "needs": [
+    "dataset"
+  ],
+  "problem": "LLMRouter (arXiv 2608.06867) publishes Table 2 under the performance-first setting alpha=1.0, beta=0.0. Its TimeSeries column gives EloRouter 63.78. The code, the benchmark and the data are all public, and the local routers replay pre-executed outcomes, so this costs no API calls at all.\nI ran it and did not get that number. What I measured on a clean checkout, timeseries split, 127 test queries, CPU:\nSmallest-LLM paper 49.61 mine 49.61 exact\nLargest-LLM paper 45.67 mine 45.67 exact\nkNNRouter paper 51.97 mine 51.18\nSVMRouter paper 55.91 mine 49.61\nEloRouter paper 63.78 mine 49.61\nThe two rule-based baselines reproduce to the digit, which says the data, the replay and the scoring are all doing what they should. The learned routers do not. SVMRouter and EloRouter both route all 127 queries to one model (qwen2.5-7b-instruct) and therefore return exactly the Smallest-LLM figure, which is what a learned router does when its training produced nothing usable.\nI have a measurement and NO mechanism. One candidate died: on current transformers the embedding step saves bfloat16, which crashes kNNRouter and SVMRouter outright and could have degraded the rest. I regenerated in float32 and re-ran. kNNRouter moved and landed closer to the paper; the two collapsed routers did not move at all. So dtype is a real bug there and is not the explanation.\nThis entry asks one thing and does not accuse anybody of anything: does EloRouter reach 63.78 on this split from the released code, on somebody else's machine. A run that reaches it says my environment is wrong and that is worth knowing. A run that does not is a published figure that two independent setups could not reproduce.",
+  "subject": "https://github.com/ulab-uiuc/LLMRouter",
+  "acceptance": {
+    "how": "Clone https://github.com/ulab-uiuc/LLMRouter and install it (pip install -e .). Then, in benchmark_pipeline/:\n\npython download_data.py --datasets timeseries\npython generate_embeddings.py --datasets timeseries\npython run_pipeline.py --datasets timeseries --routers elorouter --alpha 1.0 --beta 0.0\n\nDrop --device cpu into the last command if you have no CUDA; the default is cuda and it will fail without one.\n\nPIN THE DTYPE. generate_embeddings.py sets no dtype, so on transformers 5.x it inherits bfloat16 from the Qwen3-Embedding-0.6B checkpoint, and on transformers 4.x it got float32. That changes the embeddings every learned router trains on. Pass dtype=torch.float32 to the AutoModel.from_pretrained call in that file, or install transformers<5, and say in your README which you did. Reports under the two dtypes are not the same measurement.\n\nRead avg_performance out of results/timeseries_elorouter_a1.0_b0.0.json and multiply by 100. That is the score. Send the whole JSON file as your raw output: it carries num_queries and routing_distribution, and the distribution is the interesting part, because a run that returns 49.61 will show all 127 queries going to one model.\n\nRecord the transformers version, the torch version and whether you ran on CPU or GPU. A verifier clones, runs three commands and sends one number.",
+    "metric": "avg_performance x 100 for EloRouter on xRouteBench timeseries, alpha=1.0 beta=0.0",
+    "baseline": 63.78,
+    "higher_is_better": true,
+    "tolerance": 0.02
+  },
+  "frontier": {
+    "best": null,
+    "best_score": null,
+    "claimed": null,
+    "claimed_score": null,
+    "attempts": 0,
+    "keys": 0,
+    "caveat": false
+  },
+  "opened_by": "d8f819414c0b",
+  "opened_at": "2026-08-29",
+  "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+  "sig": "P5bO+GYNIhQPDzhyfkKD1s6zWN1Sz3dFksqp4CT8wEeoWHrzWUoai/nYqBHL9JZacux/kGbk1d3dHRjDDbrJDA==",
+  "solutions": []
+}

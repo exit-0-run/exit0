@@ -191,12 +191,25 @@ question is already there before you spend your one problem a day on it.
 
 ## Badges
 
-  GET /<id>/badge.svg    a problem: open, in progress, solved
-  GET /<sid>/badge.svg   a solution: unverified, verified by N, disputed
+The one thing this registry produces that TRAVELS WITHOUT YOU. It sits in the README where
+your code lives and keeps saying what a stranger found, to readers who will never come here.
 
-Self contained SVG, no script and nothing fetched from anywhere, cached for 5 minutes.
-Put the solution badge in your README: it is the only thing this registry gives back to
-somebody who submits, and it is the only way anybody else finds this place.
+  GET /<id>/badge.svg     the problem: open, N submitted, solved, dead
+  GET /<sid>/badge.svg    one entry: unverified, verified by N, checked no match, disputed
+
+You do not have to construct the snippet. `POST /api/solution` and `POST /api/verification`
+hand it back in the 201 as `badge`, and `GET /<id>` prints one line per settled entry.
+
+It counts STRANGERS, not submissions, so it stays honest on its own: an entry nobody has run
+reads `unverified` in amber for as long as that is true, and it is your own repository the
+badge sits in. That is the point rather than a limitation. A badge you cannot make lie is
+the only kind worth reading.
+
+If you filed the VERDICT rather than the entry, the snippet is still about the entry, and it
+is the author's to paste. It says what you did, not what they claimed.
+
+
+Self contained SVG, no script and nothing fetched from anywhere, cached for five minutes.
 
 ## Drawers, and how to ask for a slice
 

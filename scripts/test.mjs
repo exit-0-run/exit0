@@ -4455,6 +4455,56 @@ const shipRow = (dir, rid, subject) => {
 };
 
 if (gate.server)
+  // The badge is the only artefact here that travels without us: it sits in somebody
+  // else's README and keeps reporting what a stranger found. It had existed for a long
+  // time with almost nobody using one, and the reason was never the picture - nothing
+  // handed you the snippet at the moment you had just earned it.
+  describe("the badge is offered at the moment it is earned", () => {
+    test("a solution 201 and a verdict 201 both hand back a pasteable snippet", async () => {
+      const author = mkKey();
+      const P = await newProblem(SRV, { title: "A problem whose badge should be offered" });
+      const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/badge-offer", score: 0.5 }));
+      is(sol, 201, "the entry");
+      assert.match(sol.json?.badge ?? "", new RegExp(`\\[!\\[[^\\]]*\\]\\([^)]*/${sol.json.sid}/badge\\.svg\\)\\]`), `the solution 201 carries no badge snippet: ${JSON.stringify(sol.json?.badge)}`);
+      assert.ok(sol.json?.badge_note, "the snippet arrives with no word about what it is for");
+
+      const v = await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: sol.json.sid, score: 0.5, verdict: "ok", output: "ok 0.5" }));
+      is(v, 201, "the verdict");
+      assert.ok((v.json?.badge ?? "").includes(`${sol.json.sid}/badge.svg`), "the verdict 201 carries no badge for the entry it settled");
+      // It is about the ENTRY, not about the verifier. A badge for filing a verdict would
+      // be a score for having opinions, which is the thing this registry does not keep.
+      assert.match(v.json?.badge_note ?? "", /theirs to paste/, "the verdict's note does not say whose badge this is");
+
+      // And the badge the snippet points at has to actually render.
+      const svg = await hit(SRV, { path: `/${sol.json.sid}/badge.svg` });
+      is(svg, 200, "the badge the snippet points at");
+      assert.match(svg.text, /verified by 1/, "a settled entry's badge does not say a stranger ran it");
+    });
+
+    // No badge for the writes that are prose. A picture saying "somebody has opinions
+    // about this" is exactly the badge nobody should be able to hang.
+    test("prose writes get no badge", async () => {
+      const k = await standingKey();
+      const P = await newProblem(SRV, { title: "A problem whose prose earns no picture" });
+      const f = await post(SRV, "finding", findBody(k, { problem: P.id, kind: "deadend", body: "ran it, does not reach the bar" }));
+      is(f, 201, "the finding");
+      assert.ok(!f.json.badge, "a finding was handed a badge");
+      const r = await post(SRV, "remark", remBody(mkKey(), { problem: P.id, body: "the metric does not bear on the title's claim" }));
+      is(r, 201, "the remark");
+      assert.ok(!r.json.badge, "a remark was handed a badge");
+    });
+
+    test("the problem page prints the snippet under a settled entry", async () => {
+      const one = await hit(SRV, { path: "/0001" });
+      is(one, 200, "a problem page");
+      const idx = JSON.parse((await hit(SRV, { path: "/api/index.json" })).text);
+      const settled = (idx.problems.find((x) => x.id === "0001")?.solutions ?? []).filter((x) => x.settled);
+      if (!settled.length) return;
+      assert.match(one.text, /badge for a settled entry/, "a page with a settled entry never mentions the badge");
+      for (const x of settled) assert.ok(one.text.includes(`${x.sid}/badge.svg`), `no snippet for the settled entry ${x.sid}`);
+    });
+  });
+
   describe("the machine-readable surface and the read-only MCP door", () => {
     // The point of /api/surface is that it is DERIVED. A hand written route list is a
     // second description of the server, and the second one is always the one that is

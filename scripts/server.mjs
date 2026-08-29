@@ -2002,7 +2002,7 @@ const findCmp = (a, b) =>
 
 const where = (s) => (s.ref ? `${s.repo} ${s.ref}` : s.repo);
 
-const renderProblem = (p) => {
+const renderProblem = (p, origin = "") => {
   const L = [];
   const sols = solsOf(p);
   // Every other view opens with EXIT0 / <VIEW>, which reads as a path and, in the HTML
@@ -2158,6 +2158,15 @@ const renderProblem = (p) => {
   // filler on a problem where the second run already happened.
   if (sols.some((s) => s.settled && verdictStrength(s.verifications).confirms === 1))
     L.push(`an entry confirmed by one key has been run once, on one machine. The second run is worth more than the first: GET /work`);
+  // The snippet, printed where the entry it belongs to is. A badge is the only artefact
+  // here that travels without us, and it had no route by which anybody would learn it
+  // exists at the moment they had earned one.
+  const settled = sols.filter((x) => x.settled);
+  if (settled.length) {
+    L.push("");
+    L.push(`badge for a settled entry, for the README where the code lives. It counts STRANGERS, not submissions, so it stays honest without you:`);
+    for (const x of settled) L.push(`  ${x.sid}  ${badgeMd(origin, x.sid, "verified on exit0")}`);
+  }
   L.push(`verify one: POST /api/verification with "solution":"<sid>" and the raw output. Contract: /llms.txt`);
   // The page told a reader how to SOLVE this and how to VERIFY it, and said nothing at all
   // about the third thing a careful reader arrives with: that the STATEMENT is wrong. That
@@ -3465,6 +3474,16 @@ const originOf = (req) => {
   return `${proto === "https" ? "https" : "http"}://${host}`;
 };
 
+// The badge is the only thing this registry produces that TRAVELS WITHOUT US. It sits in
+// somebody else's README and keeps saying "two strangers ran this" to readers who have
+// never heard of exit0 and never will. It has existed since early on and almost nobody
+// has one up, and the reason is not the picture: it is that nothing ever hands you the
+// snippet at the moment you have just earned it. So it is handed back on the 201 for a
+// solution and for a verdict, and printed under a settled entry.
+// Relative when the Host is not usable, which is honest rather than tidy: a snippet with
+// an invented origin in it is worse than a snippet somebody has to complete.
+const badgeMd = (origin, id, alt) => `[![${alt}](${origin}/${id}/badge.svg)](${origin}/${String(id).slice(0, 4)})`;
+
 // --- the machine-readable surface, the manifest, and the read-only MCP door ---
 // Three things an arriving agent needs before it can use anything here, and until now it
 // had to read prose to get any of them: what routes exist, what shape they answer in, and
@@ -4038,8 +4057,8 @@ const readRoute = (req, res, path, qs) => {
     const body = JSON.stringify(want_src ? { ...p, source_url: want_src } : p, null, 2) + "\n";
     if (path.startsWith("/api/") || want === "json")
       return cond(req, res, body, "application/json; charset=utf-8", { vary: "accept", link: LINK });
-    if (want === "html") return cond(req, res, renderHtml(renderProblem(p), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
-    return cond(req, res, renderProblem(p), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
+    if (want === "html") return cond(req, res, renderHtml(renderProblem(p, originOf(req)), idsOf(idx), urlsOf(idx)), "text/html; charset=utf-8", { vary: "accept", link: LINK });
+    return cond(req, res, renderProblem(p, originOf(req)), "text/plain; charset=utf-8", { vary: "accept", link: LINK });
   }
 
   if (path === "/api/problems") {
@@ -4290,6 +4309,18 @@ const handler = async (req, res) => {
         return json(req, res, 405, { error: `${req.method} does not work on ${path}` }, { allow });
       const raw = await readBody(req, bodyCap(action));
       const out = await withWriteLock(() => doWrite(req, action, raw));
+      // Attached HERE rather than inside the action, because the absolute URL is a fact
+      // about the request and the action knows nothing about requests. Only on the two
+      // writes that earn one: an entry, and the verdict that turns an entry into a result.
+      // A finding, a remark, a problem and a docket row get none, because a badge saying
+      // "somebody has opinions about this" would be exactly the badge nobody should hang.
+      if (out.code === 201 && out.body && out.body.sid) {
+        const o = originOf(req);
+        out.body.badge = badgeMd(o, out.body.sid, action === "verification" ? "verified on exit0" : "on exit0");
+        out.body.badge_note = action === "verification"
+          ? "You settled somebody else's entry. That snippet belongs in THEIR README, and it is theirs to paste: it says what you did, not what they claimed."
+          : "Paste this where the code lives. It stays honest on its own: it reads unverified until a stranger runs it, and it counts the strangers, not the submissions.";
+      }
       return json(req, res, out.code, out.body);
     }
 

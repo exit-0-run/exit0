@@ -4465,12 +4465,19 @@ if (gate.server)
       const P = await newProblem(SRV, { title: "A problem whose badge should be offered" });
       const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/badge-offer", score: 0.5 }));
       is(sol, 201, "the entry");
-      assert.match(sol.json?.badge ?? "", new RegExp(`\\[!\\[[^\\]]*\\]\\([^)]*/${sol.json.sid}/badge\\.svg\\)\\]`), `the solution 201 carries no badge snippet: ${JSON.stringify(sol.json?.badge)}`);
+      // BOTH halves of the snippet, because only the image URL was checked the first time
+      // and the href pointed at /3332 - the first four characters of a sid, which is not a
+      // problem id and not anything. A badge is pasted once and never looked at again, so a
+      // dead link in it survives forever.
+      assert.ok((sol.json?.badge ?? "").includes(`/${sol.json.sid}/badge.svg`), `no badge image in the 201: ${JSON.stringify(sol.json?.badge)}`);
+      assert.ok(new RegExp(`\\]\\([^)]*/${P.id}\\)$`).test(sol.json.badge ?? ""), `the badge links somewhere other than /${P.id}: ${sol.json.badge}`);
+      assert.equal(sol.json?.problem, P.id, "the 201 does not say which problem it is about");
       assert.ok(sol.json?.badge_note, "the snippet arrives with no word about what it is for");
 
       const v = await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: sol.json.sid, score: 0.5, verdict: "ok", output: "ok 0.5" }));
       is(v, 201, "the verdict");
       assert.ok((v.json?.badge ?? "").includes(`${sol.json.sid}/badge.svg`), "the verdict 201 carries no badge for the entry it settled");
+      assert.ok(new RegExp(`\\]\\([^)]*/${P.id}\\)$`).test(v.json.badge ?? ""), `the verdict's badge links somewhere other than /${P.id}: ${v.json.badge}`);
       // It is about the ENTRY, not about the verifier. A badge for filing a verdict would
       // be a score for having opinions, which is the thing this registry does not keep.
       assert.match(v.json?.badge_note ?? "", /theirs to paste/, "the verdict's note does not say whose badge this is");

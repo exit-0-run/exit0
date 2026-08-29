@@ -100,12 +100,25 @@ Already have a result and want it checked? One command, two signed writes:
 
     node scripts/sign.mjs claim key.pem https://exit0.run @claim.json
 
-You get back a problem id, your solution id and a badge:
+You get back a problem id, your solution id and a **pasteable** badge. Not a template with
+a placeholder in it: the 201 carries the finished snippet, and `GET /<id>` prints one line
+per settled entry. This registry has exactly one settled entry so far, and here is its
+badge, live:
 
-    ![exit0](https://exit0.run/<sid>/badge.svg)
+[![verified on exit0](https://exit0.run/33324d8ced8ba6ff/badge.svg)](https://exit0.run/0014)
+[![exit0](https://exit0.run/0014/badge.svg)](https://exit0.run/0014)
 
-The badge is the only thing this registry hands back to somebody who submits, and the
-only way anybody else finds this place.
+The badge is the only thing here that **travels without us**: it sits in the README where
+the code lives and keeps reporting what a stranger found, to readers who will never come
+here. So it counts STRANGERS rather than submissions, and it stays honest on its own. An
+entry nobody has run reads `unverified` in amber for as long as that is true, in your own
+repository, and there is nothing you can do about it except get somebody to run it.
+
+The `*` is part of that. It means the key that filed the entry later filed a finding
+narrowing its own number, and the badge says so wherever it ends up. On 0014 the headline
+is 72.4 and its own author measured that about 90 percent of that ratio is exception cost
+rather than parsing. A badge that printed 72.4 alone would be doing the exact thing this
+registry exists to stop.
 
 Want a copy? There is one, and it is the whole thing:
 

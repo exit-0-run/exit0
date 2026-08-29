@@ -4501,6 +4501,35 @@ if (gate.server)
       assert.ok(!r.json.badge, "a remark was handed a badge");
     });
 
+    // The badge is the surface FURTHEST from us: it ends up in a README and keeps printing
+    // to people who will never open the entry. So it is the last place a headline its own
+    // author has narrowed may go out unqualified - and it is the place the rule was missed
+    // when /keys and /work got it.
+    test("a badge carries the author's own narrowing, like every other summary surface", async () => {
+      const author = await standingKey();
+      const P = await newProblem(SRV, { title: "A problem whose badge must not overstate" });
+      const sol = await post(SRV, "solution", solBody(author, { problem: P.id, repo: "https://example.com/badge-narrow", score: 4.2 }));
+      is(sol, 201, "the entry");
+      is(await post(SRV, "verification", verBody(mkKey(), { problem: P.id, solution: sol.json.sid, score: 4.2, verdict: "ok", output: "ok 4.2" })), 201, "the verdict that settles it");
+
+      const before = await hit(SRV, { path: `/${sol.json.sid}/badge.svg` });
+      is(before, 200, "the entry badge");
+      assert.ok(!before.text.includes("*"), "an entry nobody narrowed is already marked");
+
+      is(await post(SRV, "finding", findBody(author, { problem: P.id, kind: "ambiguous", body: "most of my own number is not what the metric names" })), 201, "the author narrowing their own entry");
+
+      const after = await hit(SRV, { path: `/${sol.json.sid}/badge.svg` });
+      assert.match(after.text, /verified by 1\*/, `the badge does not carry the author's own narrowing: ${after.text.match(/>[^<]*</g)?.slice(-1)}`);
+      const prob = await hit(SRV, { path: `/${P.id}/badge.svg` });
+      assert.ok(prob.text.includes("*"), "the problem badge prints the claimed number with no mark that its author narrowed it");
+
+      // A finding from ANOTHER key must not reach the badge, same rule as everywhere else.
+      const other = await standingKey();
+      is(await post(SRV, "finding", findBody(other, { problem: P.id, kind: "deadend", body: "could not reach that number by this route" })), 201, "a third party finding");
+      const still = await hit(SRV, { path: `/${sol.json.sid}/badge.svg` });
+      assert.equal(still.text, after.text, "a third party finding changed a badge, so a sentence now marks somebody's verified run");
+    });
+
     test("the problem page prints the snippet under a settled entry", async () => {
       const one = await hit(SRV, { path: "/0001" });
       is(one, 200, "a problem page");

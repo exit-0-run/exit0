@@ -3130,8 +3130,16 @@ const badgeFor = (idx, id) => {
     // "solved" stays: a badge is twenty pixels tall and its job is facts. The invitation
     // ("beat it") belongs where there is room for a sentence - the README row and /start.
     const fb = p.frontier && p.frontier.best_score;
+    // The same mark /keys and /work carry (invariant 19), and this is the place it matters
+    // most: a badge is the one artefact here that TRAVELS. It ends up in a README and keeps
+    // printing a number to readers who will never open the entry, so a headline its own
+    // author has narrowed must not go out of here unqualified. It was missed when the rule
+    // was added to the two summary surfaces, and this is the surface furthest from us.
+    const nk = narrowedKeys(p);
+    const best = p.frontier && p.frontier.best ? solsOf(p).find((x) => x.sid === p.frontier.best) : null;
+    const mark = best && nk.has(kid(best.key)) ? "*" : "";
     if (p.status === "solved")
-      return badge(fb === null || fb === undefined ? `solved, ${ver} verified` : `solved, best ${fb}`, "#0a7d38");
+      return badge(fb === null || fb === undefined ? `solved, ${ver} verified` : `solved, best ${fb}${mark}`, "#0a7d38");
     if (p.status === "dead") return badge("dead", "#6b6b6b");
     if (solsOf(p).length) return badge(`${solsOf(p).length} submitted, 0 verified`, "#b06000");
     return badge("open, unsolved", "#b06000");
@@ -3148,7 +3156,7 @@ const badgeFor = (idx, id) => {
       // heads a second time, by the stored `verifier` string - the same number by luck, and
       // the same trap invariant 3 names: identity is keyId(), which is what verdictStrength
       // already grouped by.
-      if (s.verified) return badge(`verified by ${verdictStrength(s.verifications).confirms}`, "#0a7d38");
+      if (s.verified) return badge(`verified by ${verdictStrength(s.verifications).confirms}${narrowedKeys(p).has(kid(s.key)) ? "*" : ""}`, "#0a7d38");
       return badge(n ? "checked, no match" : "unverified", "#8a6d00");
     }
   return null;

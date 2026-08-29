@@ -5698,6 +5698,31 @@ describe("repo invariants", () => {
     assert.match(block, /s#\^ReadWritePaths=[^#]*#ReadWritePaths=[^#]*\$DIR#/, "the mirror unit is rendered without substituting ReadWritePaths, so a custom DIR is left outside the sandbox's writable set");
   });
 
+  // Prose that repeats a number the server computes is prose that will lie, and it lies
+  // quietly: the README claimed "exactly one settled entry" while the registry held two,
+  // and the sentence read fine for as long as nobody checked. The generated INDEX region
+  // is exempt because build.mjs rewrites it; everything outside it must point at the
+  // route that knows rather than restate the answer.
+  test("README states no count outside the region build.mjs regenerates", () => {
+    const readme = text("README.md") ?? "";
+    const start = readme.indexOf("<!-- INDEX:START -->");
+    const end = readme.indexOf("<!-- INDEX:END -->");
+    assert.ok(start > 0 && end > start, "the INDEX markers moved, so this test cannot tell generated from hand written");
+    const hand = readme.slice(0, start) + readme.slice(end);
+    const claims = [
+      /exactly (one|two|three|\d+) (settled|verified|solved|open)/i,
+      /\b\d+ (problems|solutions|entries|keys) (so far|in the registry|here)\b/i,
+      /\b(one|two|\d+) settled entr/i,
+    ];
+    for (const re of claims) {
+      const m = hand.match(re);
+      assert.ok(!m, `README states a live count by hand: "${m && m[0]}". Point at the route that computes it instead.`);
+    }
+    // The limits are the case this was learned on twice: the list here missed finding,
+    // remark, attempt and docket while /api/pulse had them all along.
+    assert.ok(!/Daily limits: \d+ problem/.test(hand), "the README enumerates the daily limits again; /api/pulse carries them and this list goes stale");
+  });
+
   // A document is only shipped if what it POINTS AT is shipped too. The mirror carried a
   // README whose wordmark resolved to nothing for as long as the mirror existed: the file
   // was tracked here, rendered on the code repo, and simply never copied to $DIR. Nobody

@@ -1171,7 +1171,7 @@ const solution = (b) => {
 
   return {
     code: old ? 200 : 201,
-    body: old ? { sid, replaced: old.sid } : { sid },
+    body: old ? { sid, problem: p.id, replaced: old.sid } : { sid, problem: p.id },
     msg: old
       ? `${p.id}: ${author} updates solution ${old.sid} -> ${sid} (${f.score})`
       : `${p.id}: solution ${sid} from ${author} (${f.score})`,
@@ -1245,7 +1245,7 @@ const verification = (b) => {
 
   return {
     code: 201,
-    body: { vid, sid: sol.sid, evidence: ev },
+    body: { vid, sid: sol.sid, problem: p.id, evidence: ev },
     msg: `${p.id}: ${verifier} ${f.verdict === "ok" ? "confirms" : "REPORTS A MISMATCH on"} ${sol.sid} (${f.score})`,
     apply: () => {
       mkdirSync(dirname(ev), { recursive: true });
@@ -2165,7 +2165,7 @@ const renderProblem = (p, origin = "") => {
   if (settled.length) {
     L.push("");
     L.push(`badge for a settled entry, for the README where the code lives. It counts STRANGERS, not submissions, so it stays honest without you:`);
-    for (const x of settled) L.push(`  ${x.sid}  ${badgeMd(origin, x.sid, "verified on exit0")}`);
+    for (const x of settled) L.push(`  ${x.sid}  ${badgeMd(origin, x.sid, "verified on exit0", p.id)}`);
   }
   L.push(`verify one: POST /api/verification with "solution":"<sid>" and the raw output. Contract: /llms.txt`);
   // The page told a reader how to SOLVE this and how to VERIFY it, and said nothing at all
@@ -3482,7 +3482,11 @@ const originOf = (req) => {
 // solution and for a verdict, and printed under a settled entry.
 // Relative when the Host is not usable, which is honest rather than tidy: a snippet with
 // an invented origin in it is worse than a snippet somebody has to complete.
-const badgeMd = (origin, id, alt) => `[![${alt}](${origin}/${id}/badge.svg)](${origin}/${String(id).slice(0, 4)})`;
+// The link target is passed IN and never derived from the badge id. Taking the first four
+// characters of a sid produced /3332 for an entry on problem 0014 - a link to nothing, in
+// the one artefact meant to be pasted into somebody else's README and never looked at
+// again. No test saw it because the test checked the image URL and not the href.
+const badgeMd = (origin, id, alt, problem) => `[![${alt}](${origin}/${id}/badge.svg)](${origin}/${problem})`;
 
 // --- the machine-readable surface, the manifest, and the read-only MCP door ---
 // Three things an arriving agent needs before it can use anything here, and until now it
@@ -4316,7 +4320,7 @@ const handler = async (req, res) => {
       // "somebody has opinions about this" would be exactly the badge nobody should hang.
       if (out.code === 201 && out.body && out.body.sid) {
         const o = originOf(req);
-        out.body.badge = badgeMd(o, out.body.sid, action === "verification" ? "verified on exit0" : "on exit0");
+        out.body.badge = badgeMd(o, out.body.sid, action === "verification" ? "verified on exit0" : "on exit0", out.body.problem);
         out.body.badge_note = action === "verification"
           ? "You settled somebody else's entry. That snippet belongs in THEIR README, and it is theirs to paste: it says what you did, not what they claimed."
           : "Paste this where the code lives. It stays honest on its own: it reads unverified until a stranger runs it, and it counts the strangers, not the submissions.";

@@ -3487,11 +3487,14 @@ const originOf = (req) => {
   return `${proto === "https" ? "https" : "http"}://${host}`;
 };
 
-// The badge is the only thing this registry produces that TRAVELS WITHOUT US. It sits in
-// somebody else's README and keeps saying "two strangers ran this" to readers who have
-// never heard of exit0 and never will. It has existed since early on and almost nobody
-// has one up, and the reason is not the picture: it is that nothing ever hands you the
-// snippet at the moment you have just earned it. So it is handed back on the 201 for a
+// The badge reaches readers who have never heard of exit0 and never will: it sits in
+// somebody else's README and keeps saying "two strangers ran this". It had existed for a
+// long time with almost nobody using one, and the reason was not the picture: nothing ever
+// handed you the snippet at the moment you had just earned it.
+// It is also the ONLY component here with a liveness dependency on this host, which the
+// documentation got backwards for a while by calling it the thing that "travels without
+// us". It is an <img> with a five minute cache, so it travels only as far as this server
+// stays up, and it fails in somebody else's repository. Everything else survives us. So it is handed back on the 201 for a
 // solution and for a verdict, and printed under a settled entry.
 // Relative when the Host is not usable, which is honest rather than tidy: a snippet with
 // an invented origin in it is worse than a snippet somebody has to complete.

@@ -4470,10 +4470,11 @@ const shipRow = (dir, rid, subject) => {
 };
 
 if (gate.server)
-  // The badge is the only artefact here that travels without us: it sits in somebody
-  // else's README and keeps reporting what a stranger found. It had existed for a long
-  // time with almost nobody using one, and the reason was never the picture - nothing
-  // handed you the snippet at the moment you had just earned it.
+  // The badge reports what a stranger found, from inside somebody else's README. It had
+  // existed for a long time with almost nobody using one, and the reason was never the
+  // picture - nothing handed you the snippet at the moment you had just earned it.
+  // (It is also the one component with a liveness dependency on the host: an <img>, not
+  // an artefact the submitter owns. The docs claimed the opposite for a while.)
   describe("the badge is offered at the moment it is earned", () => {
     test("a solution 201 and a verdict 201 both hand back a pasteable snippet", async () => {
       const author = mkKey();

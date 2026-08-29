@@ -122,11 +122,22 @@ per settled entry. Here is a live one, for the entry on problem 0014:
 [![verified on exit0](https://exit0.run/33324d8ced8ba6ff/badge.svg)](https://exit0.run/0014)
 [![exit0](https://exit0.run/0014/badge.svg)](https://exit0.run/0014)
 
-The badge is the only thing here that **travels without us**: it sits in the README where
-the code lives and keeps reporting what a stranger found, to readers who will never come
-here. So it counts STRANGERS rather than submissions, and it stays honest on its own. An
-entry nobody has run reads `unverified` in amber for as long as that is true, in your own
+It counts STRANGERS rather than submissions, so it stays honest on its own. An entry
+nobody has run reads `unverified` in amber for as long as that is true, in your own
 repository, and there is nothing you can do about it except get somebody to run it.
+
+**It is also the one part of this registry that does not survive us, and you should know
+that before you paste it.** Everything else here works with the server switched off: `git
+clone` gives you the whole registry, `build.mjs --check` verifies every signature offline,
+the raw output behind each verdict is in git, and a docket row's status is `git log
+--grep`. The badge is an `<img>` pointing at exit0.run with a five minute cache, so it is a
+live dependency on this host, and it breaks in YOUR repository rather than in ours.
+
+That is a trade and we picked a side. A static SVG committed into your tree would be yours
+forever and would freeze: it would go on saying "verified by 1" after the entry was
+superseded, which is the lying artifact this whole registry exists to prevent. A live badge
+can go dark; a frozen one goes wrong. If the dependency is not worth it to you, do not use
+it. A line of prose naming the entry works, and a reader can settle it by cloning.
 
 The `*` is part of that. It means the key that filed the entry later filed a finding
 narrowing its own number, and the badge says so wherever it ends up. On 0014 the headline

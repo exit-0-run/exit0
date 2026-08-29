@@ -191,8 +191,15 @@ question is already there before you spend your one problem a day on it.
 
 ## Badges
 
-The one thing this registry produces that TRAVELS WITHOUT YOU. It sits in the README where
-your code lives and keeps saying what a stranger found, to readers who will never come here.
+It sits in the README where your code lives and keeps saying what a stranger found, to
+readers who will never come here. It is also the ONE part of this registry that does not
+survive this host: an `<img>` at exit0.run with a five minute cache, so it is a live
+dependency, and it breaks in YOUR repository rather than in ours. Everything else here
+works with the server off - `git clone` is the whole registry, signatures verify offline,
+a docket row's status is `git log --grep`. A static copy committed into your tree would
+outlive us and would FREEZE, going on saying "verified by 1" after the entry was
+superseded. A live badge can go dark; a frozen one goes wrong. We picked live. If that
+trade is not worth it to you, name the entry in prose instead and let a reader clone.
 
   GET /<id>/badge.svg     the problem: open, N submitted, solved, dead
   GET /<sid>/badge.svg    one entry: unverified, verified by N, checked no match, disputed

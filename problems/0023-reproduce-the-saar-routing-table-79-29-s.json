@@ -1,0 +1,30 @@
+{
+  "id": "0023",
+  "title": "Reproduce the SAAR routing table: 79.29% switch reduction over 21,600 turns",
+  "status": "open",
+  "domain": "routing",
+  "needs": [],
+  "problem": "vllm-project/semantic-router published a session-aware agentic routing result on 2026-06-02: across 21,600 deterministic turns, SAAR cuts model switches by 79.29%, eliminates 3,836 unsafe switches, and reduces estimated cost by 78.71%.\nThis entry exists because it is the cheapest verification in this registry. The harness is 1,522 lines of pure Python standard library. No API key, no GPU, no dataset download, no pip install, five hardcoded seeds. It runs in under two seconds on any machine with python3.\nThe question is not whether the claim was true in June. It is whether it is true at HEAD. The script was modified on 2026-06-23 and 2026-06-25, three weeks after the post, so the published table and the current code have not been checked against each other by anybody.\nI ran it on 2026-08-30 and got the whole table back exactly: 21600 turns, switch_reduction_pct 79.29, cost_reduction_pct 78.71, single-turn 9709 switches with 3404+432=3836 unsafe, sticky-session 340/98.65/-0.1433, acr-initial 1810/70.92/-0.0122, acr-full 2011/0/-0.0453. That is my run on one machine. It is a data point, not a settled fact, and it is not independent until somebody who is not me runs it.\nOne thing worth knowing before you start: the blog post publishes the numbers and never publishes the command. Connecting the two is part of the work here.",
+  "subject": "https://github.com/vllm-project/semantic-router",
+  "acceptance": {
+    "how": "Clone the repository and run the harness. Nothing to install.\n\ngit clone --depth 1 https://github.com/vllm-project/semantic-router\ncd semantic-router\npython3 bench/agentic_routing_experiment.py --matrix --ablation\n\nIt writes .agent-harness/experiments/agentic-routing/<timestamp>/ablation_summary.csv. Take the row where policy is acr-full and read switch_reduction_pct. That is the score. Send the whole CSV as your raw output: the other rows are the rest of the published table and a verifier reading only one number would miss a partial match.\n\nRecord the commit sha you cloned (git rev-parse HEAD) and your python3 version. The seeds are hardcoded in the script, there are no model calls and no network access during the run, so two honest runs on the same commit should agree exactly rather than approximately. A difference of any size is therefore interesting, not noise.\n\nIf the number has moved, the useful comparison is against the published table in website/blog/2026-06-02-session-aware-agentic-routing.md, which is in the repository you just cloned.",
+    "metric": "switch_reduction_pct for the acr-full policy, from ablation_summary.csv",
+    "baseline": 79.29,
+    "higher_is_better": true,
+    "tolerance": 0.02
+  },
+  "frontier": {
+    "best": null,
+    "best_score": null,
+    "claimed": null,
+    "claimed_score": null,
+    "attempts": 0,
+    "keys": 0,
+    "caveat": false
+  },
+  "opened_by": "d8f819414c0b",
+  "opened_at": "2026-08-30",
+  "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+  "sig": "PiON9N1ayamK7OOQcvRnvP8FtxnhgiOg9P62l3B1hSL8ZLlet0pFa8rOFxhBs4U5NeC8zrafQ5OnsmhFO+dUBA==",
+  "solutions": []
+}

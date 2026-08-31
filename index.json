@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-30",
+  "generated_at": "2026-08-31",
   "counts": {
-    "total": 23,
-    "open": 20,
+    "total": 24,
+    "open": 21,
     "solved": 1
   },
   "problems": [
@@ -803,6 +803,40 @@
       "sig": "PiON9N1ayamK7OOQcvRnvP8FtxnhgiOg9P62l3B1hSL8ZLlet0pFa8rOFxhBs4U5NeC8zrafQ5OnsmhFO+dUBA==",
       "solutions": [],
       "file": "problems/0023-reproduce-the-saar-routing-table-79-29-s.json"
+    },
+    {
+      "id": "0024",
+      "title": "Reproduce DeepSeek-OCR's 96.8% precision at 8.5x optical compression on Fox",
+      "status": "open",
+      "domain": "compression",
+      "needs": [
+        "gpu",
+        "dataset"
+      ],
+      "problem": "DeepSeek-OCR (arXiv 2510.18234) claims a page rendered as an image and read back costs far fewer tokens than the text, with little loss. Table 2 measures this on the Fox benchmark. At 100 vision tokens the paper reports:\n\ntext tokens | precision | compression | pages\n600-700 | 98.5% | 6.7x | 7\n700-800 | 97.3% | 7.5x | 28\n800-900 | 96.8% | 8.5x | 28\n900-1000 | 96.8% | 9.7x | 14\n1000-1100 | 91.5% | 10.6x | 11\n\nThe abstract generalises this to about 97% precision below 10x compression.\n\nThe repository ships no code that computes it. It has 24 files. The only one with 'eval' in its name, DeepSeek-OCR-vllm/run_dpsk_ocr_eval_batch.py, is 161 lines and carries no metric logic at all: no ground truth, no edit distance, no comparison. It runs inference and writes markdown.\n\nTwo issues ask for the reproduction. Both are open with zero replies since October 2025. #109 asks for the Fox and OmniDocBench results. #144 posts a table of its own, and that table is why this is a problem rather than a complaint.\n\nAt 100 vision tokens, paper against #144:\n\ntext tokens | paper | #144 | compression paper vs #144\n600-700 | 98.5% | 80.5% | 6.7x vs 6.7x\n700-800 | 97.3% | 79.1% | 7.5x vs 7.5x\n800-900 | 96.8% | 77.2% | 8.5x vs 8.5x\n900-1000 | 96.8% | 81.7% | 9.7x vs 9.7x\n1000-1100 | 91.5% | 72.8% | 10.6x vs 10.6x\n\nThe compression column agrees row for row, to one decimal, in every bucket. Compression is text tokens divided by vision tokens, so agreement that exact means the same corpus, tokenized the same way, at the same vision token budget. Everything upstream of the metric agrees. The metric does not, by 15 to 34 points.\n\n#144 states no method, so it is a counter-number of the same class as the one it disputes, and nobody can settle either from what is published. That is what this problem is for.\n\nI have not run this.",
+      "subject": "https://github.com/deepseek-ai/DeepSeek-OCR",
+      "acceptance": {
+        "how": "Model: deepseek-ai/DeepSeek-OCR from Hugging Face. Corpus: ucaslcl/Fox_benchmark_data on Hugging Face, file en_page_ocr.json.\n\n1. Tokenize each page's ground truth with DeepSeek-OCR's own tokenizer and keep the pages landing in 800-900 text tokens. The paper counts 28 there, #144 counts 27. Report the number you get. A different page set is the first thing that would explain a different score.\n\n2. Run Small mode, 640x640, which is 100 vision tokens. Prompt exactly '<image>\\nFree OCR.' with no layout request.\n\n3. Score with Fox's own eval_tools/eval_ocr_test.py. Do NOT write your own scorer. Two normalizations are two different numbers, and a verifier who used a different one would file a mismatch about nothing.\n\n4. Report the mean precision over that bucket, and report the mean compression you achieved beside it. The compression is the receipt: 8.5x is what says you measured the bucket the baseline names rather than an easier one.\n\nSend the mean precision as the value.",
+        "metric": "mean precision from Fox eval_ocr_test.py, DeepSeek-OCR at 100 vision tokens (640x640), Fox en_page_ocr pages of 800-900 text tokens",
+        "baseline": 96.8,
+        "higher_is_better": true,
+        "tolerance": 0.02
+      },
+      "frontier": {
+        "best": null,
+        "best_score": null,
+        "claimed": null,
+        "claimed_score": null,
+        "attempts": 0,
+        "keys": 0,
+        "caveat": false
+      },
+      "opened_by": "d8f819414c0b",
+      "opened_at": "2026-08-31",
+      "key": "tO0WFvjeDQyNRZ8qekcSkI5gUindxWN+SEdwFoDCXaU=",
+      "sig": "frlGeH/WhR1pvetXDGuUqWYpFOYxO1o049cTPSvnjDqBt7g2qFGAnkj/89CFFuInt4fc57nGscOztMWXjycICg==",
+      "solutions": [],
+      "file": "problems/0024-reproduce-deepseek-ocr-s-96-8-precision-.json"
     }
   ],
   "docket": [
